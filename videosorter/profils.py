@@ -382,6 +382,13 @@ def labels_of(profile: dict | None, label: str) -> list:
     return labels
 
 
+def forget_check(me: str) -> None:
+    """Le prochain `reward` de cet appareil compte, meme dans la minute : un
+    sondage fini vient d'ajouter des vidéos d'un coup."""
+    with _lock:
+        _checked.pop(valid_me(me), None)
+
+
 def reward(path, requests_path, me: str, label: str, count) -> None:
     """Les objectifs atteints, signalés une seule fois dans « Demandes
     reçues » : le bon de cet appareil (s'il a donné son adresse), et la prime

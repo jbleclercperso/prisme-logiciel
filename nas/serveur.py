@@ -45,6 +45,8 @@ sys.path.insert(0, str(HERE))
 DOWNLOADS = SHARE / "telechargements"
 TOOLS = SHARE / "outils" / "python"
 RENAMES = SHARE / "etat" / "renommes.jsonl"
+# Les dossiers et videos que Prisme ne montre pas au telephone.
+HIDDEN_LIST = SHARE / "etat" / "caches-telephone.json"
 sys.path.insert(0, str(TOOLS))
 TOOLS_READY = threading.Event()
 
@@ -72,9 +74,15 @@ class NasLibrary(web.Library):
         # Les dossiers masques sur le PC (BIN…) : jamais montres ici, meme
         # si un catalogue les contient (publie avec « tout montrer » leve).
         veiled = {str(name).casefold() for name in (told.get("veiled") or ["bin"])}
+        # Ce que Prisme a cache sur le telephone (`telcache.py`) : relu a
+        # chaque changement de la liste, sans attendre un catalogue.
+        from videosorter import telcache
+        hidden = telcache.Matcher(telcache.load(HIDDEN_LIST))
         for mark, entry in (told.get("videos") or {}).items():
             parts = entry["rel"].split("/")
             if any(part.casefold() in veiled for part in parts):
+                continue
+            if hidden.rel(entry["rel"]):
                 continue
             path = LIBRARY_ROOT / Path(*parts)
             videos[mark] = path
@@ -326,6 +334,10 @@ def _watch(server: web.Server, library: NasLibrary) -> None:
     """Recharge ce que Prisme republie : le catalogue, la clé du lien -- et le
     programme lui-même, en redémarrant (Docker le relance : « restart »)."""
     seen_catalogue, seen_access = library.loaded_at, _access()
+    try:
+        seen_hidden = HIDDEN_LIST.stat().st_mtime if HIDDEN_LIST.exists() else 0.0
+    except OSError:
+        seen_hidden = 0.0
     seen_program = _program_stamp()
     while True:
         time.sleep(10)
@@ -351,9 +363,12 @@ def _watch(server: web.Server, library: NasLibrary) -> None:
                 print("nouvelle version du programme : redémarrage", flush=True)
                 os._exit(0)
             try:
-                if CATALOGUE.stat().st_mtime != seen_catalogue:
+                hidden_stamp = HIDDEN_LIST.stat().st_mtime if HIDDEN_LIST.exists() else 0.0
+                if (CATALOGUE.stat().st_mtime != seen_catalogue
+                        or hidden_stamp != seen_hidden):
                     library.refresh()
                     seen_catalogue = library.loaded_at
+                    seen_hidden = hidden_stamp
             except OSError:
                 pass
             access = _access()

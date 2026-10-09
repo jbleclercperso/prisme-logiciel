@@ -146,6 +146,18 @@ def lan_address() -> str:
 # Le catalogue : ce que le serveur accepte de montrer
 # ---------------------------------------------------------------------------
 
+# Ce que le partage ne montre pas (`telcache.py`) : regle depuis le PC, il
+# vaut pour la page servie par le PC ; le NAS applique la meme liste.
+HIDDEN = None
+
+
+def set_hidden(entries: dict) -> None:
+    """La liste des dossiers et videos caches sur le telephone."""
+    global HIDDEN
+    from .telcache import Matcher
+    HIDDEN = Matcher(entries)
+
+
 class Library:
     """Les dossiers et les vidéos connus de l'index, désignés par empreinte.
 
@@ -187,10 +199,12 @@ class Library:
         folders = []
         videos = {}
         by_folder = {}
+        hide = HIDDEN if HIDDEN else None
         for item in cached_items(self.root, MODE_FOLDERS, self.expand):
             # Strict : l'interrupteur « montrer les dossiers masques » vaut
             # pour l'ecran du PC, jamais pour le partage.
-            if item.is_tag or not item.videos or under_veiled(item.path, strict=True):
+            if (item.is_tag or not item.videos or under_veiled(item.path, strict=True)
+                    or (hide is not None and hide.path(item.path))):
                 # Ce qui est masqué ici l'est aussi au dehors : l'adresse
                 # publique ne doit pas montrer ce que la fenêtre cache.
                 continue
@@ -199,9 +213,14 @@ class Library:
             for video in item.videos:
                 if under_veiled(video, strict=True):
                     continue
+                if hide is not None and hide.path(video):
+                    # Cachee sur le telephone (`telcache.py`).
+                    continue
                 mark = self.mark(video)
                 videos[mark] = Path(video)
                 inside.append(mark)
+            if not inside:
+                continue
             by_folder[key] = inside
             folders.append({
                 "id": key,
@@ -835,6 +854,18 @@ class Server:
         """Les profils de la page mobile, a cote des demandes."""
         return profils.path_for(self.requests_path)
 
+    @property
+    def mission_paths(self) -> tuple:
+        """(missions, envois, dossier des videos recues) : `missions.py`."""
+        from . import missions
+        return missions.paths_for(self.requests_path)
+
+    @property
+    def survey_paths(self) -> tuple:
+        """(sondages, reponses), a cote des demandes (`sondages.py`)."""
+        from . import sondages
+        return sondages.paths_for(self.requests_path)
+
 
 def _make_handler(server: Server):
     class Handler(BaseHTTPRequestHandler):
@@ -1072,6 +1103,10 @@ def _make_handler(server: Server):
                 return self._json({"jobs": jobs, "auto": server.downloads is not None})
             if route == "/api/profil":
                 return self._profile()
+            if route == "/api/sondages":
+                return self._surveys()
+            if route == "/api/missions":
+                return self._missions()
             if route == "/api/pourvous":
                 # Les videos des preferences choisies a l'accueil.
                 profile = profils.find(server.profiles_path, self._me(), self._label())
@@ -1142,6 +1177,9 @@ def _make_handler(server: Server):
             self.do_GET()
 
         def do_POST(self) -> None:         # noqa: N802
+            if urlparse(self.path).path == "/api/mission/morceau":
+                # Un morceau de video : plus gros que tout le reste, lu a part.
+                return self._mission_chunk()
             # Le corps d'abord, quelle que soit l'issue : un refus qui ne le
             # lisait pas le laissait dans la connexion (voir _read_body).
             body = self._read_body()
@@ -1160,6 +1198,10 @@ def _make_handler(server: Server):
                 return self._pin(body)
             if route == "/api/ici":
                 return self._here(body)
+            if route == "/api/sondage":
+                return self._vote(body)
+            if route == "/api/mission":
+                return self._mission_start(body)
             if route != "/login":
                 return self._send(HTTPStatus.NOT_FOUND, "Rien ici.")
             who = self._who()
@@ -1335,7 +1377,147 @@ def _make_handler(server: Server):
             return self._label() if self._me() else ""
 
         def _seen(self, labels: list) -> int:
-            return JOURNAL.seen_count(labels, profils.MIN_SECONDS)
+            """Les videos vues, et ce que valent les sondages finis."""
+            from . import sondages
+            return (JOURNAL.seen_count(labels, profils.MIN_SECONDS)
+                    + sondages.bonus(server.survey_paths[1], self._me()))
+
+        def _surveys(self) -> None:
+            """Les sondages qui attendent cette personne, leurs videos, et ce
+            qu'elle y a deja repondu (elle reprend la ou elle en etait)."""
+            from . import sondages
+            surveys_path, answers_path = server.survey_paths
+            shelf = server.library
+            found = []
+            for entry in sondages.offer(surveys_path, answers_path, self._me(),
+                                        shelf.videos):
+                survey = entry["survey"]
+                items = []
+                for item in entry["items"]:
+                    if survey["kind"] in sondages.TEXT_KINDS:
+                        items.append({"id": item["id"], "text": item["text"],
+                                      "detail": item["detail"]})
+                    elif survey["kind"] == "notes":
+                        one = shelf.video_entry(item["mark"])
+                        if one:
+                            items.append({"id": item["id"], "v": one})
+                    else:
+                        first = shelf.video_entry(item["a"]["mark"])
+                        second = shelf.video_entry(item["b"]["mark"])
+                        if first and second:
+                            items.append({"id": item["id"], "a": first, "b": second})
+                if items:
+                    found.append({"id": survey["id"], "kind": survey["kind"],
+                                  "title": survey["title"], "message": survey["message"],
+                                  "reward": survey["reward"], "items": items,
+                                  "options": survey["options"], "ends": survey["ends"],
+                                  "answers": entry["answers"]})
+            self._json({"surveys": found})
+
+        def _missions(self) -> None:
+            """Les missions proposees a cette personne, et ses envois."""
+            from . import missions
+            book, sends_path, _folder = server.mission_paths
+            profile = profils.find(server.profiles_path, self._me(), self._label())
+            self._json({"missions": missions.offers(book, sends_path, self._me()),
+                        "email": (profile or {}).get("email", ""),
+                        "chunk": missions.CHUNK})
+
+        def _mission_start(self, body: bytes) -> None:
+            """Un envoi de video commence : la mission, la taille, le nom."""
+            if not self._allowed():
+                return self._json({"error": "lien requis"}, HTTPStatus.UNAUTHORIZED)
+            try:
+                told = json.loads(body.decode("utf-8", "replace"))
+            except (ValueError, OSError):
+                told = None
+            if not isinstance(told, dict):
+                return self._json({"ok": False, "error": "Demande illisible."},
+                                  HTTPStatus.BAD_REQUEST)
+            from . import missions
+            label, me = self._label(), self._me()
+            profile = profils.find(server.profiles_path, me, label) or {}
+            book, sends_path, folder = server.mission_paths
+            done = missions.start(book, sends_path, folder, me, label,
+                                  profile.get("name", ""), profile.get("email", ""), told)
+            self._json(done, HTTPStatus.OK if done.get("ok") else HTTPStatus.BAD_REQUEST)
+
+        def _mission_chunk(self) -> None:
+            """Un morceau d'une video de mission (`missions.put`). Le corps
+            n'est lu qu'une fois l'acces et sa taille verifies ; sinon la
+            connexion se ferme sans le lire."""
+            from . import missions
+            self._query = parse_qs(urlparse(self.path).query)
+            if not self._allowed():
+                self.close_connection = True
+                return self._json({"error": "lien requis"}, HTTPStatus.UNAUTHORIZED)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                offset = int((self._query.get("debut") or ["-1"])[0])
+            except ValueError:
+                length, offset = -1, -1
+            if (self.headers.get("Transfer-Encoding") or length <= 0
+                    or length > missions.CHUNK_MAX or offset < 0):
+                self.close_connection = True
+                return self._json({"ok": False, "error": "Morceau refusé."},
+                                  HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            try:
+                data = self.rfile.read(length)
+            except OSError:
+                self.close_connection = True
+                return
+            if len(data) != length:
+                self.close_connection = True
+                return self._json({"ok": False, "error": "Morceau incomplet."},
+                                  HTTPStatus.BAD_REQUEST)
+            _book, sends_path, folder = server.mission_paths
+            send_id = (self._query.get("id") or [""])[0]
+            done = missions.put(sends_path, folder, self._me(), send_id, offset, data)
+            if done.get("done") and not done.get("already"):
+                self._mission_arrived(send_id)
+            self._json(done, HTTPStatus.OK if done.get("ok") or done.get("retry")
+                       else HTTPStatus.BAD_REQUEST)
+
+        def _mission_arrived(self, send_id: str) -> None:
+            """Une video complete : Prisme la voit dans « Demandes reçues »."""
+            from . import demandes, missions
+            book, sends_path, _folder = server.mission_paths
+            send = missions.sends(sends_path).get(send_id) or {}
+            mission = missions.load(book)["missions"].get(send.get("mission", ""), {})
+            size = send.get("size", 0) / (1024 * 1024)
+            demandes.append(server.requests_path, send.get("label", ""), "mission",
+                            f"{send.get('name') or 'Un visiteur'} a envoyé sa vidéo pour la "
+                            f"mission « {mission.get('title', '?')} » ({size:.0f} Mo)",
+                            system=True)
+
+        def _vote(self, body: bytes) -> None:
+            """Une reponse a un sondage : une note, ou A / B."""
+            if not self._allowed():
+                return self._json({"error": "lien requis"}, HTTPStatus.UNAUTHORIZED)
+            try:
+                told = json.loads(body.decode("utf-8", "replace"))
+            except (ValueError, OSError):
+                told = None
+            if not isinstance(told, dict):
+                return self._json({"ok": False, "error": "Réponse illisible."},
+                                  HTTPStatus.BAD_REQUEST)
+            from . import sondages
+            label, me = self._label(), self._me()
+            profile = profils.find(server.profiles_path, me, label)
+            surveys_path, answers_path = server.survey_paths
+            done = sondages.vote(surveys_path, answers_path, me, label,
+                                 (profile or {}).get("name", ""), told,
+                                 server.library.videos)
+            if done.get("done"):
+                labels = profils.labels_of(profile, label)
+                done["seen"] = self._seen(labels)
+                done["goal"] = profils.GOAL
+                # Le sondage peut faire franchir l'objectif du bon d'achat :
+                # verifie tout de suite, sans attendre la minute.
+                profils.forget_check(me)
+                profils.reward(server.profiles_path, server.requests_path, me, label,
+                               self._seen)
+            self._json(done, HTTPStatus.OK if done.get("ok") else HTTPStatus.BAD_REQUEST)
 
         def _profile(self) -> None:
             """Qui est cet appareil, et ou il en est du bon d'achat."""
@@ -1413,7 +1595,12 @@ def _make_handler(server: Server):
             view = str((told or {}).get("view") or "")[:120] if isinstance(told, dict) else ""
             server.seen(label, self._who())
             server.set_view(label, view)
-            self._json({"ok": True})
+            # Les sondages qui l'attendent : un sondage envoye pendant qu'elle
+            # parcourt s'annonce sans attendre la prochaine ouverture.
+            from . import sondages
+            surveys_path, answers_path = server.survey_paths
+            self._json({"ok": True, "sondages": sondages.pending(
+                surveys_path, answers_path, self._me(), server.library.videos)})
 
         def _labels(self) -> list:
             """Les noms d'appareil de la personne : ceux de son profil, et
@@ -1919,6 +2106,313 @@ a.btn { background: #252c36; color: #e9eef4; margin-top: 8px; }
 #coachBubble b { display: block; font-size: 15px; margin-bottom: 3px; }
 #coachBubble button { margin-top: 10px; background: #2f6fed; color: #fff; border: 0;
   font-weight: 600; width: 100%; padding: 10px; }
+
+/* Le volume : le haut-parleur reste seul ; appui long, survol ou molette
+   font paraitre un curseur fin au-dessus de lui, qui s'efface tout seul. */
+#vol { position: absolute; z-index: 70; width: 44px; height: 168px; padding: 12px 0 10px;
+  bottom: calc(100% + 6px); top: auto; left: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  background: rgba(16,20,27,.94); border: 1px solid #2a3442; border-radius: 22px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.5); touch-action: none; user-select: none;
+  -webkit-user-select: none; opacity: 0; transform: translateY(6px) scale(.96);
+  transition: opacity .15s, transform .15s; pointer-events: none; }
+#vol.on { opacity: 1; transform: none; pointer-events: auto; }
+#vol.below { bottom: auto; top: calc(100% + 6px); transform: translateY(-6px) scale(.96); }
+#vol.below.on { transform: none; }
+#vol .fill, #vol .knob { pointer-events: none; }
+.snd.muted svg.on, .snd:not(.muted) svg.off { display: none; }
+#vol .track { position: relative; flex: 1; width: 6px; border-radius: 3px;
+  background: rgba(255,255,255,.18); cursor: pointer; }
+#vol .track::before { content: ""; position: absolute; inset: -6px -16px; }
+#vol .fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 3px;
+  background: linear-gradient(0deg, #4f8bf0, #8fb4ff); }
+#vol .knob { position: absolute; left: 50%; width: 16px; height: 16px; margin: 0 0 -8px -8px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+#vol .pct { color: #dbe3ee; font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums; }
+#vol.muted .fill { background: #4a5260; }
+
+/* La notification d'un sondage : une carte qui descend du haut. */
+#toast { position: fixed; z-index: 42; left: 50%; top: calc(10px + env(safe-area-inset-top));
+  width: min(440px, calc(100vw - 20px)); transform: translate(-50%, -140%);
+  display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 14px;
+  border-radius: 16px; background: rgba(22,28,38,.97); border: 1px solid #2e4f86;
+  box-shadow: 0 14px 40px rgba(0,0,0,.55), 0 0 0 1px rgba(79,139,240,.12);
+  transition: transform .45s cubic-bezier(.2,1.2,.3,1); }
+#toast.on { transform: translate(-50%, 0); }
+#toast[hidden] { display: none; }
+#toast .tico { flex: none; width: 40px; height: 40px; border-radius: 12px; display: flex;
+  align-items: center; justify-content: center; color: #0b1530;
+  background: linear-gradient(145deg, #9db8ff, #4a6fd6);
+  box-shadow: 0 4px 14px rgba(74,111,214,.4); }
+#toast .tico svg { width: 22px; height: 22px; }
+#toast .tx { flex: 1; min-width: 0; }
+#toast .tx b { display: block; color: #fff; font-size: 14px; line-height: 1.25; }
+#toast .tx small { display: block; color: #aeb8c5; font-size: 12.5px; line-height: 1.35;
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast .go { flex: none; background: #2f6fed; color: #fff; border: 0; font-weight: 600;
+  padding: 9px 13px; border-radius: 10px; font-size: 14px; }
+#toast .x { flex: none; background: none; border: 0; color: #8b94a1; padding: 6px;
+  font-size: 18px; line-height: 1; }
+
+/* Le sondage qui attend, en une ligne sous les recompenses. */
+.pollline { display: flex; width: 100%; align-items: center; gap: 10px; margin: 0 0 10px;
+  padding: 10px 12px; border-radius: 12px; text-align: left; font-size: 13px;
+  color: #dbe7ff; background: linear-gradient(120deg, rgba(79,139,240,.16),
+  rgba(138,79,232,.10)); border: 1px solid rgba(79,139,240,.35); }
+.pollline[hidden] { display: none; }
+.pollline .pi { flex: none; display: inline-flex; color: #8fb4ff; }
+.pollline .pi svg { width: 18px; height: 18px; }
+.pollline .pt { flex: 1; min-width: 0; }
+.pollline .pt b { display: block; color: #fff; font-size: 14px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.pollline .pt small { color: #9fb0c8; font-size: 12px; }
+.pollline .pg { flex: none; color: #8fb4ff; font-weight: 700; }
+
+/* Le sondage : plein ecran, une question a la fois. */
+#poll { position: fixed; inset: 0; z-index: 44; background: #07090c; display: flex;
+  flex-direction: column; color: var(--ink); }
+#poll[hidden] { display: none; }
+#poll .pbar { position: relative; z-index: 3; flex: none; display: flex;
+  align-items: center; gap: 6px;
+  padding: calc(6px + env(safe-area-inset-top)) 8px 6px; background: #0e1116;
+  border-bottom: 1px solid #1a2029; }
+#poll .pbar .ic svg { width: 21px; height: 21px; }
+#poll .pcount { font-size: 13px; color: #cfd7e1; font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+#poll .pprog { flex: 1; height: 4px; border-radius: 2px; background: #1d2530;
+  overflow: hidden; margin: 0 6px; }
+#poll .pprog i { display: block; height: 100%; width: 0; border-radius: 2px;
+  background: linear-gradient(90deg, #4f8bf0, #8a4fe8); transition: width .35s; }
+#poll section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#poll section[hidden] { display: none; }
+.pintro { overflow-y: auto; padding: 22px 20px calc(18px + env(safe-area-inset-bottom));
+  max-width: 520px; width: 100%; margin: 0 auto; animation: rise .35s ease both; }
+.pkind { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase; color: #8fb4ff; background: #142038;
+  border: 1px solid #2a4170; border-radius: 999px; padding: 5px 11px; }
+.pkind svg { width: 14px; height: 14px; }
+.pintro h2 { font-size: 25px; line-height: 1.2; margin: 14px 0 10px; letter-spacing: -.2px; }
+.pmsg { color: #cfd7e1; font-size: 15px; line-height: 1.5; margin: 0 0 16px;
+  padding: 12px 14px; border-left: 3px solid #4f8bf0; background: #10151d;
+  border-radius: 0 10px 10px 0; }
+.pfacts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.pfacts span { background: #131922; border: 1px solid #242d3a; border-radius: 999px;
+  padding: 7px 12px; font-size: 13px; color: #cfd7e1; }
+.pfacts span.gold { color: #f6e3b4; border-color: rgba(232,190,104,.4);
+  background: rgba(232,190,104,.08); }
+.phow { display: flex; flex-direction: column; gap: 10px; margin: 0 0 20px; }
+.phow div { display: flex; gap: 12px; align-items: flex-start; color: #aeb8c5;
+  font-size: 14px; line-height: 1.45; }
+.phow b { flex: none; width: 26px; height: 26px; border-radius: 50%; background: #1d2a40;
+  color: #dbe7ff; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; }
+.pintro .row { display: flex; gap: 10px; }
+.pintro .row button { flex: 1; padding: 14px; border-radius: 13px; font-size: 16px;
+  font-weight: 600; border: 0; }
+.pintro .go { background: #2f6fed; color: #fff; }
+.pintro .quiet { flex: 0 0 auto !important; background: #1b222c; color: #cfd7e1; }
+/* Une video, sa note. */
+.pstage { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
+.pstage video { width: 100%; height: 100%; object-fit: contain; display: block;
+  background: #000; }
+.pseek { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; display: flex;
+  align-items: center; gap: 6px; padding: 0 10px 2px; color: #fff; font-size: 11px;
+  font-variant-numeric: tabular-nums; background: linear-gradient(0deg,
+  rgba(0,0,0,.6), transparent); }
+.pseek input { flex: 1; min-width: 0; height: 26px; background: transparent;
+  -webkit-appearance: none; appearance: none; touch-action: none; }
+.pseek input::-webkit-slider-runnable-track { height: 3px; border-radius: 2px;
+  background: rgba(255,255,255,.35); }
+.pseek input::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px;
+  margin-top: -5px; border-radius: 50%; background: #fff; border: 0; }
+.pseek input::-moz-range-track { height: 3px; border-radius: 2px;
+  background: rgba(255,255,255,.35); }
+.pseek input::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%;
+  background: #fff; border: 0; }
+.pname { position: absolute; left: 10px; top: 8px; right: 10px; z-index: 2; color: #fff;
+  font-size: 12px; text-shadow: 0 1px 3px #000; opacity: .85; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.pflash { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: rgba(0,0,0,.6); color: #fff; font-size: 18px; font-weight: 700;
+  padding: 10px 16px; border-radius: 30px; pointer-events: none; opacity: 0;
+  transition: opacity .25s; z-index: 3; }
+.pflash.on { opacity: 1; }
+.pask { flex: none; background: #0e1116; border-top: 1px solid #1a2029;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom)); }
+.pq { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin: 0 4px 10px; }
+.pq b { font-size: 15px; color: #fff; }
+.pq .back { background: none; border: 0; color: #8fb4ff; font-size: 13px; padding: 2px 0; }
+.pq .back:disabled { color: #3a4452; }
+.stars { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+  max-width: 520px; margin: 0 auto; }
+.stars button { position: relative; height: 56px; border-radius: 14px; padding: 0;
+  font-size: 22px; font-weight: 800; color: #fff; border: 2px solid transparent;
+  background: var(--c); box-shadow: inset 0 -3px 0 rgba(0,0,0,.25);
+  transition: transform .12s, box-shadow .12s, filter .12s; }
+.stars button:active { transform: scale(.94); }
+.stars button.on { border-color: #fff; transform: translateY(-3px);
+  box-shadow: 0 6px 18px rgba(0,0,0,.45), inset 0 -3px 0 rgba(0,0,0,.25); }
+.stars.picked button:not(.on) { filter: saturate(.35) brightness(.7); }
+.stars button[data-n="1"] { --c: #c4475a; }
+.stars button[data-n="2"] { --c: #d0703f; }
+.stars button[data-n="3"] { --c: #c9a227; }
+.stars button[data-n="4"] { --c: #6aa84f; }
+.stars button[data-n="5"] { --c: linear-gradient(145deg, #3fb37f, #2f8fd0); }
+.scale { display: flex; justify-content: space-between; max-width: 520px;
+  margin: 7px auto 0; color: #8b94a1; font-size: 12px; padding: 0 2px; }
+/* Le duel : deux videos, l'une au-dessus de l'autre (cote a cote en largeur). */
+.duel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 3px;
+  background: #000; }
+@media (orientation: landscape) { .duel { flex-direction: row; } }
+.pane { position: relative; flex: 1; min-height: 0; min-width: 0; background: #000;
+  overflow: hidden; border: 2px solid transparent; transition: border-color .2s; }
+.pane.heard { border-color: var(--side); }
+.pane video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pane[data-side="a"] { --side: #2fb3a0; }
+.pane[data-side="b"] { --side: #a37bf0; }
+.side { position: absolute; left: 8px; top: 8px; z-index: 2; width: 30px; height: 30px;
+  border-radius: 9px; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 16px; color: #fff; background: var(--side);
+  box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+.pane .pname { left: 46px; top: 14px; }
+.ear { position: absolute; right: 8px; top: 8px; z-index: 2; width: 30px; height: 30px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55); color: #fff; opacity: .35; transition: opacity .2s; }
+.ear svg { width: 17px; height: 17px; fill: currentColor; }
+.pane.heard .ear { opacity: 1; color: var(--side); }
+.pane.won { border-color: var(--side); }
+.pane.won::after { content: "✓"; position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; font-size: 64px; font-weight: 800;
+  color: #fff; background: rgba(0,0,0,.4);
+  background: color-mix(in srgb, var(--side) 45%, transparent);
+  animation: pop .4s cubic-bezier(.2,1.6,.4,1) both; }
+.picks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 560px;
+  margin: 0 auto; }
+.picks button { height: 54px; border-radius: 14px; border: 0; color: #fff; font-size: 16px;
+  font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: var(--side); box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+.picks button i { font-style: normal; width: 26px; height: 26px; border-radius: 8px;
+  background: rgba(255,255,255,.22); display: inline-flex; align-items: center;
+  justify-content: center; }
+.picks button[data-side="a"] { --side: #239c8b; }
+.picks button[data-side="b"] { --side: #8c62dc; }
+.picks button.on { box-shadow: 0 0 0 3px #fff, inset 0 -3px 0 rgba(0,0,0,.25); }
+.picks.picked button:not(.on) { filter: saturate(.3) brightness(.65); }
+.ptip { text-align: center; color: #6f7885; font-size: 12px; margin-top: 8px; }
+/* Une question en texte : une carte, et des reponses fermees. */
+.ptext { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  max-width: 520px; width: 100%; margin: 0 auto;
+  padding: 18px 18px calc(16px + env(safe-area-inset-bottom)); }
+.pcard { flex: 1; display: flex; flex-direction: column; justify-content: center;
+  text-align: center; min-height: 180px; margin-bottom: 18px; padding: 26px 20px;
+  border-radius: 22px; background: radial-gradient(120% 90% at 50% 0%, #1b2a47 0%,
+  #121822 70%); border: 1px solid #263553; box-shadow: 0 18px 40px rgba(0,0,0,.35);
+  animation: rise .35s ease both; }
+.pcard .pnum { color: #8fb4ff; font-size: 12px; font-weight: 700; letter-spacing: .6px;
+  text-transform: uppercase; margin-bottom: 12px; }
+.pcard h2 { font-size: 26px; line-height: 1.22; margin: 0; letter-spacing: -.2px;
+  word-break: break-word; }
+.pcard p { color: #aeb8c5; font-size: 15px; line-height: 1.5; margin: 12px 0 0; }
+.popts { display: flex; flex-direction: column; gap: 10px; }
+.popts button { position: relative; display: flex; align-items: center; gap: 12px;
+  min-height: 56px; padding: 12px 16px; border-radius: 15px; border: 1px solid
+  rgba(255,255,255,.08); background: var(--c); color: #fff; font-size: 16px;
+  font-weight: 650; text-align: left; box-shadow: inset 0 -3px 0 rgba(0,0,0,.22);
+  transition: transform .12s, filter .15s, box-shadow .15s; }
+.popts button:active { transform: scale(.97); }
+.popts button i { font-style: normal; flex: none; width: 30px; height: 30px;
+  border-radius: 9px; background: rgba(255,255,255,.18); display: inline-flex;
+  align-items: center; justify-content: center; font-size: 15px; }
+.popts button.on { box-shadow: 0 0 0 3px #fff, inset 0 -3px 0 rgba(0,0,0,.22); }
+.popts.picked button:not(.on), .pscale.picked button:not(.on) {
+  filter: saturate(.3) brightness(.62); }
+.popts button[data-v="0"] { --c: #2a7fd4; }
+.popts button[data-v="1"] { --c: #8a4fe8; }
+.popts button[data-v="2"] { --c: #3a4452; }
+.popts button[data-v="3"] { --c: #c98a3a; }
+.popts button[data-v="4"] { --c: #2f9f73; }
+.popts button[data-v="5"] { --c: #c4475a; }
+.pscale { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; }
+.pscale button { height: 58px; padding: 0; border-radius: 14px; border: 0; color: #fff;
+  font-size: 22px; font-weight: 800; background: var(--c);
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); transition: transform .12s, filter .15s; }
+.pscale button:active { transform: scale(.94); }
+.pscale button.on { box-shadow: 0 0 0 3px #fff, inset 0 -3px 0 rgba(0,0,0,.25);
+  transform: translateY(-3px); }
+.pscale button[data-v="0"] { --c: #3a4452; }
+.pscale button[data-v="1"] { --c: #c4475a; }
+.pscale button[data-v="2"] { --c: #d0703f; }
+.pscale button[data-v="3"] { --c: #c9a227; }
+.pscale button[data-v="4"] { --c: #6aa84f; }
+.pscale button[data-v="5"] { --c: linear-gradient(145deg, #3fb37f, #2f8fd0); }
+.pends { display: flex; justify-content: space-between; gap: 12px; color: #8b94a1;
+  font-size: 12px; margin: 8px 2px 0; }
+.pends span:last-child { text-align: right; }
+.ptext .pq { margin: 14px 2px 0; justify-content: flex-start; }
+/* Les missions : « Video a la demande ». */
+#jobs { position: fixed; inset: 0; z-index: 44; background: #07090c; display: flex;
+  flex-direction: column; color: var(--ink); }
+#jobs[hidden] { display: none; }
+#jobs .pbar { position: relative; z-index: 3; flex: none; display: flex; align-items: center;
+  gap: 8px; padding: calc(6px + env(safe-area-inset-top)) 8px 6px; background: #0e1116;
+  border-bottom: 1px solid #1a2029; }
+#jobs .pbar .ic svg { width: 21px; height: 21px; }
+#jobs section { flex: 1; min-height: 0; overflow-y: auto; }
+#jobs section[hidden] { display: none; }
+.jwrap { max-width: 560px; margin: 0 auto;
+  padding: 18px 16px calc(20px + env(safe-area-inset-bottom)); animation: rise .3s ease both; }
+.jhead h2 { font-size: 24px; margin: 4px 0 6px; }
+.jhead p { color: #aeb8c5; font-size: 14px; line-height: 1.5; margin: 0 0 16px; }
+.jhead b { color: #f6e3b4; }
+.jcard { display: block; width: 100%; text-align: left; margin-bottom: 12px; padding: 15px;
+  border-radius: 16px; color: var(--ink); background: linear-gradient(150deg,
+  rgba(232,190,104,.08), #121821 55%); border: 1px solid #2a3442; }
+.jcard:active { border-color: #4a5260; }
+.jtop { display: flex; align-items: flex-start; gap: 10px; }
+.jtop b { flex: 1; font-size: 16px; line-height: 1.3; color: #fff; }
+.jprice { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px;
+  border-radius: 999px; font-weight: 800; font-size: 14px; color: #2a1d05;
+  background: linear-gradient(145deg, #f3d48a, #c99a3f);
+  box-shadow: 0 3px 12px rgba(200,150,60,.3); }
+.jcard p { margin: 8px 0 0; color: #aeb8c5; font-size: 13.5px; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.jchip { display: inline-block; margin-top: 10px; padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; background: #1b222c; color: #cfd7e1; }
+.jchip.attente { background: #1d2a40; color: #9fc0ff; }
+.jchip.validee, .jchip.payee { background: #173524; color: #7bd88f; }
+.jchip.refusee { background: #3a2226; color: #ffb4b8; }
+.jchip.full { background: #2a2330; color: #c3a6e0; }
+.jdetail h2 { font-size: 25px; line-height: 1.2; margin: 14px 0 12px; }
+.jbrief { white-space: pre-wrap; color: #d5dce5; font-size: 15px; line-height: 1.55;
+  padding: 14px 15px; border-radius: 14px; background: #10151d; border: 1px solid #222b37;
+  margin-bottom: 14px; word-break: break-word; }
+.jnote { display: flex; gap: 10px; color: #aeb8c5; font-size: 13px; line-height: 1.5;
+  margin: 0 0 16px; }
+.jnote b { color: #fff; word-break: break-all; }
+.jmine { margin: 0 0 14px; }
+.jmine div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0;
+  border-top: 1px solid #1c232d; color: #aeb8c5; font-size: 13px; }
+.jmine div .jchip { margin: 0; }
+.jmine small { flex-basis: 100%; color: #ffb4b8; }
+.jprog { margin-top: 12px; }
+.jprog .meter i { transition: width .3s; background: linear-gradient(90deg, #4f8bf0, #8a4fe8); }
+#jobs .told { min-height: 20px; margin-top: 10px; text-align: center; font-size: 14px; }
+#jobs .told.ok { color: #5fd38d; }
+#jobs .told.bad { color: #e26d76; }
+/* La fin. */
+.pend { flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+  justify-content: center; max-width: 460px; width: 100%; margin: 0 auto;
+  padding: 24px 22px calc(22px + env(safe-area-inset-bottom)); text-align: center; }
+.pend h2 { font-size: 25px; margin: 6px 0 8px; }
+.pend p { color: #aeb8c5; font-size: 15px; line-height: 1.5; margin: 0 0 18px; }
+.pend .gain { display: inline-flex; align-items: center; gap: 8px; margin: 0 auto 16px;
+  padding: 9px 15px; border-radius: 999px; color: #f6e3b4; font-weight: 700;
+  background: rgba(232,190,104,.10); border: 1px solid rgba(232,190,104,.38); }
+.pend .meter { margin: 4px 0 6px; }
+.pend .wide { margin-top: 18px; }
+.perr { color: #e26d76; font-size: 13px; text-align: center; min-height: 0; margin-top: 6px; }
 """
 
 LOGIN_SCRIPT = """
@@ -2536,7 +3030,6 @@ document.addEventListener('fullscreenchange', () => {
 
 $('prev').onclick = () => step(-1);
 $('next').onclick = () => step(1);
-$('mute').onclick = () => { video.muted = !video.muted; };
 $('fav').onclick = async () => {
   if (!watching) return;
   const id = watching, on = !favs.has(id);
@@ -2590,7 +3083,9 @@ addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') seek(-10);
   else if (e.key === 'n' || e.key === 'PageDown') step(1);
   else if (e.key === 'p' || e.key === 'PageUp') step(-1);
-  else if (e.key === 'm') video.muted = !video.muted;
+  else if (e.key === 'm') toggleMute(true);
+  else if (e.key === 'ArrowUp') { e.preventDefault(); nudgeVolume(0.05, $('mute')); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); nudgeVolume(-0.05, $('mute')); }
   else if (e.key === 'Escape' && !isFull()) history.back();
 });
 
@@ -2623,6 +3118,18 @@ addEventListener('popstate', (e) => {
   if (!$('hello').hidden) {
     if (helloStep > 0) helloShow(helloStep - 1);
     history.pushState({v: 'hello'}, '');
+    return;
+  }
+  // « Retour » dans un sondage : il se ferme, les reponses sont gardees.
+  if (!$('poll').hidden) { closePoll(true); return; }
+  // « Retour » dans les missions : la liste, puis Prisme.
+  if (!$('jobs').hidden) {
+    if (!$('jobDetail').hidden && !sending) {
+      history.pushState({v: 'jobs'}, '');
+      showJobs();
+    } else {
+      closeJobs(true);
+    }
     return;
   }
   // « Retour » sur une feuille (demande, recompenses, icone) : elle se baisse.
@@ -3065,6 +3572,7 @@ async function openPerks() {
   paintPerks();
   openSheet('perks');
   refreshGift().then(paintPerks);
+  loadJobs();
   // L'adresse https, celle qui marche partout : demandee d'avance, le partage
   // doit partir au toucher.
   if (!shareBase) {
@@ -3400,6 +3908,7 @@ function lockHide() {
 function lockApp() {
   if (!$('lock').hidden && pinPurpose === 'unlock') return;
   if (!video.paused) video.pause();
+  pausePoll();
   pinPurpose = 'unlock';
   pinStageShow('check');
 }
@@ -3504,8 +4013,983 @@ function paintLockRow() {
 }
 $('helloPin').onclick = () => pinSetup('set');
 
+// -- le son : couper d'un toucher, regler sans bouton de plus -----------------
+// Le haut-parleur garde sa place. Un toucher coupe ou rend le son ; un appui
+// long (ou glisser vers le haut, vers le bas), le survol a la souris et la
+// molette font paraitre un curseur fin, qui s'efface tout seul. Sur iPhone,
+// le volume d'une page ne se regle pas : ce sont les boutons du telephone.
+const VOL_OK = (() => {
+  try { const probe = document.createElement('video'); probe.volume = 0.5;
+        return Math.abs(probe.volume - 0.5) < 0.01; } catch (_) { return false; }
+})();
+const sound = {v: 1, m: false};
+try {
+  const kept = JSON.parse(localStorage.getItem('prisme-son') || '{}');
+  if (typeof kept.v === 'number') sound.v = Math.max(0, Math.min(1, kept.v));
+  sound.m = !!kept.m;
+} catch (_) {}
+let heard = 'a';
+const vol = $('vol');
+let volOwner = null, volHide = null, volHover = false;
+function duelVideo(side) { return $(side === 'a' ? 'duelA' : 'duelB'); }
+function applySound() {
+  for (const el of [video, $('rateVideo')]) {
+    if (VOL_OK) el.volume = sound.v;
+    el.muted = sound.m;
+  }
+  for (const side of ['a', 'b']) {
+    const el = duelVideo(side);
+    if (VOL_OK) el.volume = sound.v;
+    el.muted = sound.m || side !== heard;
+  }
+  document.querySelectorAll('.snd').forEach((b) => b.classList.toggle('muted', sound.m));
+  paintVol();
+  dress();
+}
+function keepSound() {
+  try { localStorage.setItem('prisme-son', JSON.stringify(sound)); } catch (_) {}
+}
+function sayVolume(button) {
+  const text = sound.m ? '🔇 Son coupé' : (sound.v < 0.34 ? '🔈 ' : sound.v < 0.67 ? '🔉 ' : '🔊 ') +
+    Math.round(sound.v * 100) + ' %';
+  if (button && button.closest('#poll')) pollFlash(text); else flash(text);
+}
+function setVolume(value, button) {
+  sound.v = Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+  // Monter le son le rend ; le descendre a zero, c'est le couper.
+  sound.m = sound.v === 0;
+  applySound();
+  keepSound();
+  sayVolume(button);
+}
+function nudgeVolume(by, button) {
+  if (!VOL_OK) { sayPhoneButtons(button); return; }
+  setVolume((sound.m ? 0 : sound.v) + by, button);
+  if (button) showVol(button, 1400);
+}
+function toggleMute(say, button) {
+  sound.m = !sound.m;
+  if (!sound.m && sound.v === 0) sound.v = 0.5;
+  applySound();
+  keepSound();
+  if (say) sayVolume(button);
+}
+function sayPhoneButtons(button) {
+  const text = 'Volume : avec les boutons du téléphone';
+  if (button && button.closest('#poll')) pollFlash(text); else flash(text);
+}
+function paintVol() {
+  const level = sound.m ? 0 : sound.v;
+  $('volFill').style.height = (level * 100) + '%';
+  $('volKnob').style.bottom = (level * 100) + '%';
+  $('volPct').textContent = sound.m ? 'coupé' : Math.round(sound.v * 100) + ' %';
+  vol.classList.toggle('muted', sound.m);
+}
+function showVol(button, hideAfter) {
+  if (!VOL_OK) return;
+  clearTimeout(volHide);
+  if (volOwner !== button) {
+    // Pose sur la barre du bouton : le curseur suit le plein ecran et le
+    // quart de tour de l'image, comme la barre elle-meme.
+    button.parentElement.appendChild(vol);
+    volOwner = button;
+    vol.classList.toggle('below', !!button.closest('.pbar'));
+  }
+  // Centre sur le bouton, sans deborder de la barre.
+  const room = button.parentElement.clientWidth - 50;
+  vol.style.left = Math.max(6, Math.min(room, button.offsetLeft + button.offsetWidth / 2 - 22)) +
+    'px';
+  paintVol();
+  vol.classList.add('on');
+  if (hideAfter) volHide = setTimeout(hideVol, hideAfter);
+}
+function hideVol() {
+  clearTimeout(volHide);
+  if (volHover || volDragging) return;
+  vol.classList.remove('on');
+}
+function volFrom(e) {
+  const track = $('volTrack');
+  const tall = track.offsetHeight || 1;
+  // offsetY : dans le repere du curseur, meme tourne d'un quart de tour.
+  const y = typeof e.offsetY === 'number' && e.target === track ? e.offsetY
+    : e.clientY - track.getBoundingClientRect().top;
+  return 1 - Math.max(0, Math.min(tall, y)) / tall;
+}
+let volDragging = false;
+$('volTrack').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  volDragging = true;
+  try { $('volTrack').setPointerCapture(e.pointerId); } catch (_) {}
+  clearTimeout(volHide);
+  setVolume(volFrom(e), volOwner);
+});
+$('volTrack').addEventListener('pointermove', (e) => {
+  if (volDragging) setVolume(volFrom(e), volOwner);
+});
+function volRelease() {
+  if (!volDragging) return;
+  volDragging = false;
+  volHide = setTimeout(hideVol, 1500);
+}
+$('volTrack').addEventListener('pointerup', volRelease);
+$('volTrack').addEventListener('pointercancel', volRelease);
+vol.addEventListener('pointerup', (e) => e.stopPropagation());
+vol.addEventListener('click', (e) => e.stopPropagation());
+vol.addEventListener('pointerenter', (e) => {
+  if (e.pointerType === 'mouse') { volHover = true; clearTimeout(volHide); }
+});
+vol.addEventListener('pointerleave', (e) => {
+  if (e.pointerType !== 'mouse') return;
+  volHover = false;
+  volHide = setTimeout(hideVol, 500);
+});
+vol.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  nudgeVolume(e.deltaY < 0 ? 0.05 : -0.05, volOwner);
+}, {passive: false});
+// Toucher en dehors : le curseur se range.
+document.addEventListener('pointerdown', (e) => {
+  if (vol.classList.contains('on') && !vol.contains(e.target) &&
+      !(volOwner && volOwner.contains(e.target))) {
+    volHover = false;
+    hideVol();
+  }
+}, true);
+
+function soundButton(button) {
+  let hold = null, held = false, pressed = false, startY = 0, startV = 0, hoverTimer = null;
+  button.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    held = false;
+    pressed = true;
+    startY = e.clientY;
+    startV = sound.m ? 0 : sound.v;
+    clearTimeout(hold);
+    hold = setTimeout(() => {
+      held = true;
+      if (!VOL_OK) { sayPhoneButtons(button); return; }
+      if (navigator.vibrate) { try { navigator.vibrate(15); } catch (_) {} }
+      showVol(button, 0);
+    }, 380);
+    try { button.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  button.addEventListener('pointermove', (e) => {
+    if (!pressed) return;
+    const moved = startY - e.clientY;
+    // Glisser depuis le haut-parleur : le volume suit le doigt, sans attendre.
+    if (!held && Math.abs(moved) > 10 && VOL_OK) {
+      clearTimeout(hold);
+      held = true;
+      showVol(button, 0);
+    }
+    if (held && VOL_OK) setVolume(startV + moved / 130, button);
+  });
+  const release = () => {
+    clearTimeout(hold);
+    pressed = false;
+    if (held && VOL_OK) volHide = setTimeout(hideVol, 1500);
+  };
+  button.addEventListener('pointerup', release);
+  button.addEventListener('pointercancel', () => { release(); held = true; });
+  button.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Un appui long a regle le volume : il ne coupe pas le son en plus.
+    if (held) { held = false; return; }
+    toggleMute(false, button);
+  });
+  button.addEventListener('contextmenu', (e) => e.preventDefault());
+  // A la souris : le survol montre le curseur, la molette le regle.
+  button.addEventListener('pointerenter', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => showVol(button, 0), 280);
+  });
+  button.addEventListener('pointerleave', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    clearTimeout(hoverTimer);
+    clearTimeout(volHide);
+    volHide = setTimeout(hideVol, 500);
+  });
+  button.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    nudgeVolume(e.deltaY < 0 ? 0.05 : -0.05, button);
+  }, {passive: false});
+}
+soundButton($('mute'));
+soundButton($('pollMute'));
+$('mute').classList.add('snd');
+
+// -- les sondages : noter des videos, ou choisir entre deux ---------------------
+const POLL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="m8.5 12 2.3 2.3 4.7-4.8"/></svg>';
+const DUEL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7.5" height="16" rx="2"/><rect x="13.5" y="4" width="7.5" height="16" rx="2"/></svg>';
+const TEXT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>';
+const SCALE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20v-4M9 20v-8M14 20v-11M19 20V5"/></svg>';
+function pollIcon(p) {
+  return {duel: DUEL_ICON, choix: TEXT_ICON, echelle: SCALE_ICON}[p.kind] || POLL_ICON;
+}
+function isText(p) { return p.kind === 'choix' || p.kind === 'echelle'; }
+let polls = [], poll = null, pollIndex = 0, pollShownAt = 0, pollSending = false;
+let pollsLoaded = false, pollsLoading = false, toastTimer = null, toastWait = null;
+// Les sondages deja annonces pendant cette visite : la notification revient
+// a chaque ouverture de Prisme, et pour chaque sondage arrive entre-temps.
+const announced = new Set();
+
+function pollAnswered(p) { return p.items.filter((it) => it.id in p.answers).length; }
+function pollWhat(p) {
+  const n = p.items.length, many = n > 1 ? 's' : '';
+  if (p.kind === 'duel') return n + ' duel' + many + ' A ou B';
+  if (p.kind === 'choix') return n + ' question' + many;
+  if (p.kind === 'echelle') return n + ' question' + many + ', de 0 à 5';
+  return n + ' vidéo' + many + ' à noter';
+}
+async function loadPolls(announce) {
+  if (pollsLoading) return;
+  pollsLoading = true;
+  const d = await getJSON('/api/sondages');
+  pollsLoading = false;
+  pollsLoaded = true;
+  if (!d) return;
+  polls = d.surveys || [];
+  // Un sondage ouvert a l'ecran garde les reponses deja donnees ici.
+  if (poll) {
+    const same = polls.find((p) => p.id === poll.id);
+    if (same) Object.assign(same.answers, poll.answers);
+  }
+  paintPollLine();
+  if (announce) announcePolls();
+}
+function checkPolls(ids) {
+  if (!pollsLoaded) return;
+  const known = new Set(polls.map((p) => p.id));
+  if (ids.length !== known.size || ids.some((id) => !known.has(id))) loadPolls(true);
+}
+function paintPollLine() {
+  const line = $('pollLine');
+  line.replaceChildren();
+  if (!polls.length) { line.hidden = true; return; }
+  const p = polls[0];
+  const icon = document.createElement('span');
+  icon.className = 'pi';
+  icon.innerHTML = pollIcon(p);
+  const text = document.createElement('span');
+  text.className = 'pt';
+  const title = document.createElement('b');
+  title.textContent = polls.length > 1 ? polls.length + ' sondages vous attendent'
+                                       : 'Sondage : ' + p.title;
+  const sub = document.createElement('small');
+  const done = pollAnswered(p);
+  sub.textContent = (polls.length > 1 ? p.title + ' — ' : '') + pollWhat(p) +
+    (done ? ' · ' + done + ' / ' + p.items.length + ' faits' : '') +
+    (p.reward ? ' · compte pour ' + p.reward + ' vidéos' : '');
+  text.append(title, sub);
+  const go = document.createElement('span');
+  go.className = 'pg';
+  go.textContent = done ? 'Reprendre ›' : 'Participer ›';
+  line.append(icon, text, go);
+  line.hidden = false;
+}
+$('pollLine').onclick = () => { if (polls.length) openPoll(polls[0].id); };
+
+function announcePolls() {
+  const fresh = polls.filter((p) => !announced.has(p.id));
+  if (!fresh.length) return;
+  clearTimeout(toastWait);
+  // Ni sur l'accueil, ni sur le verrou, ni sur une feuille (l'icone, une
+  // demande), ni pendant une video : apres.
+  if (!$('hello').hidden || !$('lock').hidden || !$('poll').hidden ||
+      SHEETS.some((id) => !$(id).hidden) ||
+      player.style.display === 'block' || document.hidden) {
+    toastWait = setTimeout(announcePolls, 2500);
+    return;
+  }
+  for (const p of polls) announced.add(p.id);
+  const p = fresh[0];
+  $('toast').querySelector('.tico').innerHTML = pollIcon(p);
+  $('toastTitle').textContent = fresh.length > 1 ? fresh.length + ' sondages vous attendent'
+    : (pollAnswered(p) ? 'Votre sondage vous attend : ' : 'Nouveau sondage : ') + p.title;
+  $('toastSub').textContent = pollWhat(p) + (p.reward ? ' · compte pour ' + p.reward +
+    ' vidéos dans vos récompenses' : '');
+  $('toastGo').dataset.id = p.id;
+  const toast = $('toast');
+  toast.hidden = false;
+  requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('on')));
+  if (navigator.vibrate) { try { navigator.vibrate(30); } catch (_) {} }
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 14000);
+}
+function hideToast() {
+  clearTimeout(toastTimer);
+  const toast = $('toast');
+  toast.classList.remove('on');
+  setTimeout(() => { if (!toast.classList.contains('on')) toast.hidden = true; }, 500);
+}
+$('toastGo').onclick = () => { hideToast(); openPoll($('toastGo').dataset.id); };
+$('toastNo').onclick = hideToast;
+// Glisser la notification vers le haut la range, comme celles du telephone.
+let toastY = null;
+$('toast').addEventListener('pointerdown', (e) => { toastY = e.clientY; });
+$('toast').addEventListener('pointerup', (e) => {
+  if (toastY !== null && e.clientY - toastY < -25) hideToast();
+  toastY = null;
+});
+
+function pollSection(id) {
+  for (const one of ['pollIntro', 'pollRate', 'pollDuel', 'pollText', 'pollEnd']) {
+    $(one).hidden = one !== id;
+  }
+}
+function openPoll(id) {
+  const p = polls.find((one) => one.id === id) || polls[0];
+  if (!p) return;
+  hideToast();
+  poll = p;
+  $('poll').hidden = false;
+  document.body.classList.add('watching');
+  if (!(history.state && history.state.v === 'poll')) history.pushState({v: 'poll'}, '');
+  showPollIntro();
+  schedulePresence();
+}
+function showPollIntro() {
+  const p = poll, duel = p.kind === 'duel', text = isText(p);
+  pollSection('pollIntro');
+  // Sans video, pas de son a regler.
+  $('pollMute').hidden = text;
+  $('pollCount').textContent = duel ? 'Duels' : 'Sondage';
+  $('pollProg').style.width = (100 * pollAnswered(p) / p.items.length) + '%';
+  $('pollKind').innerHTML = pollIcon(p);
+  $('pollKind').append({duel: 'Duels — A ou B', choix: 'Sondage — vos réponses',
+                        echelle: 'Sondage — votre intérêt'}[p.kind] || 'Sondage — vos notes');
+  $('pollTitle').textContent = p.title || (duel ? 'Laquelle préférez-vous ?' : 'Votre avis');
+  $('pollMsg').textContent = p.message || '';
+  $('pollMsg').hidden = !p.message;
+  const facts = $('pollFacts');
+  facts.replaceChildren();
+  const minutes = Math.max(1, Math.round(p.items.length * (duel ? 25 : text ? 6 : 15) / 60));
+  for (const [text, gold] of [[pollWhat(p), false], ['≈ ' + minutes + ' min', false],
+      [p.reward ? '+' + p.reward + ' vidéos au compteur' : '', true]]) {
+    if (!text) continue;
+    const chip = document.createElement('span');
+    if (gold) chip.className = 'gold';
+    chip.textContent = text;
+    facts.appendChild(chip);
+  }
+  const how = $('pollHow');
+  how.replaceChildren();
+  const steps = p.kind === 'choix' ? [
+    'Une question à la fois : une idée, une envie, une expérience…',
+    'Touchez la réponse qui vous correspond (« ' + p.options.join(' », « ') +
+      ' ») : la suivante arrive aussitôt.',
+    'Vos réponses ne sont vues que par l’organisateur, et restent gardées si vous vous arrêtez.',
+  ] : p.kind === 'echelle' ? [
+    'Une proposition à la fois : une idée, une envie, une pratique…',
+    'Dites votre intérêt de 0 (' + p.ends[0].toLowerCase() + ') à 5 (' +
+      p.ends[1].toLowerCase() + ') : la suivante arrive aussitôt.',
+    'Vos réponses ne sont vues que par l’organisateur, et restent gardées si vous vous arrêtez.',
+  ] : duel ? [
+    'Deux vidéos jouent en même temps, l’une au-dessus de l’autre.',
+    'Touchez celle que vous voulez entendre ; avancez dans chacune avec sa barre.',
+    'Choisissez « A » ou « B » : le duel suivant arrive aussitôt.',
+  ] : [
+    'Une vidéo s’affiche : regardez-en un peu, avancez si vous voulez.',
+    'Notez-la de 1 (pas pour moi) à 5 (j’adore) : la suivante arrive aussitôt.',
+    'Vos réponses sont gardées : vous pouvez vous arrêter et reprendre plus tard.',
+  ];
+  steps.forEach((step, i) => {
+    const row = document.createElement('div');
+    const n = document.createElement('b');
+    n.textContent = String(i + 1);
+    const t = document.createElement('span');
+    t.textContent = step;
+    row.append(n, t);
+    how.appendChild(row);
+  });
+  const done = pollAnswered(p);
+  $('pollStart').textContent = done ? 'Reprendre (' + done + ' / ' + p.items.length + ')'
+                                    : 'Commencer';
+}
+function firstOpen(p) {
+  const i = p.items.findIndex((it) => !(it.id in p.answers));
+  return i < 0 ? 0 : i;
+}
+function nextOpen(p, from) {
+  for (let i = from + 1; i < p.items.length; i++) if (!(p.items[i].id in p.answers)) return i;
+  for (let i = 0; i <= from; i++) if (!(p.items[i].id in p.answers)) return i;
+  return Math.min(from + 1, p.items.length - 1);
+}
+$('pollStart').onclick = () => { if (poll) { pollIndex = firstOpen(poll); showItem(); } };
+$('pollLater').onclick = () => closePoll(false);
+$('pollClose').onclick = () => closePoll(false);
+
+function stopPollMedia() {
+  for (const el of [$('rateVideo'), $('duelA'), $('duelB')]) {
+    el.pause();
+    el.removeAttribute('src');
+    el.load();
+  }
+}
+function pausePoll() {
+  for (const el of [$('rateVideo'), $('duelA'), $('duelB')]) if (!el.paused) el.pause();
+}
+function closePoll(fromHistory) {
+  if ($('poll').hidden) return;
+  stopPollMedia();
+  $('poll').hidden = true;
+  if (player.style.display !== 'block' && $('hello').hidden) {
+    document.body.classList.remove('watching');
+  }
+  if (!fromHistory && history.state && history.state.v === 'poll') history.back();
+  poll = null;
+  paintPollLine();
+  schedulePresence();
+}
+
+let pollFlashTimer = null;
+function pollFlash(text, where) {
+  const box = where || (!$('pollDuel').hidden ? $(heard === 'a' ? 'flashA' : 'flashB')
+                                              : $('rateFlash'));
+  box.textContent = text;
+  box.classList.add('on');
+  clearTimeout(pollFlashTimer);
+  pollFlashTimer = setTimeout(() => box.classList.remove('on'), 700);
+}
+function wireSeek(el, bar, now, total) {
+  let drag = false;
+  const paint = () => {
+    const d = el.duration || 0;
+    if (!drag) bar.value = d ? Math.round(1000 * el.currentTime / d) : 0;
+    now.textContent = clock(drag ? d * bar.value / 1000 : el.currentTime);
+    total.textContent = d ? clock(d) : '0:00';
+  };
+  el.addEventListener('timeupdate', paint);
+  el.addEventListener('loadedmetadata', paint);
+  el.addEventListener('emptied', paint);
+  bar.addEventListener('input', () => { drag = true; paint(); });
+  bar.addEventListener('change', () => {
+    const d = el.duration || 0;
+    if (d) el.currentTime = d * bar.value / 1000;
+    drag = false;
+    paint();
+  });
+  // La barre ne compte pas comme un toucher sur l'image.
+  bar.parentElement.addEventListener('click', (e) => e.stopPropagation());
+}
+wireSeek($('rateVideo'), $('rateSeek'), $('rateNow'), $('rateTotal'));
+wireSeek($('duelA'), $('seekA'), $('nowA'), $('totA'));
+wireSeek($('duelB'), $('seekB'), $('nowB'), $('totB'));
+// Un toucher sur l'image : pause ou reprise, comme partout dans Prisme.
+$('rateStage').addEventListener('click', () => {
+  const el = $('rateVideo');
+  if (el.paused) { el.play().catch(() => {}); pollFlash('▶', $('rateFlash')); }
+  else { el.pause(); pollFlash('❚❚', $('rateFlash')); }
+});
+// Le duel : toucher une video la fait entendre ; la toucher encore, pause.
+for (const side of ['a', 'b']) {
+  const pane = $(side === 'a' ? 'paneA' : 'paneB');
+  pane.addEventListener('click', () => {
+    const el = duelVideo(side);
+    const box = $(side === 'a' ? 'flashA' : 'flashB');
+    if (heard !== side) {
+      heard = side;
+      applySound();
+      paintHeard();
+      if (el.paused) el.play().catch(() => {});
+      pollFlash(sound.m ? 'Son coupé' : '🔊 ' + side.toUpperCase(), box);
+      return;
+    }
+    if (el.paused) { el.play().catch(() => {}); pollFlash('▶', box); }
+    else { el.pause(); pollFlash('❚❚', box); }
+  });
+}
+function paintHeard() {
+  $('paneA').classList.toggle('heard', heard === 'a');
+  $('paneB').classList.toggle('heard', heard === 'b');
+}
+
+function paintPollHead() {
+  const p = poll;
+  $('pollCount').textContent = (p.kind === 'duel' ? 'Duel ' : isText(p) ? 'Question ' : '') +
+    (pollIndex + 1) + ' / ' + p.items.length;
+  $('pollProg').style.width = (100 * pollAnswered(p) / p.items.length) + '%';
+}
+function showItem() {
+  const p = poll, it = p.items[pollIndex];
+  if (!it) return;
+  paintPollHead();
+  pollShownAt = Date.now();
+  $('rateErr').textContent = '';
+  $('duelErr').textContent = '';
+  const given = p.answers[it.id];
+  $('textErr').textContent = '';
+  if (isText(p)) {
+    pollSection('pollText');
+    $('textNum').textContent = 'Question ' + (pollIndex + 1) + ' sur ' + p.items.length;
+    $('textQ').textContent = it.text;
+    $('textDetail').textContent = it.detail || '';
+    $('textDetail').hidden = !it.detail;
+    // La carte rejoue son entree a chaque question.
+    const card = $('textCard');
+    card.style.animation = 'none';
+    void card.offsetWidth;
+    card.style.animation = '';
+    const choice = p.kind === 'choix';
+    $('textOpts').hidden = !choice;
+    $('textScaleBox').hidden = choice;
+    if (choice) {
+      const box = $('textOpts');
+      box.replaceChildren();
+      p.options.forEach((label, i) => {
+        const b = document.createElement('button');
+        b.dataset.v = String(i);
+        const n = document.createElement('i');
+        n.textContent = String(i + 1);
+        b.append(n, label);
+        b.onclick = () => answerPoll(i);
+        box.appendChild(b);
+      });
+    } else {
+      $('textLow').textContent = '0 = ' + p.ends[0];
+      $('textHigh').textContent = '5 = ' + p.ends[1];
+    }
+    const box = choice ? $('textOpts') : $('textScale');
+    box.classList.toggle('picked', given !== undefined);
+    box.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', Number(b.dataset.v) === given);
+    });
+    $('textBack').disabled = pollIndex === 0;
+    return;
+  }
+  if (p.kind === 'notes') {
+    pollSection('pollRate');
+    const el = $('rateVideo');
+    el.src = withKey('/video/' + it.v.id);
+    $('rateName').textContent = it.v.name;
+    applySound();
+    el.play().catch(() => {});
+    $('rateStars').classList.toggle('picked', !!given);
+    $('rateStars').querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', Number(b.dataset.n) === given);
+    });
+    $('rateBack').disabled = pollIndex === 0;
+  } else {
+    pollSection('pollDuel');
+    heard = 'a';
+    for (const side of ['a', 'b']) {
+      const el = duelVideo(side);
+      el.src = withKey('/video/' + it[side].id);
+      $(side === 'a' ? 'nameA' : 'nameB').textContent = it[side].name;
+      $(side === 'a' ? 'paneA' : 'paneB').classList.remove('won');
+    }
+    applySound();
+    paintHeard();
+    for (const side of ['a', 'b']) duelVideo(side).play().catch(() => {});
+    $('duelPicks').classList.toggle('picked', !!given);
+    $('duelPicks').querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.side === given);
+    });
+    $('duelBack').disabled = pollIndex === 0;
+  }
+}
+async function answerPoll(value) {
+  if (pollSending || !poll) return;
+  const p = poll, it = p.items[pollIndex], duel = p.kind === 'duel', text = isText(p);
+  const err = duel ? $('duelErr') : text ? $('textErr') : $('rateErr');
+  const box = duel ? $('duelPicks') : p.kind === 'choix' ? $('textOpts')
+    : p.kind === 'echelle' ? $('textScale') : $('rateStars');
+  // La valeur d'un bouton : son cote, son numero (notes), sa place (texte).
+  const valueOf = (b) => duel ? b.dataset.side : text ? Number(b.dataset.v) : Number(b.dataset.n);
+  pollSending = true;
+  err.textContent = '';
+  box.classList.add('picked');
+  box.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('on', valueOf(b) === value);
+  });
+  if (duel) $(value === 'a' ? 'paneA' : 'paneB').classList.add('won');
+  let d;
+  try {
+    const r = await fetch('/api/sondage', {method: 'POST',
+      headers: headers({'Content-Type': 'application/json'}),
+      body: JSON.stringify({survey: p.id, item: it.id, value,
+                            seconds: (Date.now() - pollShownAt) / 1000})});
+    d = await r.json().catch(() => ({}));
+    if (!r.ok) d.ok = false;
+  } catch (_) {
+    d = {ok: false, error: 'Pas de connexion : réessayez dans un instant.'};
+  }
+  pollSending = false;
+  if (poll !== p) return;
+  if (!d.ok) {
+    err.textContent = d.error || 'L’envoi a échoué, réessayez.';
+    const before = p.answers[it.id];
+    box.classList.toggle('picked', before !== undefined);
+    box.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', valueOf(b) === before);
+    });
+    $('paneA').classList.remove('won');
+    $('paneB').classList.remove('won');
+    return;
+  }
+  p.answers[it.id] = value;
+  paintPollHead();
+  if (d.done) { setTimeout(() => { if (poll === p) finishPoll(d); }, 500); return; }
+  setTimeout(() => {
+    if (poll !== p) return;
+    pollIndex = nextOpen(p, pollIndex);
+    showItem();
+  }, duel ? 600 : text ? 320 : 380);
+}
+$('rateStars').querySelectorAll('button').forEach((b) => {
+  b.onclick = () => answerPoll(Number(b.dataset.n));
+});
+$('duelPicks').querySelectorAll('button').forEach((b) => {
+  b.onclick = () => answerPoll(b.dataset.side);
+});
+$('rateBack').onclick = () => { if (pollIndex > 0) { pollIndex -= 1; showItem(); } };
+$('duelBack').onclick = () => { if (pollIndex > 0) { pollIndex -= 1; showItem(); } };
+$('textBack').onclick = () => { if (pollIndex > 0) { pollIndex -= 1; showItem(); } };
+$('textScale').querySelectorAll('button').forEach((b) => {
+  b.onclick = () => answerPoll(Number(b.dataset.v));
+});
+
+function finishPoll(d) {
+  const p = poll;
+  stopPollMedia();
+  pollSection('pollEnd');
+  $('pollCount').textContent = 'Terminé';
+  $('pollProg').style.width = '100%';
+  polls = polls.filter((one) => one.id !== p.id);
+  $('pollThanks').textContent = p.kind === 'duel'
+    ? 'Vos choix aident à décider quelles vidéos ajouter à Prisme.'
+    : isText(p) ? 'Vos réponses aident à vous proposer ce qui vous plaît vraiment.'
+    : 'Vos notes aident à choisir les prochaines vidéos de Prisme.';
+  const reward = d.reward || 0;
+  $('pollGain').hidden = !reward;
+  $('pollGain').textContent = '+' + reward + ' vidéos comptées pour vos récompenses';
+  if (typeof d.seen === 'number') {
+    seen = d.seen;
+    if (d.goal) goal = d.goal;
+  }
+  const mail = profile && profile.email;
+  $('pollMeter').hidden = !mail || !reward;
+  if (mail && reward) {
+    $('pollSeen').textContent = Math.min(seen, goal) + ' / ' + goal + ' vidéos';
+    $('pollPrize').textContent = prize + ' €';
+    const before = Math.max(0, seen - reward);
+    $('pollBar').style.transition = 'none';
+    $('pollBar').style.width = Math.min(100, 100 * before / goal) + '%';
+    setTimeout(() => {
+      $('pollBar').style.transition = '';
+      $('pollBar').style.width = Math.max(3, Math.min(100, 100 * seen / goal)) + '%';
+    }, 350);
+  }
+  $('pollDone').textContent = polls.length ? 'Le sondage suivant' : 'Retour à Prisme';
+  paintGift();
+  paintPollLine();
+}
+$('pollDone').onclick = () => {
+  if (polls.length) { openPoll(polls[0].id); return; }
+  closePoll(false);
+};
+// Au clavier (un ordinateur) : 1 a 5 notent, A et B choisissent.
+addEventListener('keydown', (e) => {
+  if ($('poll').hidden || !poll || !$('lock').hidden) return;
+  if (e.key === 'Escape') { e.preventDefault(); closePoll(false); return; }
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    nudgeVolume(e.key === 'ArrowUp' ? 0.05 : -0.05, $('pollMute'));
+    return;
+  }
+  if (e.key === ' ') { e.preventDefault(); return; }
+  if (!$('pollText').hidden && poll.kind === 'echelle' && e.key >= '0' && e.key <= '5') {
+    answerPoll(Number(e.key));
+  } else if (!$('pollText').hidden && poll.kind === 'choix' && e.key >= '1' &&
+             Number(e.key) <= poll.options.length) {
+    answerPoll(Number(e.key) - 1);
+  } else if (!$('pollRate').hidden && e.key >= '1' && e.key <= '5') answerPoll(Number(e.key));
+  else if (!$('pollDuel').hidden && (e.key === 'a' || e.key === 'b')) answerPoll(e.key);
+  else if (e.key === 'm') toggleMute(true, $('pollMute'));
+});
+applySound();
+
+// -- les missions : « Video a la demande » ------------------------------------
+let jobs = [], job = null, jobChunk = 8 * 1024 * 1024, jobEmail = '', sending = null;
+function euros(n) { return n + ' €'; }
+function megas(bytes) {
+  return bytes >= 1024 ** 3 ? (bytes / 1024 ** 3).toFixed(1).replace('.', ',') + ' Go'
+                            : Math.max(1, Math.round(bytes / 1024 ** 2)) + ' Mo';
+}
+const JOB_STATES = {attente: 'En cours d’examen', validee: '✓ Validée — votre bon arrive',
+                    payee: '✓ Validée — bon envoyé', refusee: 'Refusée'};
+async function loadJobs() {
+  const d = await getJSON('/api/missions');
+  if (!d) return;
+  jobs = d.missions || [];
+  jobEmail = d.email || '';
+  if (d.chunk) jobChunk = d.chunk;
+  paintJobsCard();
+  if (!$('jobs').hidden) {
+    if (job) { job = jobs.find((one) => one.id === job.id) || null; }
+    if (job && !$('jobDetail').hidden) paintJob(); else paintJobs();
+  }
+}
+function paintJobsCard() {
+  const open = jobs.filter((one) => !one.full);
+  $('jobsCard').hidden = !jobs.length;
+  const best = open.reduce((top, one) => Math.max(top, one.price), 0);
+  $('jobsSub').textContent = open.length
+    ? open.length + ' mission' + (open.length > 1 ? 's' : '') + ' en ce moment' +
+      (best ? ', jusqu’à ' + euros(best) + ' en bon d’achat Amazon' : '') +
+      ' : filmez, envoyez, recevez votre bon.'
+    : 'Les missions en cours sont complètes : de nouvelles arrivent bientôt.';
+}
+function openJobs(id) {
+  $('perks').hidden = true;
+  $('jobs').hidden = false;
+  document.body.classList.add('watching');
+  if (history.state && history.state.v === 'sheet') history.replaceState({v: 'jobs'}, '');
+  else if (!(history.state && history.state.v === 'jobs')) history.pushState({v: 'jobs'}, '');
+  if (id) { job = jobs.find((one) => one.id === id) || null; }
+  if (job) showJob(); else showJobs();
+  loadJobs();
+  schedulePresence();
+}
+function closeJobs(fromHistory) {
+  if ($('jobs').hidden) return true;
+  if (sending && !confirm('Une vidéo est en cours d’envoi : l’arrêter ?')) {
+    if (fromHistory) history.pushState({v: 'jobs'}, '');
+    return false;
+  }
+  stopSending();
+  $('jobs').hidden = true;
+  job = null;
+  if (player.style.display !== 'block' && $('hello').hidden && $('poll').hidden) {
+    document.body.classList.remove('watching');
+  }
+  if (!fromHistory && history.state && history.state.v === 'jobs') history.back();
+  schedulePresence();
+  return true;
+}
+$('jobsOpen').onclick = () => openJobs();
+$('jobsClose').onclick = () => {
+  if (!$('jobDetail').hidden) { if (!sending || confirm('Une vidéo est en cours d’envoi : l’arrêter ?')) { stopSending(); showJobs(); } return; }
+  closeJobs(false);
+};
+function showJobs() {
+  job = null;
+  $('jobsList').hidden = false;
+  $('jobDetail').hidden = true;
+  $('jobsBar').textContent = 'Vidéo à la demande';
+  paintJobs();
+}
+function paintJobs() {
+  const mail = jobEmail || (profile && profile.email) || '';
+  $('jobsLead').replaceChildren();
+  $('jobsLead').append('Réalisez une mission et envoyez votre vidéo : une fois validée, ' +
+    'vous recevez un bon d’achat Amazon' + (mail ? ' à ' : '.'));
+  if (mail) {
+    const b = document.createElement('b');
+    b.textContent = mail;
+    $('jobsLead').append(b, '.');
+  }
+  const box = $('jobsCards');
+  box.replaceChildren();
+  for (const one of jobs) {
+    const card = document.createElement('button');
+    card.className = 'jcard';
+    const top = document.createElement('div');
+    top.className = 'jtop';
+    const title = document.createElement('b');
+    title.textContent = one.title;
+    const price = document.createElement('span');
+    price.className = 'jprice';
+    price.textContent = euros(one.price);
+    top.append(title, price);
+    const text = document.createElement('p');
+    text.textContent = one.brief;
+    card.append(top, text);
+    const last = one.mine[0];
+    if (last || one.full) {
+      const chip = document.createElement('span');
+      chip.className = 'jchip ' + (last ? last.state : 'full');
+      chip.textContent = last ? JOB_STATES[last.state] : 'Complète';
+      card.appendChild(chip);
+    }
+    card.onclick = () => { job = one; showJob(); };
+    box.appendChild(card);
+  }
+  $('jobsEmpty').hidden = !!jobs.length;
+}
+function showJob() {
+  $('jobsList').hidden = true;
+  $('jobDetail').hidden = false;
+  $('jobsBar').textContent = '‹ Toutes les offres';
+  $('jobTold').textContent = '';
+  $('jobTold').className = 'told';
+  paintJob();
+  $('jobDetail').scrollTop = 0;
+}
+$('jobsBar').onclick = () => {
+  if (!$('jobDetail').hidden && (!sending || confirm('Une vidéo est en cours d’envoi : l’arrêter ?'))) {
+    stopSending();
+    showJobs();
+  }
+};
+function paintJob() {
+  if (!job) return showJobs();
+  $('jobPrice').textContent = euros(job.price) + ' en bon d’achat';
+  $('jobTitle').textContent = job.title;
+  $('jobBrief').textContent = job.brief || 'Pas de consigne particulière.';
+  const mail = jobEmail || (profile && profile.email) || '';
+  $('jobNote').replaceChildren();
+  $('jobNote').append('Votre vidéo n’est vue que par l’organisateur. Une fois la mission ' +
+    'validée, votre bon d’achat Amazon de ' + euros(job.price) + ' est envoyé à ');
+  const b = document.createElement('b');
+  b.textContent = mail || 'votre email (à ajouter dans votre profil)';
+  $('jobNote').append(b, '.');
+  const mine = $('jobMine');
+  mine.replaceChildren();
+  for (const one of job.mine) {
+    const row = document.createElement('div');
+    const chip = document.createElement('span');
+    chip.className = 'jchip ' + one.state;
+    chip.textContent = JOB_STATES[one.state] || one.state;
+    const when = document.createElement('span');
+    when.textContent = 'Envoyée le ' + new Date(one.at * 1000).toLocaleDateString('fr-FR') +
+      ' · ' + megas(one.size);
+    row.append(chip, when);
+    if (one.note) {
+      const note = document.createElement('small');
+      note.textContent = one.note;
+      row.appendChild(note);
+    }
+    mine.appendChild(row);
+  }
+  const pick = $('jobPick');
+  pick.hidden = !!sending;
+  pick.disabled = job.full;
+  pick.textContent = job.full ? 'Mission complète' : job.mine.length ? 'Envoyer une autre vidéo'
+                                                                    : 'Envoyer ma vidéo';
+}
+$('jobPick').onclick = () => {
+  const mail = jobEmail || (profile && profile.email) || '';
+  if (!mail) {
+    $('jobTold').textContent = 'Ajoutez d’abord votre email : c’est là qu’arrivera votre bon.';
+    $('jobTold').className = 'told bad';
+    setTimeout(() => {
+      if (closeJobs(false)) setTimeout(() => { openHello(0, true); $('helloMail').focus(); }, 350);
+    }, 1400);
+    return;
+  }
+  $('jobFile').value = '';
+  $('jobFile').click();
+};
+$('jobFile').addEventListener('change', () => {
+  const file = $('jobFile').files && $('jobFile').files[0];
+  if (file) sendVideo(file);
+});
+function stopSending() {
+  if (sending) { sending.stop = true; if (sending.ctrl) sending.ctrl.abort(); }
+  sending = null;
+  $('jobProg').hidden = true;
+}
+$('jobCancel').onclick = () => {
+  if (!confirm('Arrêter l’envoi de cette vidéo ?')) return;
+  stopSending();
+  $('jobTold').textContent = 'Envoi arrêté.';
+  $('jobTold').className = 'told';
+  paintJob();
+};
+function paintSend(have, size) {
+  const part = size ? have / size : 0;
+  $('jobBar').style.width = Math.max(2, 100 * part) + '%';
+  $('jobProgText').textContent = 'Envoi : ' + Math.floor(100 * part) + ' % — ' + megas(have) +
+    ' / ' + megas(size) + ' · gardez Prisme ouvert';
+}
+async function postJSON(url, payload) {
+  try {
+    const r = await fetch(url, {method: 'POST',
+      headers: headers({'Content-Type': 'application/json'}), body: JSON.stringify(payload)});
+    return await r.json().catch(() => ({ok: false, error: 'Réponse illisible.'}));
+  } catch (_) {
+    return {ok: false, error: 'Pas de connexion : réessayez dans un instant.'};
+  }
+}
+async function sendVideo(file) {
+  const target = job;
+  if (!target || sending) return;
+  const told = $('jobTold');
+  told.textContent = '';
+  told.className = 'told';
+  const begun = await postJSON('/api/mission', {mission: target.id, size: file.size,
+                                                name: file.name, type: file.type});
+  if (!begun.ok) {
+    told.textContent = begun.error || 'L’envoi n’a pas pu commencer.';
+    told.className = 'told bad';
+    return;
+  }
+  const mine = sending = {stop: false, ctrl: null};
+  $('jobPick').hidden = true;
+  $('jobProg').hidden = false;
+  let have = begun.have || 0, misses = 0;
+  const chunk = begun.chunk || jobChunk;
+  paintSend(have, file.size);
+  while (have < file.size && !mine.stop) {
+    let d = null;
+    mine.ctrl = new AbortController();
+    try {
+      const r = await fetch('/api/mission/morceau?id=' + encodeURIComponent(begun.id) +
+        '&debut=' + have, {method: 'POST', signal: mine.ctrl.signal,
+        headers: headers({'Content-Type': 'application/octet-stream'}),
+        body: file.slice(have, Math.min(file.size, have + chunk))});
+      d = await r.json().catch(() => null);
+    } catch (_) {
+      d = null;
+    }
+    if (mine.stop) return;
+    if (d && typeof d.have === 'number' && (d.ok || d.retry)) {
+      have = d.have;
+      misses = 0;
+      paintSend(have, file.size);
+      if (d.done) break;
+      continue;
+    }
+    if (d && d.error) {
+      told.textContent = d.error;
+      told.className = 'told bad';
+      stopSending();
+      paintJob();
+      return;
+    }
+    // Le reseau a decroche : on reprend la ou l'on en etait, un peu plus tard.
+    misses += 1;
+    if (misses > 8) {
+      told.textContent = 'La connexion ne tient pas : réessayez avec un meilleur réseau (Wi-Fi).';
+      told.className = 'told bad';
+      stopSending();
+      paintJob();
+      return;
+    }
+    $('jobProgText').textContent = 'Connexion perdue : nouvel essai…';
+    await new Promise((done) => setTimeout(done, 1500 * misses));
+  }
+  if (mine.stop) return;
+  sending = null;
+  $('jobProg').hidden = true;
+  told.textContent = '✓ Vidéo envoyée : elle va être examinée. Le suivi est juste au-dessus.';
+  told.className = 'told ok';
+  if (navigator.vibrate) { try { navigator.vibrate([30, 60, 30]); } catch (_) {} }
+  await loadJobs();
+}
+addEventListener('beforeunload', (e) => {
+  if (sending) { e.preventDefault(); e.returnValue = ''; }
+});
+
 // -- en ligne, et (si on l'accepte) ou l'on est -----------------------------
 function describeView() {
+  if (!$('poll').hidden && poll) return 'répond au sondage « ' + poll.title + ' »';
+  if (!$('jobs').hidden) return job ? 'regarde la mission « ' + job.title + ' »'
+                                    : 'regarde les missions';
   if (player.style.display === 'block') return 'regarde une vidéo';
   if (shown.v === 'folder') return 'dans « ' + (shown.name || 'un dossier') + ' »';
   if (shown.v === 'search') return 'cherche « ' + shown.q + ' »';
@@ -3520,8 +5004,11 @@ async function presence() {
   if (document.hidden || !key) return;
   const view = describeView();
   try {
-    await fetch('/api/ici', {method: 'POST', headers: headers({'Content-Type': 'application/json'}),
-                             body: JSON.stringify({view})});
+    const r = await fetch('/api/ici', {method: 'POST',
+      headers: headers({'Content-Type': 'application/json'}), body: JSON.stringify({view})});
+    const d = await r.json().catch(() => null);
+    // Un sondage envoye pendant la visite : il s'annonce tout de suite.
+    if (d && Array.isArray(d.sondages)) checkPolls(d.sondages);
   } catch (_) {}
   presenceTimer = setTimeout(presence, 20000);
 }
@@ -3552,6 +5039,10 @@ async function welcome() {
   paintGift();
   loadForYou();
   presence();
+  // Les sondages en attente : rappeles a chaque ouverture (la notification
+  // attend que l'accueil ou le verrou soient leves).
+  loadPolls(true);
+  loadJobs();
   if (!profile && !(done === 'fait' && !kept)) {
     openHello(0);
     // Le clavier d'un telephone cacherait l'explication : seulement au PC.
@@ -3665,6 +5156,7 @@ APP_PAGE = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
     <a id="outAppGo" role="button" tabindex="0">Ouvrir dans Chrome</a>
     &nbsp;·&nbsp; <a id="outAppLater" role="button" tabindex="0">Plus tard</a></div></div>
   <button class="perkline" id="gift" hidden></button>
+  <button class="pollline" id="pollLine" hidden></button>
   <div class="pins" id="pins" hidden></div>
   <div id="forYou" hidden><div class="section">Pour vous</div>
     <div class="strip" id="forYouStrip"></div></div>
@@ -3735,6 +5227,11 @@ APP_PAGE = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
         <b>Code de verrouillage</b><small id="lockState"></small></div></div>
       <div class="row2"><button class="wide go" id="lockSet">Choisir un code</button>
         <button class="wide soft" id="lockClear" hidden>Retirer</button></div>
+    </div>
+    <div class="reward gold" id="jobsCard" hidden>
+      <div class="reward-head"><span class="perk-ic sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg></span><div>
+        <b>Vidéo à la demande</b><small id="jobsSub"></small></div></div>
+      <button class="wide go" id="jobsOpen">Voir les offres</button>
     </div>
     <div class="foot">
       <button class="textlink" id="perksEdit">Modifier mon profil</button>
@@ -3854,12 +5351,138 @@ APP_PAGE = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
     <button class="textlink" id="lockForgot">Code oublié ?</button>
   </div>
 </div>
+<div id="toast" hidden role="status" aria-live="polite">
+  <span class="tico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="m8.5 12 2.3 2.3 4.7-4.8"/></svg></span>
+  <div class="tx"><b id="toastTitle"></b><small id="toastSub"></small></div>
+  <button class="go" id="toastGo">Participer</button>
+  <button class="x" id="toastNo" aria-label="Plus tard">✕</button>
+</div>
+<div id="poll" hidden>
+  <div class="pbar">
+    <button class="ic" id="pollClose" title="Fermer : vos réponses sont gardées"
+      aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    <span class="pcount" id="pollCount"></span>
+    <span class="pprog"><i id="pollProg"></i></span>
+    <button class="ic snd" id="pollMute" title="Son : toucher pour couper, appui long pour le volume"><svg viewBox="0 0 24 24" class="on" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg><svg viewBox="0 0 24 24" class="off" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.4 2.4c.1-.2.1-.4.1-.6zM19 12c0 .9-.2 1.8-.5 2.6l1.5 1.5A9 9 0 0 0 14 3.2v2.1A7 7 0 0 1 19 12zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2 1.3-1.3L4.3 3zM12 4 9.9 6.1 12 8.2V4z"/></svg></button>
+  </div>
+  <section id="pollIntro"><div class="pintro">
+    <span class="pkind" id="pollKind"></span>
+    <h2 id="pollTitle"></h2>
+    <p class="pmsg" id="pollMsg" hidden></p>
+    <div class="pfacts" id="pollFacts"></div>
+    <div class="phow" id="pollHow"></div>
+    <div class="row">
+      <button class="quiet" id="pollLater">Plus tard</button>
+      <button class="go" id="pollStart">Commencer</button>
+    </div>
+  </div></section>
+  <section id="pollRate" hidden>
+    <div class="pstage" id="rateStage">
+      <video id="rateVideo" playsinline loop preload="metadata" disablepictureinpicture
+             controlslist="nodownload noplaybackrate"></video>
+      <div class="pname" id="rateName"></div>
+      <div class="pseek"><span id="rateNow">0:00</span><input type="range" id="rateSeek"
+        min="0" max="1000" value="0" step="1" aria-label="Avancer dans la vidéo"><span
+        id="rateTotal">0:00</span></div>
+      <div class="pflash" id="rateFlash"></div>
+    </div>
+    <div class="pask">
+      <div class="pq"><b>Votre note&nbsp;?</b><button class="back" id="rateBack">‹ Précédente</button></div>
+      <div class="stars" id="rateStars"><button data-n="1">1</button><button
+        data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button><button
+        data-n="5">5</button></div>
+      <div class="scale"><span>Pas pour moi</span><span>J’adore</span></div>
+      <div class="perr" id="rateErr" aria-live="polite"></div>
+    </div>
+  </section>
+  <section id="pollDuel" hidden>
+    <div class="duel">
+      <div class="pane" data-side="a" id="paneA">
+        <video id="duelA" playsinline loop preload="metadata" disablepictureinpicture
+               controlslist="nodownload noplaybackrate"></video>
+        <span class="side">A</span><div class="pname" id="nameA"></div>
+        <span class="ear"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg></span>
+        <div class="pseek"><span id="nowA">0:00</span><input type="range" id="seekA" min="0"
+          max="1000" value="0" step="1" aria-label="Avancer dans la vidéo A"><span
+          id="totA">0:00</span></div>
+        <div class="pflash" id="flashA"></div>
+      </div>
+      <div class="pane" data-side="b" id="paneB">
+        <video id="duelB" playsinline loop preload="metadata" disablepictureinpicture
+               controlslist="nodownload noplaybackrate"></video>
+        <span class="side">B</span><div class="pname" id="nameB"></div>
+        <span class="ear"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg></span>
+        <div class="pseek"><span id="nowB">0:00</span><input type="range" id="seekB" min="0"
+          max="1000" value="0" step="1" aria-label="Avancer dans la vidéo B"><span
+          id="totB">0:00</span></div>
+        <div class="pflash" id="flashB"></div>
+      </div>
+    </div>
+    <div class="pask">
+      <div class="pq"><b>Laquelle préférez-vous&nbsp;?</b><button class="back" id="duelBack">‹ Précédent</button></div>
+      <div class="picks" id="duelPicks"><button data-side="a"><i>A</i>Je préfère A</button><button
+        data-side="b"><i>B</i>Je préfère B</button></div>
+      <div class="ptip">Touchez une vidéo pour l’entendre ; avancez dans chacune avec sa barre.</div>
+      <div class="perr" id="duelErr" aria-live="polite"></div>
+    </div>
+  </section>
+  <section id="pollText" hidden><div class="ptext">
+    <div class="pcard" id="textCard"><span class="pnum" id="textNum"></span>
+      <h2 id="textQ"></h2><p id="textDetail" hidden></p></div>
+    <div class="popts" id="textOpts" hidden></div>
+    <div id="textScaleBox" hidden><div class="pscale" id="textScale"><button
+      data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button
+      data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button></div>
+      <div class="pends"><span id="textLow"></span><span id="textHigh"></span></div></div>
+    <div class="pq"><button class="back" id="textBack">‹ Précédente</button></div>
+    <div class="perr" id="textErr" aria-live="polite"></div>
+  </div></section>
+  <section id="pollEnd" hidden><div class="pend">
+    <div class="party">🎉</div>
+    <h2>Merci d’avoir participé&nbsp;!</h2>
+    <p id="pollThanks"></p>
+    <span class="gain" id="pollGain" hidden></span>
+    <div id="pollMeter" hidden><div class="meter"><i id="pollBar"></i></div>
+      <div class="meterline"><span id="pollSeen"></span><span class="gold" id="pollPrize"></span></div></div>
+    <button class="wide go" id="pollDone">Retour à Prisme</button>
+  </div></section>
+</div>
+<div id="jobs" hidden>
+  <div class="pbar">
+    <button class="ic" id="jobsClose" title="Fermer" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    <span class="pcount" id="jobsBar">Vidéo à la demande</span>
+  </div>
+  <section id="jobsList"><div class="jwrap">
+    <div class="jhead"><h2>Vidéo à la demande</h2>
+      <p id="jobsLead"></p></div>
+    <div id="jobsCards"></div>
+    <div class="empty" id="jobsEmpty" hidden>Aucune offre pour l’instant : revenez bientôt.</div>
+  </div></section>
+  <section id="jobDetail" hidden><div class="jwrap jdetail">
+    <span class="jprice" id="jobPrice"></span>
+    <h2 id="jobTitle"></h2>
+    <div class="jbrief" id="jobBrief"></div>
+    <div class="jnote"><span>🔒</span><span id="jobNote"></span></div>
+    <div class="jmine" id="jobMine"></div>
+    <input type="file" id="jobFile" accept="video/*" hidden>
+    <button class="wide go" id="jobPick">Envoyer ma vidéo</button>
+    <div class="jprog" id="jobProg" hidden>
+      <div class="meter"><i id="jobBar"></i></div>
+      <div class="meterline"><span id="jobProgText"></span><button class="textlink"
+        id="jobCancel">Annuler</button></div>
+    </div>
+    <div class="told" id="jobTold" aria-live="polite"></div>
+  </div></section>
+</div>
+<div id="vol" aria-hidden="true"><div class="track" id="volTrack"><div class="fill"
+  id="volFill"></div><div class="knob" id="volKnob"></div></div><span class="pct"
+  id="volPct">100 %</span></div>
 <div id="player">
   <div id="stage">
     <video id="video" playsinline preload="metadata" disablepictureinpicture
            controlslist="nodownload noplaybackrate"></video>
     <div id="obot">
-      <button class="ic" id="mute" title="Couper le son"><svg viewBox="0 0 24 24" id="iSound" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg><svg viewBox="0 0 24 24" id="iMuted" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.4 2.4c.1-.2.1-.4.1-.6zM19 12c0 .9-.2 1.8-.5 2.6l1.5 1.5A9 9 0 0 0 14 3.2v2.1A7 7 0 0 1 19 12zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2 1.3-1.3L4.3 3zM12 4 9.9 6.1 12 8.2V4z"/></svg></button>
+      <button class="ic" id="mute" title="Son : toucher pour couper, appui long ou molette pour le volume"><svg viewBox="0 0 24 24" id="iSound" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg><svg viewBox="0 0 24 24" id="iMuted" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.4 2.4c.1-.2.1-.4.1-.6zM19 12c0 .9-.2 1.8-.5 2.6l1.5 1.5A9 9 0 0 0 14 3.2v2.1A7 7 0 0 1 19 12zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2 1.3-1.3L4.3 3zM12 4 9.9 6.1 12 8.2V4z"/></svg></button>
       <button class="ic" id="prev" title="Précédente"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
       <span id="now">0:00</span>
       <input type="range" id="seek" min="0" max="1000" value="0" step="1"

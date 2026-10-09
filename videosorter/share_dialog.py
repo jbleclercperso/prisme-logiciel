@@ -182,6 +182,7 @@ class ShareDialog(QDialog):
         tabs.addTab(self._invite_pc(), "Via le PC")
         tabs.addTab(self._invite(), "Via le NAS")
         tabs.addTab(self._settings(), "Réglages")
+        tabs.addTab(self._phone_hidden(), "Cachés sur le téléphone")
         # Une fiche par personne, avant le detail des journaux.
         tabs.addTab(self._visitors(), "Visiteurs")
         tabs.addTab(self._visits(), "Connexions")
@@ -836,6 +837,89 @@ class ShareDialog(QDialog):
             "Il n'est gardé nulle part en clair. Notez-le : il ne peut pas "
             "être relu, seulement remplacé.")
 
+    # -- ce que le telephone ne voit pas -----------------------------------------
+    def _phone_hidden(self) -> QWidget:
+        page = QWidget(self)
+        box = QVBoxLayout(page)
+        box.setSpacing(8)
+        head = QLabel("Cachés sur le téléphone", page)
+        head.setObjectName("shareHead")
+        box.addWidget(head)
+        hint = QLabel(
+            "Ces dossiers et ces vidéos restent dans Prisme, sur ce PC, mais n'apparaissent "
+            "pas sur la page des visiteurs — ni par le PC, ni par le NAS (qui suit la liste "
+            "en quelques secondes). Leurs sous-dossiers sont cachés avec eux.\n"
+            "Depuis Prisme : cochez des dossiers ou des vidéos (ou ouvrez une fiche), puis "
+            "⋯ › Collection › « Cacher sur le téléphone ».", page)
+        hint.setWordWrap(True)
+        box.addWidget(hint)
+        self.hidden_tree = QTreeWidget(page)
+        self.hidden_tree.setHeaderLabels(["Nom", "Sorte", "Emplacement", "Caché le"])
+        self.hidden_tree.setRootIsDecorated(False)
+        self.hidden_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.hidden_tree.header().setSectionResizeMode(2, QHeaderView.Stretch)
+        box.addWidget(self.hidden_tree, 1)
+        row = QHBoxLayout()
+        folder = QPushButton("Cacher un dossier…", page)
+        folder.clicked.connect(self._hide_folder)
+        row.addWidget(folder)
+        videos = QPushButton("Cacher des vidéos…", page)
+        videos.clicked.connect(self._hide_videos)
+        row.addWidget(videos)
+        row.addStretch(1)
+        self.unhide_button = QPushButton("Remontrer sur le téléphone", page)
+        self.unhide_button.clicked.connect(self._unhide)
+        row.addWidget(self.unhide_button)
+        box.addLayout(row)
+        self._fill_hidden()
+        return page
+
+    def _fill_hidden(self) -> None:
+        from pathlib import PureWindowsPath
+        hidden = self.window.phone_hidden()
+        self.hidden_tree.clear()
+        for key, one in sorted(hidden.items(), key=lambda kv: -kv[1]["at"]):
+            path = PureWindowsPath(one["path"])
+            row = QTreeWidgetItem(self.hidden_tree, [
+                path.name or one["path"], "Vidéo" if one["kind"] == "video" else "Dossier",
+                str(path.parent), when(one["at"])])
+            row.setData(0, Qt.UserRole, (one["path"], one["kind"]))
+            row.setToolTip(2, one["path"])
+        for column in (0, 1, 3):
+            self.hidden_tree.resizeColumnToContents(column)
+        self.unhide_button.setEnabled(bool(hidden))
+
+    def _hide_folder(self) -> None:
+        from pathlib import Path
+        from PySide6.QtWidgets import QFileDialog
+        start = str(self.window.root or self.window.top_root() or "")
+        chosen = QFileDialog.getExistingDirectory(self, "Cacher un dossier sur le téléphone",
+                                                  start)
+        if chosen:
+            self.window.set_phone_hidden([(Path(chosen), "dossier")], True)
+            self._fill_hidden()
+
+    def _hide_videos(self) -> None:
+        from pathlib import Path
+        from PySide6.QtWidgets import QFileDialog
+        start = str(self.window.root or self.window.top_root() or "")
+        chosen, _kind = QFileDialog.getOpenFileNames(
+            self, "Cacher des vidéos sur le téléphone", start,
+            "Vidéos (*.mp4 *.mkv *.avi *.mov *.wmv *.m4v *.webm *.flv *.mpg *.mpeg *.ts);;"
+            "Tous les fichiers (*)")
+        if chosen:
+            self.window.set_phone_hidden([(Path(one), "video") for one in chosen], True)
+            self._fill_hidden()
+
+    def _unhide(self) -> None:
+        picked = [item.data(0, Qt.UserRole) for item in self.hidden_tree.selectedItems()]
+        if not picked:
+            QMessageBox.information(self, "Remontrer sur le téléphone",
+                                    "Choisissez d'abord une ligne (Ctrl ou Maj pour plusieurs).")
+            return
+        self.window.set_phone_hidden(picked, False)
+        self._fill_hidden()
+
     # -- journaux ------------------------------------------------------------
     def _visitors(self) -> QWidget:
         from .visitors_view import VisitorsPage
@@ -885,8 +969,56 @@ class ShareDialog(QDialog):
                             self._kept_by_stamp("nas-profiles", nas_profiles,
                                                 profils.read_all)))
         aliases = dict(self.window.cfg["share_aliases"] or {})
-        self.people.show_people(gather(sources, aliases,
-                                       getattr(self.window, "viewers", [])))
+        people = gather(sources, aliases, getattr(self.window, "viewers", []))
+        self._add_surveys(people)
+        self._add_missions(people)
+        self.people.show_people(people)
+
+    def _add_missions(self, people: list) -> None:
+        """Les videos de mission de chaque personne, la plus recente d'abord."""
+        from . import missions
+        from .config import PRIVATE_DIR
+        book = missions.load(PRIVATE_DIR / missions.FILE_NAME)
+        if not book["missions"]:
+            return
+        by_person: dict = {}
+        for send in missions.received(self.window._mission_sources()):
+            mission = book["missions"].get(send["mission"])
+            if mission is None or not send["done_at"]:
+                continue
+            by_person.setdefault((send["where"], send["me"]), []).append({
+                "id": send["id"], "mission": send["mission"], "title": mission["title"],
+                "state": book["verdicts"].get(send["id"], {}).get("state", "attente")})
+        for person in people:
+            person["missions"] = by_person.get((person["where"], person["key"]), []) \
+                if person["key"] else []
+
+    def _add_surveys(self, people: list) -> None:
+        """Les sondages de chaque personne (les plus recents d'abord), et les
+        videos qu'ils lui valent dans le compteur du bon d'achat."""
+        from . import sondages
+        from .config import PRIVATE_DIR
+        surveys = {one["id"]: one for one in sondages.load(PRIVATE_DIR / sondages.FILE_NAME)
+                   if one["state"] != "supprime"}
+        if not surveys:
+            return
+        by_person: dict = {}
+        for survey_id, rows in sondages.reports(self.window._survey_sources()).items():
+            survey = surveys.get(survey_id)
+            if survey is None:
+                continue
+            for row in rows:
+                answered = sum(1 for entry in survey["items"] if entry["id"] in row["votes"])
+                by_person.setdefault((row["where"], row["me"]), []).append({
+                    "id": survey_id, "title": survey["title"], "kind": survey["kind"],
+                    "done_at": row["done_at"], "last_at": row["last_at"],
+                    "answered": answered, "total": len(survey["items"]),
+                    "reward": row["reward"] if row["done_at"] else 0})
+        for person in people:
+            mine = by_person.get((person["where"], person["key"]), []) if person["key"] else []
+            mine.sort(key=lambda one: -one["last_at"])
+            person["surveys"] = mine
+            person["seen"] += sum(one["reward"] for one in mine)
 
     def _visits(self) -> QWidget:
         page = QWidget(self)

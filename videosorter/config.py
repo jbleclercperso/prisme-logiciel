@@ -370,6 +370,10 @@ DEFAULTS = {
     "audio_output": "",
     # Les demandes du telephone deja vues, et celles qu'on a faites (demandes.py).
     "demandes_vues": [],
+    # Les sondages finis deja annonces (sondage|serveur|personne).
+    "sondages_vus": [],
+    # Les videos de mission deja annoncees (identifiants d'envoi).
+    "missions_vues": [],
     "demandes_faites": [],
     # Des videos rangees a la main sous un de « mes mots-cles » (le Labo IA :
     # « Ajouter au mot-clé »), en plus de celles dont le nom porte le mot.

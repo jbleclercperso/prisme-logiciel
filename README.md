@@ -387,6 +387,92 @@ recherche web, préremplie), **Chercher dans le Labo IA**, **Marquer comme faite
 **Supprimer**. Au plus trente demandes par appareil et par heure
 (`videosorter/demandes.py`).
 
+## Sondages aux visiteurs
+
+⋯ › Collection › **Sondages aux visiteurs…** (ou le bouton du même nom dans
+Partage à distance › Visiteurs). Quatre sortes :
+
+- **Noter des vidéos** : une liste ; chaque visiteur donne à chacune une note de
+  1 (pas pour moi) à 5 (j'adore).
+- **Duels** : des paires ; les deux vidéos jouent ensemble (l'une au-dessus de
+  l'autre, côte à côte en paysage), on touche celle qu'on veut entendre, chacune
+  a sa barre, et l'on garde **A** ou **B**.
+- **Questions à choix** : des propositions en texte (un plat, une pratique…),
+  une carte à la fois, et des réponses fermées que l'on choisit — par défaut
+  « J'ai déjà essayé », « J'aimerais bien essayer », « Ça ne m'intéresse pas »,
+  ou un modèle tout fait, ou les siennes (de deux à six). Les questions
+  s'ajoutent une à une, ou plusieurs d'un coup (une par ligne, « question |
+  précision »).
+- **Échelle de 0 à 5** : des propositions en texte, et l'intérêt de chacun de 0
+  (pas du tout) à 5 (carrément) ; les mots des deux bouts se choisissent.
+
+**Préparer.** Un titre, un mot pour les visiteurs (facultatif), ce que le
+sondage fini vaut dans le compteur du bon d'achat (5 vidéos par défaut), et à
+qui il s'adresse (tout le monde, ou des personnes choisies). Les vidéos
+s'ajoutent d'un clic, depuis une recherche dans toute la collection, les vidéos
+cochées sur la planche, celle de la fiche, ou au hasard ; pour un duel, le
+premier clic donne la A, le second la B. On les remet dans l'ordre en les
+glissant. Un avertissement dit si des vidéos ne pourront pas être montrées par
+le NAS (hors de son partage, dossier masqué). Le brouillon est gardé au fil de
+l'eau ; **Envoyer aux visiteurs** le rend visible, et il ne se modifie plus
+(« Dupliquer en brouillon » pour en refaire un). **Clore** le retire.
+
+**Côté visiteur.** Une notification descend du haut de la page à chaque
+ouverture tant que le sondage n'est pas fait (et tout de suite pour qui est
+déjà sur la page) ; une ligne sous les récompenses le rappelle. Chaque réponse
+est gardée aussitôt : on peut s'arrêter et reprendre. À la fin, « Merci d'avoir
+participé » et le compteur du bon d'achat qui avance.
+
+**Les réponses.** Un bandeau « ✓ Camille a fini le sondage… » mène à son
+rapport. Onglet **Résultats** : par personne (sa note pour chaque vidéo, le
+temps passé, ou son choix à chaque duel) et la **synthèse** (moyenne et
+répartition par vidéo, de la mieux notée à la moins ; le score de chaque duel).
+Double-clic : la vidéo dans le lecteur flottant ; **Montrer dans Prisme** fait
+du rapport une planche, chaque carte portant sa note. Les fiches des visiteurs
+montrent aussi leurs sondages, avec « Voir son rapport ».
+
+Les sondages vivent dans `sondages.json` et les réponses dans
+`sondages-reponses.jsonl`, à côté des demandes, chez Prisme et dans le partage
+du NAS ; deux PC qui publient sur le même NAS se les partagent sans s'écraser
+(`videosorter/sondages.py`, `videosorter/sondages_dialog.py`).
+
+## Vidéo à la demande : les missions
+
+⋯ › Collection › **Vidéo à la demande : missions…** (ou « Missions vidéo… »
+dans Partage à distance › Visiteurs). Une mission : un titre, une consigne (ce
+qu'il faut filmer, la durée, la lumière… — les retours à la ligne sont gardés),
+un prix en bon d'achat Amazon, et au plus combien de vidéos validées. **Publier**
+la fait paraître sur la page des visiteurs : Récompenses › **Vidéo à la
+demande** › « Voir les offres ». Le visiteur lit la consigne, filme, et touche
+« Envoyer ma vidéo » ; il faut avoir donné son email, c'est là que part le bon.
+
+- **L'envoi** se fait par morceaux de 8 Mo : il passe les tunnels (Cloudflare
+  refuse les corps de plus de 100 Mo), et reprend tout seul quand le réseau
+  décroche. Jusqu'à 4 Go, trois vidéos en attente au plus par personne et par
+  mission. La vidéo est rangée sous un nom choisi par le serveur, dans
+  `missions-recues`, à côté des demandes (chez Prisme, ou dans le partage du
+  NAS) ; elle n'est jamais servie à personne.
+- **Chez Prisme**, un bandeau « 📹 Camille a envoyé sa vidéo… » mène à elle, et
+  une ligne arrive dans « Demandes reçues ». Onglet **Vidéos reçues** :
+  regarder (lecteur flottant), **Valider** (l'adresse de la personne est
+  copiée, pour le bon), **Refuser…** (avec un mot qu'elle lira), puis **Bon
+  envoyé ✓**. Le visiteur suit chaque étape sur sa page ; une mission dont
+  toutes les places sont validées se dit « complète ».
+- Le prix ne change plus dès qu'une vidéo est arrivée (« Dupliquer » pour une
+  nouvelle mission). Les missions et les verdicts sont réunis entre le PC et le
+  NAS (`videosorter/missions.py`, `videosorter/missions_dialog.py`).
+
+## Cachés sur le téléphone
+
+Des dossiers ou des vidéos qu'on garde dans Prisme, mais qu'on ne montre pas aux
+visiteurs : cochez-les (ou ouvrez une fiche, ou entrez dans le dossier), puis
+⋯ › Collection › **Cacher sur le téléphone** — la même commande les remontre.
+La liste, et de quoi en ajouter ou en retirer : Partage à distance › **Cachés
+sur le téléphone**. Un dossier caché emporte ses sous-dossiers. La page servie
+par le PC suit tout de suite ; celle du NAS relit la liste en quelques secondes,
+sans attendre une publication. La liste est réunie entre les PC qui publient
+sur le même NAS (`videosorter/telcache.py`).
+
 ## Les onglets
 
 Un onglet est un point de vue sur **toute** la collection, jamais sur l'endroit
@@ -588,13 +674,20 @@ l'image, et un trait bleu marque l'avancement.
 défaut le profil « Hands-Free » (mains libres) d'un casque Bluetooth, qui ne joue
 rien hors d'un appel, Prisme prend la sortie « Stereo » du même casque. Un casque
 connecté ou une sortie par défaut changée en cours de route est suivi, sans
-relancer Prisme (`videosorter/audiodev.py`). Prisme a son propre volume : la
-**molette sur le haut-parleur** de l'en-tête le règle par pas de 5 %, le **clic
-droit** ouvre son curseur et le choix de **la sortie du son** (celle de
+relancer Prisme (`videosorter/audiodev.py`). Prisme a son propre volume :
+**survoler le haut-parleur** de l'en-tête fait paraître dessous un curseur fin
+et le pourcentage, la **molette** (sur le bouton ou le curseur) le règle par pas
+de 5 %, le **clic droit** ouvre le choix de **la sortie du son** (celle de
 Windows, ou un casque, des haut-parleurs, l'écran…, retenue d'une fois sur
 l'autre), le clic coupe ou rend le son. L'infobulle dit où part le son. Utile quand le curseur
 de Windows règle une autre sortie que celle où joue Prisme. La saisie vocale évite de même le
 micro mains libres d'un casque, qui le ferait basculer en mode appel.
+
+Sur la page des visiteurs, le haut-parleur du lecteur fait de même, sans bouton
+de plus : un toucher coupe ou rend le son ; un appui long (ou glisser depuis
+lui), le survol à la souris ou la molette font paraître un curseur fin, qui
+s'efface seul. Le réglage est retenu d'une visite à l'autre. Sur iPhone, une
+page ne peut pas régler le volume : ce sont les boutons du téléphone.
 
 **En plein écran**, la pellicule des cinq instants quitte sa colonne : l'image
 prend toute la largeur. Quand la souris bouge sur l'image, les cinq instants
@@ -1000,5 +1093,11 @@ Vérifie la corbeille Windows réelle et exporte une capture de la fenêtre.
 | `videosorter/roots.py` | Plusieurs racines, et la racine virtuelle qui les réunit |
 | `videosorter/demandes.py` | Les demandes envoyées depuis le téléphone |
 | `videosorter/demandes_dialog.py` | La fenêtre « Demandes reçues » |
+| `videosorter/sondages.py` | Les sondages aux visiteurs : fichiers, réponses, bonus (sans Qt) |
+| `videosorter/sondages_dialog.py` | La fenêtre « Sondages aux visiteurs » |
+| `videosorter/volume.py` | Le curseur du volume, sous le haut-parleur |
+| `videosorter/missions.py` | Les missions vidéo : offres, envois par morceaux, verdicts (sans Qt) |
+| `videosorter/missions_dialog.py` | La fenêtre « Vidéo à la demande » |
+| `videosorter/telcache.py` | Les dossiers et vidéos cachés sur le téléphone (sans Qt) |
 | `videosorter/split.py` | Le mur : plusieurs vidéos à la fois |
 | `videosorter/mosaic.py` | La mosaïque du mur : verticales et horizontales, l'écran rempli |

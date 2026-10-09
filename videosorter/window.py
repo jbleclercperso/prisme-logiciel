@@ -1069,6 +1069,12 @@ class MainWindow(QMainWindow):
                                 else 100) / 100.0)
         audiodev.choose(self.cfg["audio_output"] or "")
         row_one.addWidget(self.mute_button, 0)
+        # Survoler le haut-parleur : le curseur du volume parait dessous.
+        from .volume import VolumeFlyout
+        self.volume_flyout = VolumeFlyout(
+            self.mute_button,
+            lambda: int(self.cfg["volume"] if self.cfg["volume"] is not None else 100),
+            lambda: bool(self.cfg["muted"]), self.set_volume)
 
         # Le lecteur flottant automatique, d'un clic : allume, la video passe
         # par-dessus tout quand Prisme est reduit ou recouvert ; eteint, elle
@@ -1276,9 +1282,12 @@ class MainWindow(QMainWindow):
                 ("Réanalyser ce dossier en entier…", self.refresh_root),
                 ("-", None),
                 ("Partage à distance…", self.open_share),
+                ("Cacher sur le téléphone (ou remontrer)", self.hide_on_phone),
                 ("Recherche vidéo sur le web…", self.open_web_search),
                 ("Telegram : recherche et alertes…", self.open_telegram),
                 ("Demandes reçues…", self.open_demandes),
+                ("Sondages aux visiteurs…", self.open_surveys),
+                ("Vidéo à la demande : missions…", self.open_missions),
             ]),
             ("Réglages", [
                 ("Rafale : passer tout seul après 8 s", self.toggle_burst),
@@ -5525,6 +5534,8 @@ class MainWindow(QMainWindow):
         if self._closing or getattr(self, "_asks_reading", False):
             return
         self._import_phone_videos()
+        self._poll_surveys()
+        self._poll_missions()
         from . import demandes
         from .tunnel import Chore
         paths = self._demande_paths()
@@ -5547,6 +5558,280 @@ class MainWindow(QMainWindow):
             self.ask_badge.show()
         else:
             self.ask_badge.hide()
+
+    # -- les sondages aux visiteurs (sondages.py) -------------------------------
+    def _survey_sources(self) -> list:
+        """Ou arrivent les reponses : chez Prisme et dans le partage du NAS."""
+        from . import sondages
+        from .config import PRIVATE_DIR
+        from .nas_publish import FOLDER, share_root
+        sources = [("PC", PRIVATE_DIR / sondages.ANSWERS_NAME)]
+        top = self.top_root()
+        share = share_root(top) if top is not None else None
+        if share is not None:
+            sources.append(("NAS", Path(share) / FOLDER / "etat" / sondages.ANSWERS_NAME))
+        return sources
+
+    def _poll_surveys(self) -> None:
+        """Qui vient de finir un sondage : un bandeau, qui mene a son rapport.
+        Rien n'est relu tant qu'aucun sondage n'a ete envoye."""
+        if getattr(self, "_surveys_reading", False):
+            return
+        from . import sondages
+        from .config import PRIVATE_DIR
+        from .tunnel import Chore
+        surveys = sondages.load(PRIVATE_DIR / sondages.FILE_NAME)
+        if not any(one["state"] in ("ouvert", "clos") for one in surveys):
+            return
+        sources = self._survey_sources()
+        self._surveys_reading = True
+        Chore(lambda: sondages.reports(sources), self, fallback=None,
+              then=lambda found: self._surveys_read(found, surveys)).start()
+
+    def _surveys_read(self, found, surveys) -> None:
+        self._surveys_reading = False
+        if not found:
+            return
+        titles = {one["id"]: one["title"] for one in surveys if one["state"] != "supprime"}
+        seen = set(self.cfg["sondages_vus"] or [])
+        fresh = []
+        for survey_id, rows in found.items():
+            if survey_id not in titles:
+                continue
+            for row in rows:
+                mark = f"{survey_id}|{row['where']}|{row['me']}"
+                if row["done_at"] and mark not in seen:
+                    fresh.append((row["done_at"], survey_id, row, mark))
+        if not fresh:
+            return
+        fresh.sort(key=lambda one: -one[0])
+        self.cfg["sondages_vus"] = (list(self.cfg["sondages_vus"] or [])
+                                    + [one[3] for one in fresh])[-3000:]
+        self.cfg.save_soon()
+
+        def who(row) -> str:
+            given = self.alias(row["label"]) if row.get("label") else ""
+            return given if given and given != row["label"] else (row["name"] or "Un visiteur")
+
+        _at, survey_id, row, _mark = fresh[0]
+        if len(fresh) == 1:
+            text = (f"✓ {who(row)} a fini le sondage « {titles[survey_id]} » — "
+                    "cliquer pour voir son rapport.")
+        else:
+            names = ", ".join(dict.fromkeys(who(one[2]) for one in fresh[:3]))
+            text = (f"✓ {len(fresh)} sondages finis ({names}"
+                    + ("…" if len(fresh) > 3 else "") + ") — cliquer pour voir les rapports.")
+        self.show_banner(text, "done", seconds=10, action=lambda: self.open_surveys(
+            survey_id, (row["where"], row["me"])))
+
+    # -- ce que le telephone ne voit pas (telcache.py) ---------------------------
+    def phone_hidden(self) -> dict:
+        """Les dossiers et videos caches sur le telephone : {cle: element}."""
+        from . import telcache
+        from .config import PRIVATE_DIR
+        return telcache.active(telcache.load(PRIVATE_DIR / telcache.FILE_NAME))
+
+    def set_phone_hidden(self, targets: list, hide: bool) -> int:
+        """Cache (ou remontre) ces [(chemin, « dossier » ou « video »)] sur la
+        page des visiteurs. Rend le nombre d'elements changes."""
+        from . import telcache
+        from .config import PRIVATE_DIR
+        from .nas_publish import share_root
+        place = PRIVATE_DIR / telcache.FILE_NAME
+        entries = telcache.load(place)
+        share = share_root(self.top_root() or "")
+        changed = 0
+        for path, kind in targets:
+            key = telcache.key_of(path)
+            known = entries.get(key)
+            if hide:
+                if known is not None and not known["removed"]:
+                    continue
+                entries[key] = telcache.entry(path, kind, share)
+            else:
+                if known is None or known["removed"]:
+                    continue
+                known.update(removed=True, updated=time.time())
+            changed += 1
+        if changed:
+            telcache.save(place, entries)
+            self._apply_phone_hidden(entries)
+        return changed
+
+    def _apply_phone_hidden(self, entries: dict) -> None:
+        """La page du PC suit tout de suite ; le NAS recoit la liste et se
+        refait seul (`nas/serveur.py`)."""
+        from . import web
+        from .nas_publish import share_root, sync_hidden
+        from .tunnel import Chore
+        web.set_hidden(entries)
+        server, share = self.share_server, share_root(self.top_root() or "")
+
+        def work():
+            if server is not None:
+                server.library.refresh()
+            if share is not None:
+                sync_hidden(share)
+            return True
+        Chore(work, self, fallback=False).start()
+
+    def hide_on_phone(self) -> None:
+        """⋯ › Cacher sur le telephone : les elements coches, sinon celui de
+        la fiche, sinon le dossier ou l'on est. Deja tous caches : remontres."""
+        if self.browsing and self.board.picked_ids:
+            items = list(self.board.picked_items())
+        elif not self.browsing and self.current is not None:
+            items = [self.current]
+        else:
+            items = []
+        targets = []
+        for item in items:
+            if item.is_tag:
+                continue
+            if item.kind == MODE_FOLDERS and getattr(item, "loose_only", False):
+                # « Sans dossier » : ses videos, pas le dossier entier.
+                targets += [(Path(video), "video") for video in item.videos]
+            elif item.kind == MODE_FOLDERS:
+                targets.append((Path(item.path), "dossier"))
+            else:
+                targets.append((Path(item.path), "video"))
+        top = self.top_root()
+        if not targets and self.root is not None and top is not None \
+                and Path(self.root) != Path(top) and not self._transient:
+            targets = [(Path(self.root), "dossier")]
+        if not targets:
+            self.show_banner("Cochez des dossiers ou des vidéos (ou ouvrez une fiche), puis "
+                             "⋯ › Cacher sur le téléphone.", "quiet", seconds=6)
+            return
+        from . import telcache
+        hidden = self.phone_hidden()
+        name = targets[0][0].name + (f" et {len(targets) - 1} autre(s)" if len(targets) > 1
+                                     else "")
+        if all(telcache.key_of(path) in hidden for path, _kind in targets):
+            self.set_phone_hidden(targets, False)
+            self.show_banner(f"« {name} » est de nouveau visible sur le téléphone.", "done")
+            return
+        changed = self.set_phone_hidden(targets, True)
+        self.show_banner(
+            f"« {name} » n'apparaît plus sur le téléphone ({changed} élément(s)) — "
+            "cliquer pour annuler. La liste : Partage à distance › Cachés sur le téléphone.",
+            "done", seconds=10,
+            action=lambda t=targets: self.set_phone_hidden(t, False))
+
+    # -- les missions video (missions.py) -----------------------------------------
+    def _mission_sources(self) -> list:
+        """Ou arrivent les videos des missions : chez Prisme et sur le NAS."""
+        from . import missions
+        from .config import PRIVATE_DIR
+        from .nas_publish import FOLDER, share_root
+        found = [("PC", PRIVATE_DIR / missions.SENDS_NAME, PRIVATE_DIR / missions.FOLDER_NAME)]
+        top = self.top_root()
+        share = share_root(top) if top is not None else None
+        if share is not None:
+            state = Path(share) / FOLDER / "etat"
+            found.append(("NAS", state / missions.SENDS_NAME, state / missions.FOLDER_NAME))
+        return found
+
+    def _poll_missions(self) -> None:
+        """Une video de mission vient d'arriver : un bandeau, qui mene a elle.
+        Rien n'est relu tant qu'aucune mission n'a ete publiee."""
+        if getattr(self, "_missions_reading", False):
+            return
+        from . import missions
+        from .config import PRIVATE_DIR
+        from .tunnel import Chore
+        book = missions.load(PRIVATE_DIR / missions.FILE_NAME)
+        if not any(one["state"] in ("ouverte", "close") for one in book["missions"].values()):
+            return
+        sources = self._mission_sources()
+        self._missions_reading = True
+        Chore(lambda: missions.received(sources), self, fallback=None,
+              then=lambda found: self._missions_read(found, book)).start()
+
+    def _missions_read(self, found, book) -> None:
+        self._missions_reading = False
+        if not found:
+            return
+        seen = set(self.cfg["missions_vues"] or [])
+        fresh = [one for one in found if one["done_at"] and one["id"] not in seen
+                 and one["mission"] in book["missions"]]
+        if not fresh:
+            return
+        self.cfg["missions_vues"] = (list(self.cfg["missions_vues"] or [])
+                                     + [one["id"] for one in fresh])[-3000:]
+        self.cfg.save_soon()
+        first = fresh[0]
+        title = book["missions"][first["mission"]]["title"]
+        who = first["name"] or "Un visiteur"
+        text = (f"📹 {who} a envoyé sa vidéo pour la mission « {title} » — cliquer pour la "
+                "regarder." if len(fresh) == 1 else
+                f"📹 {len(fresh)} vidéos de mission reçues — cliquer pour les voir.")
+        self.show_banner(text, "done", seconds=12, action=lambda: self.open_missions(
+            first["mission"], first["id"]))
+
+    def open_missions(self, mission_id: str = "", send_id: str = "") -> None:
+        """La fenetre des missions video (pas modale)."""
+        from .missions_dialog import MissionsWindow
+        window = getattr(self, "_missions_window", None)
+        if window is None or not shiboken6.isValid(window):
+            window = MissionsWindow(self)
+            self._missions_window = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        if mission_id:
+            window.select(mission_id, send_id)
+
+    def open_surveys(self, survey_id: str = "", person=None) -> None:
+        """La fenetre des sondages (pas modale), sur ce sondage et cette
+        personne s'ils sont donnes."""
+        from .sondages_dialog import SurveysWindow
+        window = getattr(self, "_surveys_window", None)
+        if window is None or not shiboken6.isValid(window):
+            window = SurveysWindow(self)
+            self._surveys_window = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        if survey_id:
+            window.select(survey_id, person)
+
+    def show_survey_board(self, entries: list, title: str) -> None:
+        """Les videos d'un rapport de sondage, en planche, chaque carte portant
+        sa note (`sondages_dialog`). Une liste de passage, comme les doublons :
+        recliquer l'onglet rend la collection."""
+        if self.root is None or not entries:
+            return
+        if self.tab == TAB_SPLIT:
+            if self.wall_full:
+                self.toggle_wall_fullscreen(False)
+            self.set_tab(TAB_FOLDERS)
+        self.close_aside()
+        self._leave_transient()
+        items = []
+        for path, note in entries:
+            path = _as_path(path)
+            item = Item(path=path, kind=MODE_FILES, videos=[path],
+                        video_count=1, file_count=1)
+            item.board_note = note
+            items.append(item)
+        if self.scanning and not self._scan_top:
+            self.stop_scan()
+            self.progress.hide()
+        self._hush_players()
+        self.browsing = True
+        self._transient = "sondage"
+        self.all_items = items
+        self.mode = MODE_FLAT
+        self.items = list(items)
+        self.index = 0
+        self._list_leaf = title
+        self.board.clear_picked()
+        self._apply_selectors()
+        self.refresh_board()
+        self.on_picked_changed(0)
+        self.show_banner(f"{title} : {len(items)} vidéo(s), chacune avec sa note. "
+                         "Recliquer l'onglet rend la collection.", "info", seconds=8)
 
     def _telegram_follow(self) -> None:
         """Chaînes suivies : nouvelles vidéos, sans reprendre la bibliothèque."""
@@ -6245,6 +6530,10 @@ class MainWindow(QMainWindow):
 
         def work():
             try:
+                # Ce que le telephone ne voit pas, avant le premier catalogue.
+                from . import telcache, web
+                from .config import PRIVATE_DIR as _private
+                web.set_hidden(telcache.load(_private / telcache.FILE_NAME))
                 server = Server(top, salt, digest, port=port, host=host,
                                 expand=expand, width=width, invite=invite)
                 from .config import PRIVATE_DIR
@@ -7563,7 +7852,9 @@ class MainWindow(QMainWindow):
     def _sort_items(self) -> None:
         """Reclasse la liste visible selon le mode choisi."""
         import random
-        if self._transient == "similar":
+        if self._transient in ("similar", "sondage"):
+            # Les voisines, de la plus proche ; un rapport de sondage, dans
+            # l'ordre du sondage, ou de la mieux notee a la moins.
             return
         if self._transient == "dupes":
             # Les doublons se lisent groupe par groupe, le meilleur exemplaire
@@ -13921,8 +14212,8 @@ class MainWindow(QMainWindow):
         self.mute_button.setToolTip(
             ("Son coupé — cliquer pour l'activer   (Ctrl+M)" if muted
              else "Son actif — cliquer pour le couper   (Ctrl+M)")
-            + f"\nVolume de Prisme : {volume} % — molette pour le régler, "
-            "clic droit pour le curseur et la sortie"
+            + f"\nVolume de Prisme : {volume} % — survol ou molette pour le régler, "
+            "clic droit pour la sortie du son"
             + f"\nSortie : {self._audio_name()}")
 
     @staticmethod
@@ -13943,6 +14234,9 @@ class MainWindow(QMainWindow):
         if self.cfg["muted"] and percent > 0:
             self.toggle_mute()              # regler le volume rend le son
         self._refresh_mute()
+        flyout = self.__dict__.get("volume_flyout")
+        if flyout is not None and flyout.isVisible():
+            flyout.sync()
         self.show_banner(f"Volume : {percent} %", "quiet", seconds=2)
 
     def _volume_menu(self, _pos=None) -> None:

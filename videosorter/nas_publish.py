@@ -33,7 +33,11 @@ PROGRAM = ("__init__.py", "web.py", "access.py", "config.py", "query.py",
            # Les liens du telephone, telecharges par le NAS lui-meme.
            "liens.py", "downloader.py", "mediafind.py",
            # La traduction de la recherche (« deux filles » → « two girls »).
-           "traduction.py")
+           "traduction.py",
+           # Les sondages envoyes aux visiteurs, et leurs reponses.
+           "sondages.py",
+           # Ce que le telephone ne voit pas ; les missions video.
+           "telcache.py", "missions.py")
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -306,6 +310,31 @@ def publish_access(top, access: dict, tailnet: str = "") -> bool:
     return True
 
 
+def sync_surveys(root) -> list:
+    """Les sondages du PC et ceux du partage du NAS, réunis des deux côtés
+    (`sondages.sync`). Rend la liste réunie."""
+    from . import sondages
+    from .config import PRIVATE_DIR
+    return sondages.sync([PRIVATE_DIR / sondages.FILE_NAME,
+                          Path(root) / FOLDER / "etat" / sondages.FILE_NAME])
+
+
+def sync_hidden(root) -> dict:
+    """La liste « caché sur le téléphone », réunie chez Prisme et sur le NAS."""
+    from . import telcache
+    from .config import PRIVATE_DIR
+    return telcache.sync([PRIVATE_DIR / telcache.FILE_NAME,
+                          Path(root) / FOLDER / "etat" / telcache.FILE_NAME])
+
+
+def sync_missions(root) -> dict:
+    """Les missions et les verdicts, réunis chez Prisme et sur le NAS."""
+    from . import missions
+    from .config import PRIVATE_DIR
+    return missions.sync([PRIVATE_DIR / missions.FILE_NAME,
+                          Path(root) / FOLDER / "etat" / missions.FILE_NAME])
+
+
 def publish(library, root: Path, access: dict, tailnet: str = "",
             progress=lambda _text: None, icons: dict | None = None) -> str:
     """Dépose sur le NAS ce que le partage doit montrer. Rend un compte rendu."""
@@ -373,6 +402,11 @@ def publish(library, root: Path, access: dict, tailnet: str = "",
             _copy_if_changed(REPO / "videosorter" / name, program / "videosorter" / name)
         _copy_if_changed(REPO / "nas" / "serveur.py", program / "serveur.py")
     _write_installation(target / "installation", tailnet)
+    # Les sondages : ecrits sur le NAS a chaque envoi ; un NAS injoignable a
+    # ce moment-la les recoit ici.
+    sync_surveys(root)
+    sync_hidden(root)
+    sync_missions(root)
     # L'icone de l'application, pour l'ecran d'accueil du telephone.
     for size, image in (icons or {}).items():
         try:

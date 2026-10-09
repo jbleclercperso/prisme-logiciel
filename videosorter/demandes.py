@@ -18,7 +18,7 @@ from pathlib import Path
 
 KINDS = {"demande": "Une demande", "titre": "Un titre", "style": "Un style de vidéo", "lien": "Un lien à ajouter",
          "autre": "Autre", "inscription": "Nouvel inscrit",
-         "bon": "Bon d'achat à envoyer"}
+         "bon": "Bon d'achat à envoyer", "mission": "Vidéo de mission reçue"}
 # Ce que la page peut envoyer ; les deux autres, c'est le serveur qui les
 # écrit (`profils.py`).
 PUBLIC_KINDS = ("demande", "titre", "style", "lien", "autre")

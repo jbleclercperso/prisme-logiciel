@@ -327,6 +327,45 @@ class VisitorCard(QFrame):
                 parts.append(f"filleul de {person['godparent']}")
             box.addWidget(_label("  ·  ".join(parts), "vInfo", self))
 
+        # Ses sondages : le dernier, et de quoi lire son rapport.
+        surveys = person.get("surveys") or []
+        if surveys:
+            done = sum(1 for one in surveys if one["done_at"])
+            box.addWidget(_label(f"Sondages — {done} fini(s) sur {len(surveys)}", "vHead", self))
+            for one in surveys[:4]:
+                line = QHBoxLayout()
+                line.setSpacing(8)
+                state = (f"✓ fini le {when(one['done_at'])}" + (
+                    f" · +{one['reward']} vidéos" if one["reward"] else "")
+                    if one["done_at"] else f"en cours : {one['answered']} / {one['total']}")
+                text = _label(f"« {one['title'] or 'Sans titre'} »  ·  {state}", "vInfo", self)
+                text.setWordWrap(True)
+                line.addWidget(text, 1)
+                report = QPushButton("Voir son rapport", self)
+                report.setObjectName("vButton")
+                report.clicked.connect(
+                    lambda _c=False, sid=one["id"]: page.window.open_surveys(
+                        sid, (person["where"], person["key"])))
+                line.addWidget(report)
+                box.addLayout(line)
+
+        # Ses missions video.
+        jobs = person.get("missions") or []
+        if jobs:
+            valid = sum(1 for one in jobs if one["state"] in ("validee", "payee"))
+            line = QHBoxLayout()
+            text = _label(f"Missions vidéo : {len(jobs)} vidéo(s) envoyée(s)"
+                          + (f" · {valid} validée(s)" if valid else "")
+                          + f" · dernière : « {jobs[0]['title']} »", "vInfo", self)
+            text.setWordWrap(True)
+            line.addWidget(text, 1)
+            see = QPushButton("Voir sa vidéo", self)
+            see.setObjectName("vButton")
+            see.clicked.connect(lambda _c=False, one=jobs[0]: page.window.open_missions(
+                one["mission"], one["id"]))
+            line.addWidget(see)
+            box.addLayout(line)
+
         # Les themes epingles.
         if person["likes"]:
             box.addWidget(_label("Thèmes épinglés", "vHead", self))
@@ -385,8 +424,21 @@ class VisitorsPage(QWidget):
         self.on_change = on_change
         self.setStyleSheet(STYLE)
         box = QVBoxLayout(self)
+        top = QHBoxLayout()
         self.head = _label("", "vInfo", self)
-        box.addWidget(self.head)
+        top.addWidget(self.head, 1)
+        surveys = QPushButton("Sondages aux visiteurs…", self)
+        surveys.setObjectName("vButton")
+        surveys.setToolTip("Leur faire noter des vidéos, ou choisir entre deux : la "
+                           "notification arrive sur leur page.")
+        surveys.clicked.connect(lambda: window.open_surveys())
+        top.addWidget(surveys)
+        jobs = QPushButton("Missions vidéo…", self)
+        jobs.setObjectName("vButton")
+        jobs.setToolTip("Vidéo à la demande : des missions payées en bons d'achat.")
+        jobs.clicked.connect(lambda: window.open_missions())
+        top.addWidget(jobs)
+        box.addLayout(top)
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
