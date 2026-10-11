@@ -1899,6 +1899,12 @@ class MainWindow(QMainWindow):
         # Le lecteur de cote enchaine lui aussi : une video finie appelle la
         # suivante de la planche, sans qu'on ait a y revenir.
         self.aside_player.finished.connect(lambda: self.aside_step(1))
+        # L'instant ou ouvrir la video de cote (celui de la vignette), pose
+        # des qu'elle est chargee.
+        self._aside_seek = None
+        for deck in self.aside_player.decks:
+            deck.player.mediaStatusChanged.connect(self._aside_seek_when_ready)
+            deck.player.positionChanged.connect(self._aside_seek_when_ready)
         self.aside_player.nextRequested.connect(lambda: self.aside_step(1))
         # Double-clic sur la video de cote : la meme que ⛶, en plein ecran.
         self.aside_player.cinemaRequested.connect(self.aside_fullscreen)
@@ -10274,12 +10280,16 @@ class MainWindow(QMainWindow):
         # La video que montre la vignette de la carte : un dossier ouvrait
         # sinon sa premiere video par ordre des noms, une autre que celle
         # qu'on avait sous les yeux.
-        shown = next((card.video for card in self.board.cards
-                      if card.index == position and card.item is item and card.video), "")
+        card = next((card for card in self.board.cards
+                     if card.index == position and card.item is item and card.video), None)
         self.aside_item_id = item.item_id
         self._aside_hint = position
         self.aside_playlist = []
-        self._aside_play(shown or str(item.videos[0]), item.name, str(item.path))
+        if card is not None:
+            # A l'instant de la vignette : ce qu'on avait sous les yeux.
+            self._aside_play(card.video, item.name, str(item.path), start_s=card.ts)
+        else:
+            self._aside_play(str(item.videos[0]), item.name, str(item.path))
 
     @property
     def aside_index(self) -> int:
@@ -10303,9 +10313,12 @@ class MainWindow(QMainWindow):
                 return position
         return -1
 
-    def _aside_play(self, video: str, title: str, tip: str = "") -> None:
-        """Le lecteur de droite, sur cette video."""
+    def _aside_play(self, video: str, title: str, tip: str = "",
+                    start_s: float = 0.0) -> None:
+        """Le lecteur de droite, sur cette video (a `start_s`, s'il est donne)."""
         mark("open_aside")
+        self._aside_seek = ((os.path.normcase(video), int(start_s * 1000), time.monotonic())
+                            if start_s and start_s > 0 else None)
         self.aside_current = video
         self._restore_split()
         self.aside_title.setText(title)
@@ -10315,8 +10328,55 @@ class MainWindow(QMainWindow):
         self.aside_player.set_muted(self.cfg["muted"])
         self.aside_player.set_loop(False)
         self.aside_player.set_item(video)
+        self._aside_seek_when_ready()
         # Aucun apercu n'est demande : le lecteur de cote n'a pas de pellicule,
         # et fabriquer cinq images pour rien retardait celles de la planche.
+
+    ASIDE_SEEK_S = 6.0
+
+    def _aside_seek_when_ready(self, *_args) -> None:
+        """Pose l'instant voulu dans le lecteur de droite, des que sa video
+        le permet (`_seek_when_ready`, pour la fiche)."""
+        wanted = self._aside_seek
+        if wanted is None:
+            return
+        path, ms, asked = wanted
+        if time.monotonic() - asked > self.ASIDE_SEEK_S:
+            self._aside_seek = None
+            return
+        player = self.aside_player.player
+        deck = next((d for d in self.aside_player.decks if d.player is player), None)
+        if deck is None or not deck.path or os.path.normcase(deck.path) != path:
+            return
+        if player.mediaStatus() not in (player.MediaStatus.LoadedMedia,
+                                        player.MediaStatus.BufferingMedia,
+                                        player.MediaStatus.BufferedMedia):
+            return
+        # Un saut demande avant que la lecture parte est oublie : la video
+        # repartait du debut (en annoncant pourtant l'instant voulu). Tant
+        # qu'elle n'a que quelques secondes, une video revenue au debut est
+        # replacee ; la garde s'efface d'elle-meme (`ASIDE_SEEK_S`), pour ne
+        # jamais contrarier un retour au debut voulu.
+        if player.position() < min(ms - 800, 1500):
+            player.setPosition(ms)
+
+    def _card_neighbour(self, item, video: str, step: int) -> str:
+        """La voisine de `video` parmi les videos de cette carte (un dossier,
+        sous-dossiers compris), dans le meme ordre que la fiche."""
+        # Ni ce qui dort dans une corbeille (l'analyse y descend), ni ce
+        # qu'on a supprime ou range pendant la seance.
+        gone = self._departed()
+        listing = [str(one) for one in item.videos
+                   if not self._in_trash(os.path.normcase(str(one)))
+                   and os.path.normcase(str(one)) not in gone]
+        if self.sort_mode in ("", "random"):
+            listing = self._session_order(listing)
+        if len(listing) < 2:
+            return ""
+        keys = [os.path.normcase(one) for one in listing]
+        here = os.path.normcase(video)
+        at = keys.index(here) if here in keys else (-1 if step > 0 else 0)
+        return listing[(at + step) % len(listing)]
 
     def _remember_split(self, *_args) -> None:
         if not self.aside.isHidden():
@@ -11137,6 +11197,17 @@ class MainWindow(QMainWindow):
     def aside_step(self, step: int) -> None:
         """Passe a la vignette voisine, dans l'ordre de la planche."""
         if self.cfg["stay_in_folder"] and self.aside_current and not self.aside_playlist:
+            card = self.aside_index
+            if card >= 0 and self.items[card].kind == MODE_FOLDERS:
+                # Ouverte depuis la carte d'un dossier : on reste dans ce
+                # dossier-la, sous-dossiers compris -- et non dans celui ou
+                # dort le fichier, qui n'en est parfois qu'un sous-dossier.
+                target = self._card_neighbour(self.items[card], self.aside_current, step)
+                if target:
+                    self._aside_play(target, Path(target).name)
+                else:
+                    self.show_banner("C'est la seule vidéo de ce dossier.", "quiet")
+                return
             target = self._folder_neighbour(self.aside_current, step)
             if target:
                 self._aside_play(target, Path(target).name)
