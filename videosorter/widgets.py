@@ -3157,6 +3157,88 @@ class VeilDialog(QDialog):
         return names, off
 
 
+class PhoneHideDialog(QDialog):
+    """Ce qu'on cache sur le telephone, comme « Dossiers masqués » : une liste
+    a cocher, et l'arborescence pour en ajouter.
+
+    Coche : le dossier (ou la video) n'apparait plus sur la page des
+    visiteurs. Decoche, ou retire : il revient. Rien ne bouge sur le disque,
+    et Prisme, sur ce PC, continue de tout montrer.
+    """
+
+    def __init__(self, entries: list, parent=None, start: str = ""):
+        super().__init__(parent)
+        self.start = start
+        self.setWindowTitle("Cachés sur le téléphone")
+        self.resize(620, 460)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Les dossiers cochés, et tout ce qu'ils contiennent, n'apparaissent pas "
+            "sur le téléphone (la page des visiteurs). Ils restent visibles dans "
+            "Prisme, sur ce PC. Décochez pour les remontrer ; rien n'est déplacé "
+            "sur le disque.", self)
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self.list = QListWidget(self)
+        for path, kind in entries:
+            self._add_row(str(path), kind, True)
+        layout.addWidget(self.list, 1)
+
+        row = QHBoxLayout()
+        add = QPushButton("Ajouter des dossiers…", self)
+        add.setToolTip("Parcourir l'arborescence et choisir un ou plusieurs dossiers "
+                       "(Ctrl ou Maj)")
+        add.clicked.connect(self.add_folders)
+        row.addWidget(add)
+        row.addStretch(1)
+        remove = QPushButton("Retirer", self)
+        remove.setToolTip("Enlève l'élément sélectionné de la liste : il redevient visible")
+        remove.clicked.connect(self.remove_row)
+        row.addWidget(remove)
+        layout.addLayout(row)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        box.button(QDialogButtonBox.Ok).setText("Enregistrer")
+        box.button(QDialogButtonBox.Cancel).setText("Annuler")
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
+
+    def _add_row(self, path: str, kind: str, on: bool) -> None:
+        name = Path(path).name or path
+        item = QListWidgetItem(("🎬 " if kind == "video" else "📁 ") + name, self.list)
+        item.setToolTip(path)
+        item.setData(Qt.UserRole, (path, kind))
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if on else Qt.Unchecked)
+
+    def add_folders(self) -> None:
+        for folder in pick_folders(self, "Dossiers à cacher sur le téléphone", self.start):
+            self._take(str(folder))
+
+    def _take(self, path: str) -> None:
+        wanted = os.path.normcase(path).rstrip("\\/")
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if os.path.normcase(item.data(Qt.UserRole)[0]).rstrip("\\/") == wanted:
+                item.setCheckState(Qt.Checked)
+                self.list.setCurrentItem(item)
+                return
+        self._add_row(path, "dossier", True)
+        self.list.setCurrentRow(self.list.count() - 1)
+
+    def remove_row(self) -> None:
+        row = self.list.currentRow()
+        if row >= 0:
+            self.list.takeItem(row)
+
+    def chosen(self) -> list:
+        """[(chemin, sorte)] de ce qui reste coche : ce qui sera cache."""
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.Checked]
+
+
 class _Restorer(QThread):
     """Remet des elements de la corbeille de session en place, hors de
     l'interface. Rend la liste des echecs, une fois tout tente."""

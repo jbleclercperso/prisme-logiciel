@@ -6062,8 +6062,8 @@ def check_quiet_and_header(app, window, base, root) -> None:
     window.toggle_burst()
     pump(app, 0.5)
     check("rafale" in window.activity_label.text()
-          and window._menu_by_text["Rafale : passer tout seul après 8 s"].isChecked(),
-          "la rafale en marche se voit, et se coche dans le menu")
+          and window._menu_by_text.get("Rafale : passer tout seul après 8 s") is None,
+          "la rafale en marche se voit (elle n'a plus d'entrée dans le menu)")
     window.toggle_burst()
     window.tunnel_address = "https://essai.exemple.net"
     check(not window.share_badge.isHidden()
@@ -6179,9 +6179,8 @@ def check_chosen_features(app, window, base, tri) -> None:
     QTest.keyClick(window, Qt.Key_1)
     check(window.ratings.get(window.current.path) == 1 and window.index == start,
           "par défaut, 1 met en favori et reste sur la vidéo")
-    action = window._menu_by_text.get("Passer à la suivante après ★")
-    check(action is not None and action.isCheckable() and not action.isChecked(),
-          "l'option est dans ⋯ › Affichage, décochée")
+    check(window._menu_by_text.get("Passer à la suivante après ★") is None,
+          "l'option n'est plus dans le menu ⋯")
     window.toggle_advance_after_star()
     QTest.keyClick(window, Qt.Key_2)
     pump(app, 0.2)
@@ -7117,16 +7116,8 @@ def check_reported_fixes(app, window, base, tri) -> None:
     window.set_tab(TAB_FOLDERS)
     pump(app, 0.3)
 
-    action = window._menu_by_text.get("Passer à la suivante après ★")
     check("QMenu::icon:checked" in window.styleSheet(),
           "une entrée cochée du menu se voit, même avec une icône")
-    window.toggle_advance_after_star()
-    window.cfg.save()
-    check(_Config(path=window.cfg.path)["advance_after_star"] is True,
-          "« Passer à la suivante après ★ » est retenu d'une séance à l'autre")
-    window.toggle_advance_after_star()
-    window.cfg.save()
-    check(action is not None and not action.isChecked(), "et se décoche")
 
     window.set_tab(TAB_SPLIT)
     pump(app, 0.4)

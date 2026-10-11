@@ -43,9 +43,6 @@ SHORTCUTS = [
                "annule ; l'extension reste"),
         ("Ctrl+Z", "annuler la dernière décision, ou le dernier renommage"),
         ("Ctrl+B", "ouvrir la corbeille de session"),
-        ("⋯ › Réglages › Passer à la suivante après ★", "sur la fiche d'une "
-                                                        "vidéo, 1 passe aussi "
-                                                        "à la suivante"),
     ]),
     ("Se déplacer", [
         ("← →", "élément précédent, suivant — sans sortir du dossier si « rester "
@@ -127,9 +124,8 @@ SHORTCUTS = [
                        "ramener Prisme"),
         ("F1", "cette fiche"),
         ("« Non vus »", "ne garder que ce qui n'a été ni décidé ni regardé"),
-        ("⋯ › Changer de racine…", "ouvrir une autre collection (ses racines "
-                                   "récentes : ⋯ › Collection)"),
-        ("⋯ › Réglages › Rafale", "la suivante arrive toute seule après 8 s sans décision"),
+        ("⋯ › Collection › Changer de racine…", "ouvrir une autre collection "
+                                                "(ses racines récentes juste dessous)"),
         ("⋯ › Collection › Chercher les doublons",
          "une seule recherche, copies exactes et réencodages : longue la "
          "première fois, presque immédiate ensuite. Le meilleur de chaque "
@@ -156,14 +152,17 @@ SHORTCUTS = [
          "nom le réaffiche"),
         ("⋯ › Confidentialité › Afficher les dossiers masqués",
          "montre, ou remasque, tous ces dossiers d'un coup"),
-        ("⋯ › Collection › Partage à distance",
+        ("⋯ › Visiteurs › Partage à distance",
          "« Via le PC » (Prisme ouvert : sur le Wi-Fi, ou de n'importe où par "
          "l'adresse publique) et « Via le NAS » (de partout, même PC éteint) : "
          "un code à scanner et un lien à copier — l'ouvrir suffit pour entrer ; "
          "puis le mot de passe, et qui a regardé quoi. L'œil de l'en-tête "
          "paraît quand quelqu'un regarde"),
-        ("⋯ › Réglages › Avancé", "décodage vidéo, mise à l'échelle de Windows, "
-                                  "où sont les vignettes, journal des gels"),
+        ("⋯ › Visiteurs › Cachés sur le téléphone…", "cocher, dans l'arborescence, "
+                                                     "les dossiers que la page des "
+                                                     "visiteurs ne montre pas"),
+        ("⋯ › Réglages", "décodage vidéo, mise à l'échelle de Windows, "
+                         "où sont les vignettes, journal des gels"),
     ]),
     ("Le mur", [
         ("◂ ⏯ ▸", "la précédente du panneau ; pause ; une autre au hasard (⤮), "

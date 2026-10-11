@@ -287,7 +287,7 @@ DEFAULTS = {
     # le processeur decode, sans le gel qu'impose a chaque video ouverte la
     # creation d'un peripherique Direct3D.
     "hw_decoding": False,        # ancien reglage : vrai force la carte graphique
-    # auto | cpu | gpu (⋯ › Réglages › Avancé › Décodage vidéo). Automatique : le
+    # auto | cpu | gpu (⋯ › Réglages › Décodage vidéo). Automatique : le
     # processeur s'il a de quoi (8 coeurs logiques et plus), la carte
     # graphique sinon.
     "decoding": "auto",

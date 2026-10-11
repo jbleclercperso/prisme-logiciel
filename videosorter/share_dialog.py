@@ -849,8 +849,8 @@ class ShareDialog(QDialog):
             "Ces dossiers et ces vidéos restent dans Prisme, sur ce PC, mais n'apparaissent "
             "pas sur la page des visiteurs — ni par le PC, ni par le NAS (qui suit la liste "
             "en quelques secondes). Leurs sous-dossiers sont cachés avec eux.\n"
-            "Depuis Prisme : cochez des dossiers ou des vidéos (ou ouvrez une fiche), puis "
-            "⋯ › Collection › « Cacher sur le téléphone ».", page)
+            "Depuis Prisme : ⋯ › Visiteurs › « Cachés sur le téléphone… », puis cochez "
+            "les dossiers dans l'arborescence.", page)
         hint.setWordWrap(True)
         box.addWidget(hint)
         self.hidden_tree = QTreeWidget(page)

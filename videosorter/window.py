@@ -96,7 +96,7 @@ from .icons import DIM, INK, dress, icon, lettered
 from .widgets import (
     Stepper, OverBar, PeekOverlay, RadialMenu, app_icon, brand_pixmap, draw_icon,
     STYLESHEET, CommandBar, DestinationsDialog, PreviewGrid, SinglePlayer,
-    FavoriteStar, PinButton, TagsDialog, TrashDialog, VeilDialog,
+    FavoriteStar, PhoneHideDialog, PinButton, TagsDialog, TrashDialog, VeilDialog,
 )
 
 PAGE_WELCOME, PAGE_SORT, PAGE_DONE, PAGE_QUIET, PAGE_LOCK = 0, 1, 2, 3, 4
@@ -546,6 +546,11 @@ class MainWindow(QMainWindow):
         for kind in (KIND_VIDEO, KIND_PHOTO):
             self._reset_filters(cfg, kind)
         cfg["burst"] = False
+        # Plus d'entree dans le menu pour eux : ils restent eteints, et le
+        # guetteur des doublons, lui, est toujours la (« Chercher les doublons »
+        # ne relit que les nouvelles videos).
+        cfg["advance_after_star"] = False
+        cfg["dupes_watch"] = True
         # On arrive toujours sur les vignettes : l'edition se choisit.
         self._editing = False
         # Le reflet de l'onglet, pour la configuration. Il ne decide plus de
@@ -1257,8 +1262,6 @@ class MainWindow(QMainWindow):
         # le tri ; dessous, un sous-menu par sujet. « Collection » melangeait
         # tout : doublons, vignettes, partage, Telegram, sondages…
         self.overflow = build_overflow(self, [
-            ("Ultra tri : clic gauche garde, clic droit supprime   (Ctrl+U)",
-             self.toggle_ultra),
             ("Destinations…", self.edit_destinations),
             ("Corbeille de session", self.open_trash),
             ("-", None),
@@ -1292,7 +1295,7 @@ class MainWindow(QMainWindow):
             ]),
             ("Visiteurs", [
                 ("Partage à distance…", self.open_share),
-                ("Cacher sur le téléphone (ou remontrer)", self.hide_on_phone),
+                ("Cachés sur le téléphone…", self.edit_phone_hidden),
                 ("-", None),
                 ("Demandes reçues…", self.open_demandes),
                 ("Sondages aux visiteurs…", self.open_surveys),
@@ -1300,34 +1303,30 @@ class MainWindow(QMainWindow):
             ]),
             ("Réglages", [
                 ("Mots-clés automatiques…", self.edit_tags),
-                ("-", None),
-                ("Rafale : passer tout seul après 8 s", self.toggle_burst),
-                ("Passer à la suivante après ★", self.toggle_advance_after_star),
                 ("Durée du diaporama…", self.edit_slideshow_seconds),
                 ("-", None),
                 ("Arborescence des destinations", self.toggle_tree),
                 ("Lecteur flottant automatique", self.toggle_float_auto),
                 ("Bande des mots épinglés", self.toggle_word_strip),
                 ("-", None),
-                ("Avancé", [
-                    ("Ignorer la mise à l'échelle de Windows", self.toggle_dpi),
-                    ("Décodage vidéo", [
-                        ("Automatique (recommandé)", lambda: self.set_decoding("auto")),
-                        ("Processeur — aperçus plus vifs",
-                         lambda: self.set_decoding("cpu")),
-                        ("Carte graphique — soulage le processeur",
-                         lambda: self.set_decoding("gpu")),
-                    ]),
-                    ("Où sont les vignettes…", self.show_cache_place),
-                    ("Journal des gels de l'interface", self.open_stall_log),
-                    # Caches (HIDDEN_MENU) : d'autres parties de Prisme les
-                    # retrouvent par leur nom.
-                    ("Chercher les doublons (même taille)", self.find_duplicates),
-                    ("Chercher les doublons (même image)",
-                     lambda: self.find_duplicates(by_image=True)),
-                    ("Empreintes : sonder ce qui manque", self.scan_signatures),
-                    ("Doublons d'après les empreintes", self.duplicates_from_sigs),
+                # Ce qui vivait sous « Avancé », un cran plus haut.
+                ("Décodage vidéo", [
+                    ("Automatique (recommandé)", lambda: self.set_decoding("auto")),
+                    ("Processeur — aperçus plus vifs",
+                     lambda: self.set_decoding("cpu")),
+                    ("Carte graphique — soulage le processeur",
+                     lambda: self.set_decoding("gpu")),
                 ]),
+                ("Ignorer la mise à l'échelle de Windows", self.toggle_dpi),
+                ("Où sont les vignettes…", self.show_cache_place),
+                ("Journal des gels de l'interface", self.open_stall_log),
+                # Caches (HIDDEN_MENU) : d'autres parties de Prisme les
+                # retrouvent par leur nom.
+                ("Chercher les doublons (même taille)", self.find_duplicates),
+                ("Chercher les doublons (même image)",
+                 lambda: self.find_duplicates(by_image=True)),
+                ("Empreintes : sonder ce qui manque", self.scan_signatures),
+                ("Doublons d'après les empreintes", self.duplicates_from_sigs),
             ]),
             ("Confidentialité", [
                 ("Dossiers masqués…", self.edit_veiled),
@@ -1365,14 +1364,8 @@ class MainWindow(QMainWindow):
         self.dupes_result_action.triggered.connect(self.show_found_dupes)
         collection.insertAction(after_dupes, self.dupes_result_action)
         self.dupes_result_action.setVisible(False)
-        self.dupes_watch_action = QAction("Vérifier les nouvelles vidéos (doublons)", collection)
-        self.dupes_watch_action.setCheckable(True)
-        self.dupes_watch_action.setChecked(bool(self.cfg["dupes_watch"]))
-        self.dupes_watch_action.setToolTip(
-            "À chaque arrivée de vidéos, Prisme regarde si elles ne sont pas déjà "
-            "dans la collection")
-        self.dupes_watch_action.toggled.connect(self._set_dupes_watch)
-        collection.insertAction(after_dupes, self.dupes_watch_action)
+        # « Vérifier les nouvelles vidéos » n'est plus une entree a part : le
+        # guetteur tourne toujours, et la recherche ne releve que les nouvelles.
         # Le dernier resultat a survecu a la fermeture : l'entree revient.
         QTimer.singleShot(0, self._reload_found_dupes)
         # Les racines recentes : l'accueil, qui les listait, ne parait plus
@@ -1387,17 +1380,9 @@ class MainWindow(QMainWindow):
         # les retrouvait plus par leur texte une fois renommees.
         self._menu_by_text = {action.text(): action
                               for action in self._menu_actions()}
-        # La rafale dit si elle est en marche : une coche, et non un
-        # libelle qui ne change jamais.
-        burst = self._menu_by_text["Rafale : passer tout seul après 8 s"]
-        burst.setCheckable(True)
-        burst.setChecked(bool(self.cfg["burst"]))
-        # Decochee par defaut : le favori se combine souvent avec un
-        # rangement (★ puis « 6 »), qu'une avance automatique empecherait.
-        after_star = self._menu_by_text["Passer à la suivante après ★"]
-        after_star.setCheckable(True)
-        after_star.setChecked(bool(self.cfg["advance_after_star"]))
-        after_star.setIcon(icon("star"))
+        self._menu_by_text["Chercher les doublons"].setToolTip(
+            "Ne relève que les vidéos nouvelles : les autres ont déjà leur empreinte "
+            "en mémoire. Les vidéos qui arrivent sont aussi vérifiées toutes seules.")
         self._dress_decoding_menu()
         self._dress_quiet_menu()
         strip = self._menu_by_text["Bande des mots épinglés"]
@@ -5726,48 +5711,29 @@ class MainWindow(QMainWindow):
             return True
         Chore(work, self, fallback=False).start()
 
-    def hide_on_phone(self) -> None:
-        """⋯ › Cacher sur le telephone : les elements coches, sinon celui de
-        la fiche, sinon le dossier ou l'on est. Deja tous caches : remontres."""
-        if self.browsing and self.board.picked_ids:
-            items = list(self.board.picked_items())
-        elif not self.browsing and self.current is not None:
-            items = [self.current]
-        else:
-            items = []
-        targets = []
-        for item in items:
-            if item.is_tag:
-                continue
-            if item.kind == MODE_FOLDERS and getattr(item, "loose_only", False):
-                # « Sans dossier » : ses videos, pas le dossier entier.
-                targets += [(Path(video), "video") for video in item.videos]
-            elif item.kind == MODE_FOLDERS:
-                targets.append((Path(item.path), "dossier"))
-            else:
-                targets.append((Path(item.path), "video"))
-        top = self.top_root()
-        if not targets and self.root is not None and top is not None \
-                and Path(self.root) != Path(top) and not self._transient:
-            targets = [(Path(self.root), "dossier")]
-        if not targets:
-            self.show_banner("Cochez des dossiers ou des vidéos (ou ouvrez une fiche), puis "
-                             "⋯ › Cacher sur le téléphone.", "quiet", seconds=6)
-            return
-        from . import telcache
+    def edit_phone_hidden(self) -> None:
+        """⋯ › Visiteurs › Cachés sur le téléphone : la liste a cocher, comme
+        « Dossiers masqués », avec l'arborescence pour en ajouter."""
         hidden = self.phone_hidden()
-        name = targets[0][0].name + (f" et {len(targets) - 1} autre(s)" if len(targets) > 1
-                                     else "")
-        if all(telcache.key_of(path) in hidden for path, _kind in targets):
-            self.set_phone_hidden(targets, False)
-            self.show_banner(f"« {name} » est de nouveau visible sur le téléphone.", "done")
-            return
-        changed = self.set_phone_hidden(targets, True)
-        self.show_banner(
-            f"« {name} » n'apparaît plus sur le téléphone ({changed} élément(s)) — "
-            "cliquer pour annuler. La liste : Partage à distance › Cachés sur le téléphone.",
-            "done", seconds=10,
-            action=lambda t=targets: self.set_phone_hidden(t, False))
+        current = [(one["path"], one["kind"]) for one in
+                   sorted(hidden.values(), key=lambda one: one["path"].lower())]
+        top = self.top_root()
+        dialog = PhoneHideDialog(current, self, start=str(top) if top is not None else "")
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return self.setFocus()
+        from . import telcache
+        kept = {telcache.key_of(path): (Path(path), kind) for path, kind in dialog.chosen()}
+        shown = [(Path(one["path"]), one["kind"]) for key, one in hidden.items()
+                 if key not in kept]
+        added = [target for key, target in kept.items() if key not in hidden]
+        changed = 0
+        if shown:
+            changed += self.set_phone_hidden(shown, False)
+        if added:
+            changed += self.set_phone_hidden(added, True)
+        if changed:
+            self.show_banner(f"Cachés sur le téléphone : {len(kept)} élément(s).", "done")
+        self.setFocus()
 
     # -- les missions video (missions.py) -----------------------------------------
     def _mission_sources(self) -> list:
@@ -9660,14 +9626,6 @@ class MainWindow(QMainWindow):
     # fois : on ne la lance pas sans le dire (« Chercher les doublons »).
     WATCH_MAX = 400
 
-    def _set_dupes_watch(self, on: bool) -> None:
-        self.cfg["dupes_watch"] = bool(on)
-        self.show_banner("Les nouvelles vidéos seront comparées à la collection à chaque "
-                         "arrivée." if on else "Plus de vérification automatique des "
-                         "doublons.", "quiet")
-        if on:
-            QTimer.singleShot(500, self._watch_new_dupes)
-
     def _watch_new_dupes(self) -> None:
         """Le guetteur : des videos sont arrivees, sont-elles deja la ?
 
@@ -12131,16 +12089,11 @@ class MainWindow(QMainWindow):
             self._rate_paths([path], 0 if self._is_favorite(path) else 1)
 
     def toggle_advance_after_star(self) -> None:
-        """⋯ › Réglages : 1 a 5, sur la fiche d'une video, passent aussi a la suivante."""
-        on = not self.cfg["advance_after_star"]
-        self.cfg["advance_after_star"] = on
+        """1 a 5, sur la fiche d'une video, passent aussi a la suivante. Plus
+        dans le menu (on ne comprenait pas ce qu'elle faisait) : eteinte a
+        chaque lancement, elle ne s'allume plus que par ici."""
+        self.cfg["advance_after_star"] = not self.cfg["advance_after_star"]
         self.cfg.save_soon()
-        action = self._menu_by_text.get("Passer à la suivante après ★")
-        if action is not None:
-            action.setChecked(on)
-        self.show_banner(
-            "Après ★ (touches 1 à 5), la fiche passe à la vidéo suivante." if on
-            else "Après ★, la fiche reste sur la vidéo.", "quiet")
 
     def _advance_after_star(self) -> None:
         """La suite d'un ★ au clavier, si l'option le demande.
