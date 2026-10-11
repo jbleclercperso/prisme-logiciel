@@ -65,7 +65,8 @@ DEFAULT_COLUMNS = 5
 CARD_GAP = 6
 MIN_CARD_WIDTH = 150
 # Une carte coute cher a construire : six cents d'un coup prenaient plusieurs
-# secondes. On n'en batit qu'une page, et l'on tourne les pages.
+# secondes. On n'en batit qu'une page, et l'on tourne les pages. Une page
+# remplit la fenetre (`_fitting_size`) ; jamais moins que ceci.
 PAGE_SIZE = 40
 # Le survol se sonde souvent : a quatre-vingts millisecondes, l'apercu partait
 # jusqu'a un douzieme de seconde apres l'arrivee de la souris.
@@ -704,6 +705,11 @@ class BoardView(QWidget):
         self.items: list = []
         self.cards: list = []
         self.page = 0
+        # Combien de cartes par page : de quoi remplir la fenetre, selon les
+        # colonnes et la hauteur (`_fitting_size`), jamais moins de PAGE_SIZE.
+        # Quarante cartes a dix par rangee ne couvraient que la moitie d'un
+        # grand ecran.
+        self.page_size = PAGE_SIZE
         self.hovered = -1          # rang de la carte survolee, dans la page
         self._stars_of = lambda _path: 0
         self.thumbs = ThumbLoader(self)
@@ -902,8 +908,8 @@ class BoardView(QWidget):
         self._fill_page(previous)
 
     def _page_bounds(self) -> tuple:
-        first = self.page * PAGE_SIZE
-        return first, min(first + PAGE_SIZE, len(self.items))
+        first = self.page * self.page_size
+        return first, min(first + self.page_size, len(self.items))
 
     def _fill_page(self, previous=None) -> None:
         first, last = self._page_bounds()
@@ -1026,6 +1032,8 @@ class BoardView(QWidget):
         self.width_timer.start()
 
     def _apply_widths(self) -> None:
+        if self._fit_page():
+            return
         if self._cols() != getattr(self, "_laid_cols", self._cols()):
             # Moins de place (le lecteur de droite s'est ouvert) : moins de
             # colonnes, plutot que des cartes coupees au bord.
@@ -1057,7 +1065,7 @@ class BoardView(QWidget):
         self._pending_previews -= done
 
     def total_pages(self) -> int:
-        return max(1, -(-len(self.items) // PAGE_SIZE))
+        return max(1, -(-len(self.items) // self.page_size))
 
     def set_page(self, page: int) -> None:
         page = max(0, min(page, self.total_pages() - 1))
@@ -1073,9 +1081,9 @@ class BoardView(QWidget):
         position = len(self.items)
         self.items.append(item)
         first, _last = self._page_bounds()
-        if not first <= position < first + PAGE_SIZE:
+        if not first <= position < first + self.page_size:
             # Hors de la page regardee : rien a batir, on met juste le compte a jour.
-            self.pageChanged.emit(first + 1, first + PAGE_SIZE, len(self.items))
+            self.pageChanged.emit(first + 1, first + self.page_size, len(self.items))
             return
         slot = position - first
         self._ensure_cards(slot + 1)
@@ -1147,7 +1155,7 @@ class BoardView(QWidget):
     def scroll_to(self, position: int) -> None:
         if not 0 <= position < len(self.items):
             return
-        self.set_page(position // PAGE_SIZE)
+        self.set_page(position // self.page_size)
         card = self._card_for(position)
         if card is not None:
             self.scroll.ensureWidgetVisible(card, 40, 40)
@@ -1174,7 +1182,53 @@ class BoardView(QWidget):
 
     def set_columns(self, columns: int) -> None:
         self.columns = max(1, columns)
-        self._relayout()
+        if not self._fit_page():
+            self._relayout()
+
+    def _fitting_size(self) -> int:
+        """Les cartes qui remplissent la fenetre : toutes les rangees qu'elle
+        peut montrer, a ce nombre de colonnes -- jamais moins de PAGE_SIZE."""
+        cols = self._cols()
+        width = self._card_width()
+        shown = next((card for card in self.cards if not card.isHidden()), None)
+        if shown is not None and shown.width() == width:
+            # La carte posee, a cette largeur : sa hauteur vraie.
+            height = shown.sizeHint().height()
+        else:
+            # L'image en 16:9 (`set_card_width`), plus le nom dessous.
+            height = int((width - 8) * 9 / 16) + 30
+        room = self.scroll.viewport().height()
+        rows = max(1, -(-(room - CARD_GAP) // (height + CARD_GAP)))
+        return max(PAGE_SIZE, cols * rows)
+
+    def _fit_page(self) -> bool:
+        """Ajuste la taille de page a la fenetre ; la carte du haut reste la.
+        Vrai si la page a ete refaite."""
+        if not self.isVisible():
+            return False
+        wanted = self._fitting_size()
+        if wanted == self.page_size:
+            return False
+        anchor = self.page * self.page_size
+        self.page_size = wanted
+        self.page = min(anchor // wanted, self.total_pages() - 1)
+        self.stop()
+        # Les cartes quittent la grille avant d'y reprendre place : les
+        # colonnes ont peut-etre change.
+        for card in self.cards:
+            self.grid.removeWidget(card)
+        self._fill_page(self.items)
+        # Les cartes ont pris leur largeur : leur hauteur se mesure, et la
+        # page se corrige une fois si l'estimation etait fausse.
+        again = self._fitting_size()
+        if again != self.page_size:
+            self.page_size = again
+            self.page = min(anchor // again, self.total_pages() - 1)
+            for card in self.cards:
+                self.grid.removeWidget(card)
+            self._fill_page(self.items)
+        self.visible_timer.start()
+        return True
 
     def _relayout(self) -> None:
         first, last = self._page_bounds()

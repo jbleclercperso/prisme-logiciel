@@ -1264,6 +1264,7 @@ class MainWindow(QMainWindow):
         self.overflow = build_overflow(self, [
             ("Destinations…", self.edit_destinations),
             ("Corbeille de session", self.open_trash),
+            ("Mosaïque (essai)…", lambda: self.open_mosaic()),
             ("-", None),
             ("Recherches", [
                 ("Enregistrer cette recherche…", self.save_search),
@@ -1529,6 +1530,9 @@ class MainWindow(QMainWindow):
         for name, text, tip, slot in (
             ("square-stack", "Mur", "Les vidéos cochées, toutes à la fois, sur le mur",
              self.wall_picked),
+            ("layout-grid", "Mosaïque",
+             "Les vidéos cochées en mosaïque plein écran, collées, sans bord (essai : "
+             "de 10 à 100)", self.mosaic_picked),
             ("play", "Playlist",
              "Les vidéos cochées l'une après l'autre, à droite, en boucle",
              self.playlist_picked),
@@ -11502,6 +11506,43 @@ class MainWindow(QMainWindow):
             return
         self.board.clear_picked()
         self.wall_videos(videos)
+
+    def mosaic_picked(self) -> None:
+        """Les videos cochees, en mosaique."""
+        videos = [str(video) for video in self._picked_videos()]
+        if videos:
+            self.board.clear_picked()
+            self.open_mosaic(videos, chosen=True)
+
+    def open_mosaic(self, videos=None, chosen: bool = False) -> None:
+        """De 10 a 100 videos a la fois, collees, sans bord (mosaic_view.py).
+        Sans selection : tirees de la liste affichee."""
+        if not videos:
+            videos = [str(video) for item in self.items
+                      if not item.is_tag and not item.locked for video in item.videos]
+        gone = self._departed()
+        videos = [v for v in videos if os.path.normcase(v) not in gone
+                  and not self._in_trash(os.path.normcase(v))]
+        if not videos:
+            return self.show_banner("Aucune vidéo pour la mosaïque : ouvrez un dossier, "
+                                    "ou cochez des vidéos.", "quiet")
+        from .mosaic_view import COUNT_MAX, COUNT_MIN, MosaicWindow
+        # Une selection : une case par video cochee ; sinon le nombre retenu.
+        count = (max(COUNT_MIN, min(COUNT_MAX, len(videos))) if chosen
+                 else int(self.cfg["mosaic_count"] or 20))
+        old = getattr(self, "_mosaic", None)
+        if old is not None and shiboken6.isValid(old):
+            old.close()
+        self._hush_players()
+        window = MosaicWindow(videos, count, self)
+        window.countChanged.connect(self._mosaic_count)
+        window.sheetRequested.connect(lambda path: self.play_in_app(path))
+        self._mosaic = window
+        window.showFullScreen()
+
+    def _mosaic_count(self, value: int) -> None:
+        self.cfg["mosaic_count"] = int(value)
+        self.cfg.save_soon()
 
     def wall_from_folder(self) -> None:
         """Le mur, lance depuis un dossier : ses videos dans les panneaux,

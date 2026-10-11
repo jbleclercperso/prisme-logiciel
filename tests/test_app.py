@@ -1153,20 +1153,21 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     window.board.set_items(many, lambda _p: 0)
     pump(app, 0.4)
     built = sum(1 for c in window.board.cards if not c.isHidden())
-    check(built == PAGE_SIZE,
-          f"une page de {PAGE_SIZE} cartes, pas {len(many)} ({built} bâties)")
+    size = window.board.page_size
+    check(built == size >= PAGE_SIZE,
+          f"une page de {size} cartes (au moins {PAGE_SIZE}), pas {len(many)} ({built} bâties)")
     check(len(window.board.items) == len(many),
           "alors que la liste complète est bien retenue")
-    check(window.board.total_pages() == 3,
-          f"trois pages pour {len(many)} éléments ({window.board.total_pages()})")
+    check(window.board.total_pages() == -(-len(many) // size),
+          f"{-(-len(many) // size)} pages pour {len(many)} éléments ({window.board.total_pages()})")
 
     window.board.set_page(1)
     pump(app, 0.3)
     check(window.board.page == 1, "on tourne la page")
-    check(window.board.cards[0].index == PAGE_SIZE,
+    check(window.board.cards[0].index == size,
           f"la première carte reprend au bon rang ({window.board.cards[0].index})")
     still = sum(1 for c in window.board.cards if not c.isHidden())
-    check(still == PAGE_SIZE, f"toujours une page de cartes ({still})")
+    check(still == min(size, len(many) - size), f"toujours une page de cartes ({still})")
 
     window.board.set_page(2)
     pump(app, 0.3)

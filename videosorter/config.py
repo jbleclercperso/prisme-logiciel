@@ -389,6 +389,7 @@ DEFAULTS = {
     "searches": [],              # recherches enregistrees : nom, requete, tri, non-vus, onglet
     "burst": False,              # rafale : passer tout seul apres quelques secondes
     "wall_panes": 3,             # panneaux du mur
+    "mosaic_count": 20,          # videos de la mosaique (10 a 100)
     "wall_orientation": "vertical",  # ce qu'il y pioche : vertical | horizontal | any
     "wall_fill": False,          # ancien reglage, remplace par wall_fit
     "wall_fit": "",              # mur : show (entieres) | full (ecran couvert)

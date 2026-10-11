@@ -165,6 +165,10 @@ SHORTCUTS = [
                          "où sont les vignettes, journal des gels"),
     ]),
     ("Le mur", [
+        ("⋯ › Mosaïque (essai)…", "de 10 à 100 vidéos à la fois, collées, sans bord, en "
+                                  "plein écran : les cochées (bouton « Mosaïque »), sinon "
+                                  "la liste affichée. Clic : le son ; double-clic : sa "
+                                  "fiche ; molette : une autre ; Espace : un autre tirage"),
         ("◂ ⏯ ▸", "la précédente du panneau ; pause ; une autre au hasard (⤮), "
                   "sans remise — ou la suivante du même dossier (▸) si l'on y reste"),
         ("☆ ⌸ ⊙", "en favori ; montrer le fichier dans l'Explorateur ; cette "
