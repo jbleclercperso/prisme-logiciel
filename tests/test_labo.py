@@ -201,6 +201,33 @@ def main() -> int:
     check(host.played and host.played[0].endswith("plage_rouge.mp4"),
           "un double-clic la lit dans le lecteur de côté")
 
+    def shade(item):
+        """La couleur au centre de la vignette d'un resultat."""
+        size = lab.results.iconSize()
+        image = item.icon().pixmap(size).toImage()
+        return image.pixelColor(image.width() // 2, image.height() // 2)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and shade(first).red() < 150:
+        app.processEvents()
+        time.sleep(0.02)
+    check(shade(first).red() > 150 and shade(first).green() < 100,
+          f"la vignette arrive en fond, même absente du cache ({shade(first).name()})")
+    lab.window.play_in_app = lambda *_a: None
+    menu_seen = [a.text() for a in lab._result_actions(first).actions()]
+    del lab.window.play_in_app
+    check(any("fiche" in t for t in menu_seen) and any("Lire" in t for t in menu_seen),
+          f"clic droit : lire, ouvrir sa fiche… ({menu_seen})")
+    walled, listed = [], []
+    lab.window.wall_videos = walled.extend
+    lab.window.playlist_videos = listed.extend
+    lab._watch(lab.results, "wall")
+    lab._watch(lab.results, "playlist")
+    del lab.window.wall_videos, lab.window.playlist_videos
+    check(walled and listed and listed[0].endswith("plage_rouge.mp4"),
+          "▦ Mur et ▶ Playlist sans rien cocher : toute la liste, la plus proche d'abord")
+    check(lab.split.count() == 2 and lab.split.isCollapsible(0),
+          "un séparateur entre la préparation et les résultats, à remonter")
+
     print("\n[6] Des résultats aux mots-clés")
     check(first.flags() & Qt.ItemIsUserCheckable, "chaque résultat se coche")
     lab._check_all(lab.results)

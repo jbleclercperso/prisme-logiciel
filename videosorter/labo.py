@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import queue
 import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QProcess, QRect, QSize, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QSizePolicy,
     QApplication, QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -226,6 +228,94 @@ class _CheckCorner(QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
+class _Frames(QObject):
+    """Les images des resultats, en fond.
+
+    Les resultats ne montraient que les images deja en cache, a l'instant
+    exact : une collection indexee ailleurs, un cache vide, et la moitie des
+    cases restaient noires. Et chercher ce cache interrogeait chaque video (sa
+    taille, sa date : le NAS) sur le fil de l'interface. Ici, rien ne touche au
+    disque dans l'interface : l'image deja faite, sinon fabriquee, sinon le
+    debut de la video -- quatre a la fois, dans l'ordre des resultats.
+    """
+
+    ready = Signal(int, str, float, QImage)
+
+    # Les images gardees en memoire : de quoi revenir a une recherche.
+    KEEP = 900
+    # La plus grande vignette du curseur de taille : on la reduit, jamais ne
+    # l'agrandit.
+    WIDTH = 320
+
+    def __init__(self, width_of, parent=None, frame_of=None):
+        super().__init__(parent)
+        self.width_of = width_of
+        # Une source d'images donnee (les essais) ; sinon le cache, puis ffmpeg.
+        self.frame_of = frame_of
+        self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="prisme-labo-images")
+        self.gen = 0
+        self.images: OrderedDict = OrderedDict()
+        self.asked: set = set()
+
+    def reset(self) -> None:
+        """Une autre liste : ce qu'attendait la precedente n'est plus fait."""
+        self.gen += 1
+        self.asked = set()
+
+    def ask(self, video: str, ts: float):
+        """L'image si elle est deja la ; sinon None, et `ready` suivra."""
+        key = (video, round(float(ts), 2))
+        found = self.images.get(key)
+        if found is not None:
+            self.images.move_to_end(key)
+            return found
+        if key in self.asked:
+            return None
+        self.asked.add(key)
+        gen, width = self.gen, self.width_of()
+
+        def make() -> None:
+            if gen != self.gen:
+                return
+            from . import media
+            path = None
+            try:
+                if self.frame_of is not None:
+                    path = self.frame_of(video, ts)
+                else:
+                    path = (media.cached_thumb(Path(video), ts, width)
+                            or media.extract_thumb(Path(video), ts, width, keyframe=True))
+                if path is None and self.frame_of is None:
+                    # L'instant ne donne rien (video plus courte, abimee) :
+                    # son debut, comme la planche.
+                    for start in (media.BLIND_START, 1.0):
+                        path = (media.cached_thumb(Path(video), start, width)
+                                or media.extract_thumb(Path(video), start, width))
+                        if path is not None:
+                            break
+            except Exception:                                # noqa: BLE001
+                path = None
+            image = QImage(str(path)) if path else QImage()
+            if not image.isNull() and image.width() > self.WIDTH:
+                image = image.scaledToWidth(self.WIDTH, Qt.SmoothTransformation)
+            if gen == self.gen:
+                self.ready.emit(gen, video, float(ts), image)
+
+        self.pool.submit(make)
+        return None
+
+    def keep(self, video: str, ts: float, image) -> None:
+        if image.isNull():
+            return
+        self.images[(video, round(float(ts), 2))] = image
+        while len(self.images) > self.KEEP:
+            self.images.popitem(last=False)
+
+    def close(self) -> None:
+        self.gen += 1
+        self.pool.shutdown(wait=False, cancel_futures=True)
+
+
 class LaboWindow(QWidget):
     """Le labo : preparer (bibliotheques, index), puis chercher ou taguer."""
 
@@ -243,11 +333,15 @@ class LaboWindow(QWidget):
         # depassaient, et l'on ne voyait plus les boutons du bas.
         screen = (window.screen() if window is not None else None) or QApplication.primaryScreen()
         room = screen.availableGeometry() if screen is not None else None
-        self.resize(min(1180, room.width() - 60) if room else 1180,
-                    min(820, room.height() - 80) if room else 820)
+        # Haute comme l'ecran : c'est la hauteur qui fait voir des vignettes.
+        self.resize(min(1320, room.width() - 60) if room else 1180,
+                    room.height() - 60 if room else 820)
         cfg = window.cfg
         self._engine_given = engine
         self._frame_of = frame_of or self._default_frame
+        # Les images des resultats, fabriquees en fond (`_Frames`).
+        self.frames = _Frames(self._width, self, frame_of=frame_of)
+        self.frames.ready.connect(self._frame_ready)
         self.engine = None
         self.index = None
         self.mail: queue.SimpleQueue = queue.SimpleQueue()
@@ -382,7 +476,15 @@ class LaboWindow(QWidget):
         self.log.setMaximumHeight(130)
         self.log.hide()
         inner.addWidget(self.log)
-        box.addWidget(card)
+        # Un separateur entre la preparation et les resultats : le remonter
+        # donne toute la hauteur aux vignettes (jusqu'a replier la carte).
+        from PySide6.QtWidgets import QSplitter
+        self.split = QSplitter(Qt.Vertical, self)
+        self.split.setHandleWidth(8)
+        self.split.setStyleSheet("QSplitter::handle { background: #1b212a; border-radius: 3px; }"
+                                 "QSplitter::handle:hover { background: #2f6fed; }")
+        self.split.addWidget(card)
+        box.addWidget(self.split, 1)
 
         # -- chercher, taguer, comparer --------------------------------------
         tabs = QTabWidget(self)
@@ -459,7 +561,11 @@ class LaboWindow(QWidget):
             self.tab_bar.addTab(tabs.tabText(at))
         self.tab_bar.currentChanged.connect(tabs.setCurrentIndex)
         tabs.currentChanged.connect(self.tab_bar.setCurrentIndex)
-        box.addWidget(tabs, 1)
+        self.split.addWidget(tabs)
+        self.split.setCollapsible(0, True)
+        self.split.setCollapsible(1, False)
+        self.split.setStretchFactor(1, 1)
+        self.split.handle(1).setToolTip("Glisser vers le haut : plus de place pour les vidéos")
 
         # Ce que fait l'ordinateur, toujours sous les yeux : ce qui tourne (avec
         # depuis combien de temps), un arret en cours, ou « Prêt ». On ne
@@ -515,10 +621,73 @@ class LaboWindow(QWidget):
         view.setMovement(QListView.Static)
         view.setUniformItemSizes(True)
         view.itemDoubleClicked.connect(self._play)
+        view.setContextMenuPolicy(Qt.CustomContextMenu)
+        view.customContextMenuRequested.connect(
+            lambda point, v=view: self._result_menu(v, point))
         view.setItemDelegate(_CheckCorner(view))
         view.setToolTip("Double-clic : lire la vidéo au moment de l'image trouvée. "
-                        "La case, en haut à droite : la choisir.")
+                        "La case, en haut à droite : la choisir. Clic droit : la suite.")
         return view
+
+    def _result_menu(self, view, point) -> None:
+        """Clic droit sur un resultat : ce qu'on peut en faire tout de suite."""
+        item = view.itemAt(point)
+        if item is not None:
+            self._result_actions(item).exec(view.viewport().mapToGlobal(point))
+
+    def _result_actions(self, item):
+        from PySide6.QtWidgets import QMenu
+        video = item.data(Qt.UserRole)
+        ts = float(item.data(Qt.UserRole + 1) or 0)
+        menu = QMenu(self)
+        menu.addAction("▶  Lire ici (lecteur flottant)", lambda: self._play(item))
+        sheet = getattr(self.window, "play_in_app", None)
+        if sheet is not None:
+            menu.addAction("Ouvrir sa fiche dans Prisme", lambda: sheet(video, ts))
+        aside = getattr(self.window, "playlist_videos", None)
+        if aside is not None:
+            menu.addAction("Dans le lecteur de droite", lambda: aside([video]))
+        reveal = getattr(self.window, "reveal_path", None)
+        if reveal is not None:
+            menu.addAction("Montrer dans l'explorateur", lambda: reveal(video))
+        menu.addSeparator()
+        on = item.checkState() == Qt.Checked
+        menu.addAction("Décocher" if on else "Cocher",
+                       lambda: item.setCheckState(Qt.Unchecked if on else Qt.Checked))
+        return menu
+
+    def _picked_or_all(self, view) -> list:
+        """Les videos cochees ; a defaut, toutes celles de la liste, dans
+        l'ordre (la plus proche d'abord)."""
+        videos = self._checked(view)
+        if videos:
+            return videos
+        found = [view.item(at).data(Qt.UserRole) for at in range(view.count())]
+        return list(dict.fromkeys(v for v in found if v))
+
+    def _watch(self, view, how: str) -> None:
+        """▶ Playlist, ▦ Mur, 📂 Parcourir : les resultats, dans Prisme."""
+        videos = self._picked_or_all(view)
+        if not videos:
+            return self._say("Cherchez d'abord quelque chose.")
+        name = self._asked or "Labo IA"
+        if how == "wall":
+            show = getattr(self.window, "wall_videos", None)
+            if show is not None:
+                show(videos[:10])
+                self._say(f"{min(len(videos), 10)} vidéo(s) sur le mur de Prisme.")
+        elif how == "playlist":
+            play = getattr(self.window, "playlist_videos", None)
+            if play is not None:
+                play(videos)
+                self._say(f"{len(videos)} vidéo(s) en playlist, dans le lecteur de droite "
+                          "de Prisme.")
+        else:
+            browse = getattr(self.window, "browse_videos", None)
+            if browse is not None:
+                browse(f"Labo : {name}", videos)
+                self._say(f"{len(videos)} vidéo(s) ouvertes dans Prisme comme un dossier "
+                          "(Échap pour revenir).")
 
     def _keep_row(self, parent, view: QListWidget, suggest, learn: bool = False) -> QHBoxLayout:
         """Sous des resultats : cocher, affiner (« plus / moins comme ça »), et
@@ -550,6 +719,21 @@ class LaboWindow(QWidget):
             self.forget_button.clicked.connect(self._forget_examples)
             self.forget_button.hide()
             row.addWidget(self.forget_button)
+            # Les regarder dans Prisme, comme les collections par nom : les
+            # cochees, ou toute la liste si rien n'est coche.
+            row.addSpacing(12)
+            for text, tip, how in (
+                ("▶  Playlist", "L'une après l'autre dans le lecteur de droite de Prisme",
+                 "playlist"),
+                ("▦  Mur", "Ensemble sur le mur de Prisme (dix au plus)", "wall"),
+                ("📂  Parcourir", "Dans Prisme comme un dossier : vignettes, fiches, tri ; "
+                                 "Échap pour revenir", "browse"),
+            ):
+                button = QPushButton(text, parent)
+                button.setToolTip(tip + " — les vidéos cochées, ou toute la liste si "
+                                  "rien n'est coché.")
+                button.clicked.connect(lambda _c=False, h=how: self._watch(view, h))
+                row.addWidget(button)
         row.addStretch(1)
         add = QPushButton("Ajouter au mot-clé…", parent)
         add.setObjectName("labPrimary")
@@ -1360,6 +1544,10 @@ class LaboWindow(QWidget):
         else:
             view.clear()
             fresh = rows
+            if target == "search":
+                # Une autre recherche : les images de la precedente qui
+                # attendaient encore ne se font plus.
+                self.frames.reset()
         if target == "search":
             self._loading_more = False
             self._shown = {row[0] for row in rows}
@@ -1379,21 +1567,41 @@ class LaboWindow(QWidget):
             # a pas sa place, puis on cree le mot-cle.
             item.setCheckState(Qt.Checked if target == "groups" else Qt.Unchecked)
             item.setToolTip(video)
-            path = self._cached_frame(video, ts)
-            if path:
-                item.setIcon(QIcon(QPixmap(str(path))))
+            self._dress_frame(view, item, video, ts)
             view.addItem(item)
         if not rows and target == "search":
             self._say("Aucune vidéo ne correspond. Essayez moins d'idées, ou d'autres mots.")
         if appending and not fresh:
             self._can_more = False
 
-    def _cached_frame(self, video: str, ts: float):
-        try:
-            from . import media
-            return media.cached_thumb(Path(video), ts, self._width())
-        except Exception:                                    # noqa: BLE001
-            return None
+    def _dress_frame(self, view, item, video: str, ts: float) -> None:
+        """L'image du resultat si elle est deja la ; sinon une case sombre a
+        sa taille, et l'image suivra (`_frame_ready`)."""
+        image = self.frames.ask(video, ts)
+        if image is not None:
+            item.setIcon(QIcon(QPixmap.fromImage(image)))
+            return
+        size = view.iconSize()
+        blank = QPixmap(size)
+        blank.fill(QColor("#151a21"))
+        item.setIcon(QIcon(blank))
+
+    def _frame_ready(self, gen: int, video: str, ts: float, image) -> None:
+        """Une image arrive : elle va a ses cases, dans toutes les listes."""
+        if gen != self.frames.gen or image.isNull():
+            return
+        self.frames.keep(video, ts, image)
+        icon_ = QIcon(QPixmap.fromImage(image))
+        views = [self.results, getattr(self, "group_view", None)]
+        views += list(getattr(self, "bench_views", {}).values())
+        for view in views:
+            if view is None:
+                continue
+            for at in range(view.count()):
+                item = view.item(at)
+                if (item.data(Qt.UserRole) == video
+                        and abs(float(item.data(Qt.UserRole + 1) or 0) - ts) < 0.01):
+                    item.setIcon(icon_)
 
     def _play(self, item) -> None:
         """La video, au moment de l'image trouvee (lecteur flottant)."""
@@ -2032,9 +2240,7 @@ class LaboWindow(QWidget):
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if video in right else Qt.Unchecked)
                 item.setToolTip(video)
-                path = self._cached_frame(video, ts)
-                if path:
-                    item.setIcon(QIcon(QPixmap(str(path))))
+                self._dress_frame(view, item, video, ts)
                 view.addItem(item)
         self._bench_filling = False
         self._bench_scores()
@@ -2098,6 +2304,7 @@ class LaboWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         self._stop = True
+        self.frames.close()
         if self._process is not None:
             self._process.kill()
         if self.engine is not None and hasattr(self.engine, "close"):
