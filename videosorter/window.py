@@ -10271,10 +10271,15 @@ class MainWindow(QMainWindow):
         item = self.items[position]
         if not item.videos:
             return
+        # La video que montre la vignette de la carte : un dossier ouvrait
+        # sinon sa premiere video par ordre des noms, une autre que celle
+        # qu'on avait sous les yeux.
+        shown = next((card.video for card in self.board.cards
+                      if card.index == position and card.item is item and card.video), "")
         self.aside_item_id = item.item_id
         self._aside_hint = position
         self.aside_playlist = []
-        self._aside_play(str(item.videos[0]), item.name, str(item.path))
+        self._aside_play(shown or str(item.videos[0]), item.name, str(item.path))
 
     @property
     def aside_index(self) -> int:
