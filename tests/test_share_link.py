@@ -120,6 +120,25 @@ def main() -> int:
         check(code == 200 and len(json.loads(body)["videos"]) == 2,
               "« Au hasard » rend des vidéos")
 
+        print("\n[3b] Le lien d'une vidéo partagée")
+        code, head, _b = ask(f"{INVITE_PATH}{key}?video={mark}&parrain=ab12cd34")
+        where = head.get("Location", "")
+        check(code == 303 and f"&video={mark}" in where and where.startswith(f"/#cle={key}"),
+              f"il ouvre la page avec la clé et la vidéo ({where})")
+        code, head, _b = ask(f"{INVITE_PATH}{key}?video=../../etc")
+        check("video=" not in head.get("Location", ""),
+              "une vidéo mal formée n'est pas recopiée")
+        code, _h, body = ask(f"/api/video?id={mark}", with_key)
+        check(code == 200 and json.loads(body)["video"]["id"] == mark,
+              "la page retrouve la vidéo par son identifiant")
+        code, _h, _b = ask(f"/api/video?id={mark}")
+        check(code == 401, "pas sans la clé")
+        code, _h, _b = ask("/api/video?id=0000000000000000", with_key)
+        check(code == 404, "une vidéo inconnue : introuvable")
+        code, _h, body = ask("/")
+        check(b'id="share"' in body and b"givenVideo" in body,
+              "le lecteur a son bouton Partager, et la page ouvre la vidéo du lien")
+
         print("\n[4] En direct : qui regarde, et où il en est")
         body = json.dumps({"id": mark, "seconds": 5, "at": 42.0,
                            "playing": False}).encode()

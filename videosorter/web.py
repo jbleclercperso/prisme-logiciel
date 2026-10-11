@@ -29,6 +29,7 @@ import ipaddress
 import json
 import mimetypes
 import os
+import re
 import secrets
 import socket
 import threading
@@ -1155,6 +1156,12 @@ def _make_handler(server: Server):
                             marks.append(mark)
                 found = [server.library.video_entry(m) for m in marks]
                 return self._json({"videos": [v for v in found if v]})
+            if route == "/api/video":
+                # Une seule video, celle d'un lien partage.
+                found = server.library.video_entry(query.get("id", [""])[0])
+                if found is None:
+                    return self._json({"error": "introuvable"}, HTTPStatus.NOT_FOUND)
+                return self._json({"video": found})
             if route == "/api/random":
                 try:
                     count = int(query.get("n", ["1"])[0] or 1)
@@ -1282,6 +1289,10 @@ def _make_handler(server: Server):
             code = profils.valid_code(((query or {}).get("parrain") or [""])[0])
             if code:
                 where += "&parrain=" + code
+            # Le lien d'une video partagee : la page s'ouvre dessus.
+            shared = ((query or {}).get("video") or [""])[0]
+            if re.fullmatch(r"[0-9a-f]{16}", shared):
+                where += "&video=" + shared
             return self._enter(label, where)
 
         def _watching(self, body: bytes = b"") -> None:
@@ -1409,6 +1420,7 @@ def _make_handler(server: Server):
                 if items:
                     found.append({"id": survey["id"], "kind": survey["kind"],
                                   "title": survey["title"], "message": survey["message"],
+                                  "source": survey["source"],
                                   "reward": survey["reward"], "items": items,
                                   "options": survey["options"], "ends": survey["ends"],
                                   "answers": entry["answers"]})
@@ -2464,6 +2476,11 @@ const givenMe = /[#&]moi=([0-9a-f]{32})/.exec(location.hash);
 if (givenMe) me = givenMe[1];
 // Venu par le lien d'un ami : son code de parrainage, garde jusqu'a l'inscription.
 const givenSponsor = /[#&]parrain=([a-z0-9]{8})/.exec(location.hash);
+// Venu par le lien d'une video partagee : on l'ouvre des l'arrivee.
+const givenVideo = /[#&]video=([0-9a-f]{16})/.exec(location.hash);
+// L'accueil d'un nouveau venu attend qu'il ait vu la video qu'on lui envoie :
+// il passait par-dessus, et le lien semblait ne mener qu'a un formulaire.
+let helloLater = false;
 if (givenSponsor) {
   try { localStorage.setItem('prisme-parrain', givenSponsor[1]); } catch (_) {}
 }
@@ -2949,6 +2966,7 @@ function load(v) {
 
 function play(list, i, random) {
   queue = list; index = i; shuffle = !!random;
+  readyShareBase();
   if (player.style.display !== 'block') {
     player.style.display = 'block';
     document.body.classList.add('watching');
@@ -3043,6 +3061,38 @@ $('fav').onclick = async () => {
   } catch (_) {}
 };
 $('full').onclick = () => { if (isFull()) leaveFull(); else goFull(); };
+
+// -- partager la video : un lien qui ouvre Prisme directement dessus --------
+// L'adresse https, celle qui marche hors de la maison : demandee des que le
+// lecteur s'ouvre, car le partage doit partir au toucher (l'iPhone refuse
+// une feuille de partage qui arrive apres une attente).
+async function readyShareBase() {
+  if (shareBase) return;
+  const d = await getJSON('/api/install');
+  shareBase = (d && d.secure && d.secure.startsWith('https://')) ? d.secure : location.origin;
+}
+$('share').onclick = async () => {
+  if (!watching || !key) return;
+  const v = queue[index] || {};
+  // Le code de parrainage suit : l'ami qui s'inscrit par la compte pour vous.
+  const url = (shareBase || location.origin) + '/entrer/' + encodeURIComponent(key) +
+              '?video=' + watching + (sponsor.code ? '&parrain=' + sponsor.code : '');
+  if (navigator.share) {
+    try {
+      await navigator.share({title: v.name || 'Prisme',
+        text: 'Regarde cette vidéo sur Prisme', url});
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    flash('Lien copié');
+  } catch (_) {
+    prompt('Le lien de cette vidéo :', url);
+  }
+};
 document.addEventListener('fullscreenchange', dress);
 document.addEventListener('webkitfullscreenchange', dress);
 video.addEventListener('volumechange', dress);
@@ -3098,6 +3148,10 @@ function closePlayer() {
   document.body.classList.remove('watching');
   document.title = 'Prisme';
   refreshGift();
+  if (helloLater) {
+    helloLater = false;
+    setTimeout(() => openHello(0), 300);
+  }
 }
 
 video.addEventListener('playing', () => { lastBeat = Date.now() / 1000; });
@@ -3203,6 +3257,12 @@ history.replaceState({v: 'folders'}, '');
 loadFavs();
 resetFolders();
 showFolders(false);
+if (givenVideo) {
+  // La video du lien, par-dessus les dossiers : « Retour » y ramene.
+  getJSON('/api/video?id=' + givenVideo[1]).then((d) => {
+    if (d && d.video) play([d.video], 0, true);
+  });
+}
 
 // -- l'icone sur l'ecran d'accueil ---------------------------------------
 // La fiche de l'application porte la cle et l'appareil : l'icone s'ouvre avec
@@ -4377,24 +4437,26 @@ function showPollIntro() {
   }
   const how = $('pollHow');
   how.replaceChildren();
+  // Pour qui le sondage est realise (le magazine), quand Prisme le donne.
+  const made = p.source ? 'Sondage réalisé pour ' + p.source + '. ' : '';
   const steps = p.kind === 'choix' ? [
     'Une question à la fois : une idée, une envie, une expérience…',
     'Touchez la réponse qui vous correspond (« ' + p.options.join(' », « ') +
       ' ») : la suivante arrive aussitôt.',
-    'Vos réponses ne sont vues que par l’organisateur, et restent gardées si vous vous arrêtez.',
+    made + 'Vos réponses restent gardées si vous vous arrêtez.',
   ] : p.kind === 'echelle' ? [
     'Une proposition à la fois : une idée, une envie, une pratique…',
     'Dites votre intérêt de 0 (' + p.ends[0].toLowerCase() + ') à 5 (' +
       p.ends[1].toLowerCase() + ') : la suivante arrive aussitôt.',
-    'Vos réponses ne sont vues que par l’organisateur, et restent gardées si vous vous arrêtez.',
+    made + 'Vos réponses restent gardées si vous vous arrêtez.',
   ] : duel ? [
     'Deux vidéos jouent en même temps, l’une au-dessus de l’autre.',
     'Touchez celle que vous voulez entendre ; avancez dans chacune avec sa barre.',
     'Choisissez « A » ou « B » : le duel suivant arrive aussitôt.',
-  ] : [
+  ].concat(made ? [made.trim()] : []) : [
     'Une vidéo s’affiche : regardez-en un peu, avancez si vous voulez.',
     'Notez-la de 1 (pas pour moi) à 5 (j’adore) : la suivante arrive aussitôt.',
-    'Vos réponses sont gardées : vous pouvez vous arrêter et reprendre plus tard.',
+    made + 'Vos réponses sont gardées : vous pouvez vous arrêter et reprendre plus tard.',
   ];
   steps.forEach((step, i) => {
     const row = document.createElement('div');
@@ -4842,8 +4904,9 @@ function paintJob() {
   $('jobBrief').textContent = job.brief || 'Pas de consigne particulière.';
   const mail = jobEmail || (profile && profile.email) || '';
   $('jobNote').replaceChildren();
-  $('jobNote').append('Votre vidéo n’est vue que par l’organisateur. Une fois la mission ' +
-    'validée, votre bon d’achat Amazon de ' + euros(job.price) + ' est envoyé à ');
+  $('jobNote').append((job.site ? 'Vidéo réalisée pour le site ' + job.site + '. ' : '') +
+    'Une fois la mission validée, votre bon d’achat Amazon de ' + euros(job.price) +
+    ' est envoyé à ');
   const b = document.createElement('b');
   b.textContent = mail || 'votre email (à ajouter dans votre profil)';
   $('jobNote').append(b, '.');
@@ -5044,6 +5107,7 @@ async function welcome() {
   loadPolls(true);
   loadJobs();
   if (!profile && !(done === 'fait' && !kept)) {
+    if (givenVideo) { helloLater = true; return; }
     openHello(0);
     // Le clavier d'un telephone cacherait l'explication : seulement au PC.
     if (!android && !apple) setTimeout(() => $('helloName').focus(), 400);
@@ -5490,6 +5554,7 @@ APP_PAGE = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
       <span id="total">0:00</span>
       <button class="ic" id="next" title="Suivante"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
       <button class="ic" id="fav" title="Favori"><svg viewBox='0 0 24 24' id='iStar' aria-hidden='true'><path d="m22 9.2-7.2-.6L12 2 9.2 8.6 2 9.2 7.4 14l-1.6 7L12 17.3 18.2 21l-1.6-7L22 9.2zM12 15.4l-3.8 2.3 1-4.3-3.3-2.9 4.4-.4L12 6.1l1.7 4 4.4.4-3.3 2.9 1 4.3-3.8-2.3z"/></svg><svg viewBox='0 0 24 24' id='iStarOn' aria-hidden='true'><path d="M12 17.3 18.2 21l-1.6-7L22 9.2l-7.2-.6L12 2 9.2 8.6 2 9.2 7.4 14l-1.6 7z"/></svg></button>
+      <button class="ic" id="share" title="Partager cette vidéo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16.1c-.8 0-1.4.3-2 .8l-7.1-4.2c.1-.2.1-.5.1-.7s0-.5-.1-.7L16 7.2c.5.5 1.2.8 2 .8 1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3c0 .2 0 .5.1.7L8 9.8C7.5 9.3 6.8 9 6 9c-1.7 0-3 1.3-3 3s1.3 3 3 3c.8 0 1.5-.3 2-.8l7.1 4.2c-.1.2-.1.4-.1.6 0 1.6 1.3 2.9 2.9 2.9s2.9-1.3 2.9-2.9-1.2-2.9-2.8-2.9z"/></svg></button>
       <button class="ic" id="full" title="Plein écran"><svg viewBox="0 0 24 24" id="iFull" aria-hidden="true"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg><svg viewBox="0 0 24 24" id="iUnfull" aria-hidden="true"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg></button>
     </div>
     <div id="flash"></div>

@@ -41,6 +41,7 @@ VERDICTS = {"attente": "À examiner", "validee": "Validée — bon à envoyer",
             "payee": "Bon envoyé", "refusee": "Refusée"}
 TITLE_MAX = 80
 BRIEF_MAX = 3000
+SITE_MAX = 80
 NOTE_MAX = 300
 PRICE_MAX = 1000
 # Une video d'un telephone : quelques centaines de mega-octets, rarement plus.
@@ -100,6 +101,8 @@ def clean_mission(told: dict) -> dict | None:
         "id": str(told.get("id") or new_id())[:20],
         "title": _text(told.get("title"), TITLE_MAX),
         "brief": _text(told.get("brief"), BRIEF_MAX, lines=True),
+        # Pour quel site la video est realisee : la page le dit.
+        "site": _text(told.get("site"), SITE_MAX),
         "price": price,
         # Combien de videos validees au plus (0 : sans limite).
         "places": places,
@@ -304,7 +307,7 @@ def offers(book_path, sends_path, me: str) -> list:
             _validated(book, all_sends, mission["id"]) >= mission["places"]
         found.append({"id": mission["id"], "title": mission["title"],
                       "brief": mission["brief"], "price": mission["price"],
-                      "full": full, "mine": mine})
+                      "site": mission["site"], "full": full, "mine": mine})
     return found
 
 

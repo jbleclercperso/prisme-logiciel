@@ -50,6 +50,7 @@ def main() -> int:
     me, other = "a" * 32, "b" * 32
     notes = sondages.clean({"kind": "notes", "title": "Vos préférées", "reward": 5,
                             "state": "ouvert", "sent": 1.0,
+                            "source": "  Le   Magazine ",
                             "items": [{"mark": m, "name": f"video {i}.mp4"}
                                       for i, m in enumerate(marks[:3])]
                             + [{"mark": "f" * 16, "name": "absente du serveur"}]})
@@ -75,6 +76,9 @@ def main() -> int:
         link = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         link.request("GET", "/")
         page = link.getresponse().read().decode("utf-8")
+        check("organisateur" not in page.split("function showPollIntro")[1].split("function firstOpen")[0]
+              and "Sondage réalisé pour" in page,
+              "le sondage annonce son magazine, plus « l'organisateur »")
         check('id="poll"' in page and 'id="toast"' in page and 'id="vol"' in page,
               "la page porte le sondage, la notification et le curseur de volume")
         code, said = call("GET", "/api/sondages")
@@ -83,6 +87,8 @@ def main() -> int:
               "seul le sondage envoyé à tout le monde est proposé (ni brouillon, ni celui d'un autre)")
         check(len(found[0]["items"]) == 3 and found[0]["items"][0]["v"]["name"] == "video 0.mp4",
               "la vidéo que ce serveur n'a pas est écartée, les autres viennent avec leur nom")
+        check(found[0].get("source") == "Le Magazine",
+              "la page apprend pour quel magazine le sondage est réalisé")
         code, said = call("GET", "/api/sondages", who=other)
         check(sorted(s["kind"] for s in said.get("surveys") or []) == ["duel", "notes"],
               "la personne visée reçoit aussi le duel")

@@ -54,6 +54,7 @@ REWARD_MAX = 50
 MAX_ITEMS = 60
 TITLE_MAX = 80
 MESSAGE_MAX = 300
+SOURCE_MAX = 80
 NOTES = (1, 2, 3, 4, 5)
 SIDES = ("a", "b")
 
@@ -140,6 +141,8 @@ def clean(survey: dict) -> dict | None:
         "kind": kind,
         "title": " ".join(str(survey.get("title") or "").split())[:TITLE_MAX],
         "message": " ".join(str(survey.get("message") or "").split())[:MESSAGE_MAX],
+        # Pour qui il est realise (le magazine) : la page le dit aux visiteurs.
+        "source": " ".join(str(survey.get("source") or "").split())[:SOURCE_MAX],
         "reward": reward,
         # Les cles des profils a qui il s'adresse ; vide : tout le monde.
         "to": [str(key) for key in (survey.get("to") or []) if str(key)][:500],

@@ -28,6 +28,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from .icons import icon
+from .floatguard import GuardedLabel
 from .widgets import OverBar, SinglePlayer, STYLESHEET, app_icon, elide
 
 FLOAT_STYLE = """
@@ -79,6 +80,10 @@ class FloatingPlayer(QWidget):
     radialRequested = Signal()        # clic droit : les destinations
     favoriteRequested = Signal(str)   # ☆ : en favori, ou retire
     keyForwarded = Signal(object)     # une touche de tri, pour la fenetre
+    # Les interrupteurs de la fiche, les memes ici : Prisme les tient.
+    ultraToggled = Signal(bool)       # ⚡ l'ultra tri
+    stayToggled = Signal(bool)        # rester dans ce dossier
+    similarToggled = Signal(bool)     # ✦ que des videos qui ressemblent
 
     WATCH_MS = 120
     BORDER = 4                        # la marge ou l'on saisit un bord
@@ -127,9 +132,25 @@ class FloatingPlayer(QWidget):
         ):
             self.bar.add_gesture(text, tip, slot)
         self.bar.add_star(self._star)
+        # Tout ce que porte le bandeau de la fiche : on trie aussi d'ici.
+        self.bar.add_stay(
+            "Rester dans ce dossier : ◂ ▸ ne sortent plus du dossier de la vidéo",
+            False, self.stayToggled.emit)
+        self.bar.add_ultra(
+            "Ultra tri (Ctrl+U) : clic gauche sur l'image, on garde et on passe à la "
+            "suivante ; clic droit, on la supprime (corbeille de séance, Ctrl+Z).",
+            self.ultraToggled.emit)
+        self.bar.add_similar(
+            "Similaires : ▸ et Espace ne proposent plus que les vidéos qui ressemblent "
+            "à celle-ci (l'index du Labo IA), tous dossiers confondus.",
+            self.similarToggled.emit)
         # Lecteur retreci : les gestes s'effacent, du moins utile au plus
-        # utile, plutot que de deborder de l'image. Pause et ✕ restent.
-        self.bar.spare = [self.bar.by_glyph[g] for g in ("⌸", "⛶", "◂", "⏏", "☆", "▸")]
+        # utile, plutot que de deborder de l'image. Pause et ✕ restent ; l'ultra
+        # tri part juste avant ▸.
+        glyphs = self.bar.by_glyph
+        self.bar.spare = ([self.bar.similar, self.bar.stay]
+                          + [glyphs[g] for g in ("⌸", "⛶", "◂", "⏏", "☆")]
+                          + [self.bar.ultra, glyphs["▸"]])
         self.bar.scrub_source = self.player.scrub_source
         self.bar.seekRequested.connect(self.player.seek_fraction)
         self.player.progressed.connect(self.bar.set_progress)
@@ -143,6 +164,9 @@ class FloatingPlayer(QWidget):
         self.name = ""
         self.favorite_of = lambda _path: False
         self.position_text = lambda: ""        # « 12 / 340 », donne par Prisme
+        # (rester, ultra, similaires) : l'etat des interrupteurs, donne par Prisme.
+        self.switches = lambda: (False, False, False)
+        self.note = None              # le bandeau de Prisme, ici (`say`)
         self.auto = False             # ouvert tout seul (Prisme recouvert)
         self._pending_ms = 0
         self._fitted = ""             # la video dont on a pris les proportions
@@ -304,6 +328,9 @@ class FloatingPlayer(QWidget):
         self.bar.hide()
         self.title.hide()
         self.player.marks.hide()
+        self.player.hide_tally()
+        if self.note is not None:
+            self.note.hide()
         if self.isFullScreen():
             self.showNormal()
         self.player.release()
@@ -325,6 +352,51 @@ class FloatingPlayer(QWidget):
     def _star(self) -> None:
         if self.path:
             self.favoriteRequested.emit(self.path)
+
+    def _sync_switches(self) -> None:
+        """Les coches suivent celles de Prisme, sans les renvoyer."""
+        for box, on in zip((self.bar.stay, self.bar.ultra, self.bar.similar),
+                           self.switches()):
+            if box.isChecked() != bool(on):
+                box.blockSignals(True)
+                box.setChecked(bool(on))
+                box.blockSignals(False)
+
+    def say(self, text: str, color: str, seconds: int = 4) -> None:
+        """Le bandeau de Prisme, sur l'image : Prisme est reduit ou recouvert,
+        et « supprimée », « tour complet » ne se lisaient nulle part."""
+        if not self.active:
+            return
+        note = self.note
+        if note is None:
+            note = self.note = GuardedLabel(
+                "", self, Qt.Tool | Qt.FramelessWindowHint
+                | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput
+                | Qt.WindowStaysOnTopHint)
+            note.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            note.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            note.setWordWrap(True)
+            self._note_timer = QTimer(self)
+            self._note_timer.setSingleShot(True)
+            self._note_timer.timeout.connect(note.hide)
+        note.setStyleSheet(
+            f"QLabel {{ background: {color}; color: #e9eef4; border-radius: 6px;"
+            " padding: 6px 12px; font-weight: 600; font-size: 13px; }")
+        note.setText(text)
+        self._place_note()
+        note.show()
+        note.raise_()
+        self._note_timer.start(max(1, int(seconds)) * 1000)
+
+    def _place_note(self) -> None:
+        area = self.player.video_area
+        width = max(160, min(520, area.width() - 24))
+        height = self.note.heightForWidth(width)
+        if height <= 0:
+            height = self.note.sizeHint().height()
+        corner = area.mapToGlobal(QPoint((area.width() - width) // 2,
+                                         max(8, area.height() - height - 56)))
+        self.note.setGeometry(corner.x(), corner.y(), width, height)
 
     def toggle_full(self) -> None:
         if self.isFullScreen():
@@ -370,6 +442,7 @@ class FloatingPlayer(QWidget):
             self.bar.hide()
             self.title.hide()
             self.player.marks.hide()
+            self.player.hide_tally()
             return
         area = self.player.video_area
         corner = area.mapToGlobal(QPoint(0, 0))
@@ -379,12 +452,18 @@ class FloatingPlayer(QWidget):
         if self.title.isHidden():
             self.title.show()
             self.title.raise_()
+        # La pastille de l'ultra tri, sous le titre.
+        self.player.tally_drop = self.title.height() + 2
+        self.player.place_tally()
+        if self.note is not None and self.note.isVisible():
+            self._place_note()
         over = QRect(corner.x(), corner.y(), area.width(),
                      area.height()).contains(QCursor.pos())
         if over:
             self.player.marks.hide()
             self.bar.set_favorite(self.favorite_of(self.path))
             self.bar.set_position(self.position_text())
+            self._sync_switches()
             wanted = "pause" if self.playing() else "play"
             button = self.bar.pause_button
             if button.property("glyph") != wanted:

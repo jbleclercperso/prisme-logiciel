@@ -47,7 +47,7 @@ def main() -> int:
     now = time.time()
     ice = missions.clean_mission({"title": "Ice challenge", "brief": "Filmez-vous de face.\n"
                                   "Au moins une minute.", "price": 20, "state": "ouverte",
-                                  "sent": now, "places": 1})
+                                  "sent": now, "places": 1, "site": " Le  Site "})
     draft = missions.clean_mission({"title": "Pas encore", "price": 5})
     missions.save(book_path, {"missions": {ice["id"]: ice, draft["id"]: draft},
                               "verdicts": {}})
@@ -72,6 +72,8 @@ def main() -> int:
         check(found and "\n" in found[0]["brief"] and found[0]["price"] == 20,
               "avec sa consigne (retours à la ligne gardés) et son prix")
         check(said.get("email") == "camille@exemple.fr", "la page sait où ira le bon")
+        check(found and found[0].get("site") == "Le Site",
+              "et pour quel site la vidéo est réalisée")
 
         print("\n[2] Envoyer une vidéo, par morceaux")
         video = os.urandom(3 * 1024 * 1024 + 123)

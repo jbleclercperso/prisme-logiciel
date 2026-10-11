@@ -220,6 +220,14 @@ class MissionsWindow(QWidget):
         whom.addWidget(self.to_button)
         whom.addStretch(1)
         form.addRow(_label("Pour", "sDim", page), whom)
+        # Le site pour lequel la video est realisee : la page l'annonce
+        # (« Vidéo réalisée pour le site … »), a la place de « l'organisateur ».
+        self.site = QLineEdit(page)
+        self.site.setPlaceholderText("Le nom du site — les participants liront "
+                                     "« Vidéo réalisée pour le site … »")
+        self.site.setMaxLength(missions.SITE_MAX)
+        self.site.textEdited.connect(lambda text: self._edit(site=text))
+        form.addRow(_label("Réalisée pour", "sDim", page), self.site)
         lay.addLayout(form)
         lay.addWidget(_label("La consigne", "sHead", page))
         lay.addWidget(_label(
@@ -386,6 +394,8 @@ class MissionsWindow(QWidget):
         self.places.setValue(mission["places"])
         if self.brief.toPlainText() != mission["brief"]:
             self.brief.setPlainText(mission["brief"])
+        if self.site.text() != mission["site"]:
+            self.site.setText(mission["site"])
         # Le prix ne bouge plus une fois des videos recues : ce serait changer
         # les regles en cours de route.
         received = any(one["done_at"] for one in self._sends_of(mission["id"]))
@@ -513,8 +523,13 @@ class MissionsWindow(QWidget):
 
     def create(self) -> None:
         now = time.time()
+        # Le site de la derniere mission : on ne le retape pas a chaque fois.
+        latest = sorted(self.book["missions"].values(), key=lambda one: one["created"],
+                        reverse=True)
+        site = next((one["site"] for one in latest if one.get("site")), "")
         mission = missions.clean_mission({"id": missions.new_id(), "title": "Nouvelle mission",
-                                          "price": 10, "created": now, "updated": now})
+                                          "site": site, "price": 10,
+                                          "created": now, "updated": now})
         self.book["missions"][mission["id"]] = mission
         self._save_now()
         self._fill_list()

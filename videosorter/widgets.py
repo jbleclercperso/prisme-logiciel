@@ -2126,6 +2126,12 @@ class SinglePlayer(QWidget):
         self.position_label.setObjectName("tileBadge")
         self.position_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.position_label.hide()
+        # L'ultra tri : « ⚡ 12 / 40 triées », en haut a gauche de l'image.
+        # Une petite fenetre, comme la pastille du temps restant : le widget
+        # video natif se dessine par-dessus un simple libelle pose sur lui.
+        self.tally_text = ""
+        self.tally_chip = None
+        self.tally_drop = 0        # plus bas (le titre du lecteur flottant)
 
         # Un trait tres fin, pose sur le bas de l'image, toujours la. Il
         # remplace la rangee qu'on lui reservait sous l'image : vingt-quatre
@@ -2878,6 +2884,48 @@ class SinglePlayer(QWidget):
         self.zoom = 1.0
         self.zoom_focus = QPointF(0.5, 0.5)
         self._apply_zoom()
+
+    def set_tally(self, text: str) -> None:
+        """La pastille de l'ultra tri ; "" la retire."""
+        self.tally_text = text
+        if not text:
+            return self.hide_tally()
+        self.place_tally()
+
+    def hide_tally(self) -> None:
+        if self.tally_chip is not None and not self.tally_chip.isHidden():
+            self.tally_chip.hide()
+
+    def place_tally(self) -> None:
+        """Pose la pastille sur l'image, si elle a lieu d'etre -- a chaque
+        battement du guet des bandeaux : la fenetre bouge, l'image aussi."""
+        area = self.video_area
+        if not self.tally_text or not area.isVisible():
+            return self.hide_tally()
+        chip = self.tally_chip
+        if chip is None:
+            flags = (Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus
+                     | Qt.WindowTransparentForInput)
+            owner = self.window()
+            if owner.windowFlags() & Qt.WindowStaysOnTopHint:
+                # Le lecteur flottant est devant tout : sa pastille aussi.
+                flags |= Qt.WindowStaysOnTopHint
+            chip = self.tally_chip = GuardedLabel("", owner, flags)
+            chip.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            chip.setStyleSheet(
+                f"QLabel {{ background: #0b0d10; color: #ffd2a8;"
+                f" border: 1px solid {ULTRA_ON}; padding: 2px 9px;"
+                " font-size: 14px; font-weight: 600; }")
+        if chip.text() != self.tally_text:
+            chip.setText(self.tally_text)
+            chip.adjustSize()
+        spot = area.mapToGlobal(QPoint(8, 8 + self.tally_drop))
+        if chip.pos() != spot:
+            chip.move(spot)
+        if chip.isHidden():
+            chip.show()
+            chip.raise_()
 
     def _show_position(self, position: int) -> None:
         duration = self.player.duration()

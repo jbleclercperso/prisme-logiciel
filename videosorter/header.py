@@ -1016,7 +1016,10 @@ MENU_ICONS = (
     ("Affichage", "monitor"), ("Collection", "hard-drive"),
     ("Connexion", "share-2"), ("Aide", "keyboard"), ("Recherches", "search"),
     ("Réglages", "gauge"), ("Confidentialité", "eye-off"), ("Avancé", "folder-cog"),
-    ("abîmées", "film"), ("Ultra tri", "zap"),
+    ("abîmées", "film"), ("Ultra tri", "zap"), ("Visiteurs", "share-2"),
+    ("Telegram", "external-link"), ("Sondages", "list-filter"),
+    ("missions", "clapperboard"), ("Demandes", "file-pen-line"),
+    ("téléphone", "eye-off"), ("Labo IA", "sparkles"),
 )
 
 

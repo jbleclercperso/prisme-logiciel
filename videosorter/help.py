@@ -20,7 +20,10 @@ SHORTCUTS = [
                  "en favori)"),
         ("6, 7, 8… puis A, Z, E…", "l'envoyer vers la destination de cette touche"),
         ("Ctrl+U", "l'ultra tri : sur la fiche, clic gauche garde et passe à la "
-                   "suivante, clic droit supprime"),
+                   "suivante, clic droit supprime. Une vidéo triée ne revient "
+                   "qu'au tour suivant ; passée sans choix (Espace, →), elle "
+                   "reste à trier. La pastille ⚡ en haut à gauche compte "
+                   "celles déjà triées"),
         ("Espace", "la suivante, partout — vidéo ou dossier, panneau du mur, "
                    "lecteur de côté. Un clic sur l'image : pause ; un "
                    "double-clic : plein écran"),

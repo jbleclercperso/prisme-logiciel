@@ -1039,7 +1039,7 @@ class MainWindow(QMainWindow):
                                       "collection — jamais deux fois la même "
                                       "avant que toutes soient sorties   (Ctrl+H)")
         self.random_button.setFocusPolicy(Qt.NoFocus)
-        self.random_button.clicked.connect(self.pick_random)
+        self.random_button.clicked.connect(lambda: self.pick_random())
         row_one.addWidget(self.random_button, 0)
 
         # L'arborescence se montrait et se cachait depuis un menu : un reglage
@@ -1253,50 +1253,61 @@ class MainWindow(QMainWindow):
         # des sous-menus par theme. Le tri, l'affichage, la confidentialite
         # et les reglages d'expert ne se melangent plus ; « Changer de
         # racine », une action principale, n'est plus enfouie.
+        # Le menu ⋯, range par sujet. Au premier niveau, ce qui sert pendant
+        # le tri ; dessous, un sous-menu par sujet. « Collection » melangeait
+        # tout : doublons, vignettes, partage, Telegram, sondages…
         self.overflow = build_overflow(self, [
-            ("Destinations…", self.edit_destinations),
-            ("Mots-clés automatiques…", self.edit_tags),
-            ("Corbeille de session", self.open_trash),
             ("Ultra tri : clic gauche garde, clic droit supprime   (Ctrl+U)",
              self.toggle_ultra),
-            ("Réparer des vidéos abîmées…", self.open_repair),
-            ("Changer de racine…", self.choose_root),
+            ("Destinations…", self.edit_destinations),
+            ("Corbeille de session", self.open_trash),
             ("-", None),
             ("Recherches", [
                 ("Enregistrer cette recherche…", self.save_search),
+                # « Recherches enregistrées » se glisse ici (plus bas).
+                ("-", None),
+                ("Recherche vidéo sur le web…", self.open_web_search),
+                ("Telegram : recherche et alertes…", self.open_telegram),
             ]),
             ("Collection", [
-                ("Chercher les doublons", self.find_dupes),
-                ("-", None),
-                ("État de la collection…", self.show_collection_state),
-                ("Compter les vidéos", self.count_videos),
-                ("État des vignettes", self.audit_thumbs),
-                ("Préparer toutes les vignettes", self.toggle_backfill),
-                ("Analyser les titres des métadonnées", self.scan_titles),
-                ("Repérer les plans (vignettes plus parlantes)", self.scan_scenes),
-                ("Labo IA (essai)…", self.open_ai_lab),
-                ("-", None),
+                ("Changer de racine…", self.choose_root),
+                # « Racines récentes » se glisse ici (plus bas).
                 # « Tout le disque » promettait plus que ce qui se faisait :
                 # seul le dossier affiche etait relu. A la racine, c'est
                 # toute la collection, et la question le dit.
                 ("Réanalyser ce dossier en entier…", self.refresh_root),
                 ("-", None),
+                ("Chercher les doublons", self.find_dupes),
+                ("-", None),
+                ("Réparer des vidéos abîmées…", self.open_repair),
+                ("Préparer toutes les vignettes", self.toggle_backfill),
+                ("Repérer les plans (vignettes plus parlantes)", self.scan_scenes),
+                ("Labo IA (essai)…", self.open_ai_lab),
+                # Caches (HIDDEN_MENU) : d'autres parties de Prisme les
+                # retrouvent par leur nom.
+                ("État de la collection…", self.show_collection_state),
+                ("Compter les vidéos", self.count_videos),
+                ("État des vignettes", self.audit_thumbs),
+                ("Analyser les titres des métadonnées", self.scan_titles),
+            ]),
+            ("Visiteurs", [
                 ("Partage à distance…", self.open_share),
                 ("Cacher sur le téléphone (ou remontrer)", self.hide_on_phone),
-                ("Recherche vidéo sur le web…", self.open_web_search),
-                ("Telegram : recherche et alertes…", self.open_telegram),
+                ("-", None),
                 ("Demandes reçues…", self.open_demandes),
                 ("Sondages aux visiteurs…", self.open_surveys),
                 ("Vidéo à la demande : missions…", self.open_missions),
             ]),
             ("Réglages", [
+                ("Mots-clés automatiques…", self.edit_tags),
+                ("-", None),
                 ("Rafale : passer tout seul après 8 s", self.toggle_burst),
                 ("Passer à la suivante après ★", self.toggle_advance_after_star),
+                ("Durée du diaporama…", self.edit_slideshow_seconds),
                 ("-", None),
                 ("Arborescence des destinations", self.toggle_tree),
                 ("Lecteur flottant automatique", self.toggle_float_auto),
                 ("Bande des mots épinglés", self.toggle_word_strip),
-                ("Durée du diaporama…", self.edit_slideshow_seconds),
                 ("-", None),
                 ("Avancé", [
                     ("Ignorer la mise à l'échelle de Windows", self.toggle_dpi),
@@ -1338,15 +1349,18 @@ class MainWindow(QMainWindow):
         # retenir.
         searches = next(a.menu() for a in self.overflow.actions()
                         if a.menu() is not None and a.text() == "Recherches")
-        self.searches_menu = searches.addMenu(icon("bookmark"),
-                                              "Recherches enregistrées")
+        self.searches_menu = QMenu("Recherches enregistrées", searches)
+        self.searches_menu.setIcon(icon("bookmark"))
+        searches.insertMenu(searches.actions()[1], self.searches_menu)
         self.searches_menu.aboutToShow.connect(self._fill_searches_menu)
         collection = next(a.menu() for a in self.overflow.actions()
                           if a.menu() is not None and a.text() == "Collection")
         # Le resultat d'une recherche de doublons attend qu'on le demande :
         # il ne remplace plus d'office ce qu'on regarde. Le bandeau passe,
         # cette entree reste tant qu'il n'a pas ete affiche.
-        after_dupes = collection.actions()[1]
+        entries = collection.actions()
+        after_dupes = entries[1 + next(i for i, a in enumerate(entries)
+                                       if a.text() == "Chercher les doublons")]
         self.dupes_result_action = QAction("Afficher les doublons trouvés", collection)
         self.dupes_result_action.triggered.connect(self.show_found_dupes)
         collection.insertAction(after_dupes, self.dupes_result_action)
@@ -1829,6 +1843,16 @@ class MainWindow(QMainWindow):
         self.floating.position_text = self._float_position
         self.floating.keyForwarded.connect(self._float_key)
         self.floating.player.finished.connect(self.on_video_finished)
+        # Les interrupteurs de la fiche, sur le lecteur flottant aussi : on
+        # y lance l'ultra tri sans revenir dans Prisme.
+        self.floating.switches = lambda: (
+            bool(self.cfg["stay_in_folder"]), bool(getattr(self, "ultra", False)),
+            bool(getattr(getattr(self.single_bar, "similar", None), "isChecked",
+                         lambda: False)()))
+        self.floating.ultraToggled.connect(self.toggle_ultra)
+        self.floating.stayToggled.connect(self.set_stay_in_folder)
+        self.floating.similarToggled.connect(
+            lambda on: self.single_bar.similar.setChecked(on))
         # Les memes destinations sur le lecteur flottant : a lui, et au
         # premier plan comme lui. Rattachees a la fenetre de Prisme, elles
         # disparaissaient avec elle quand on la reduit.
@@ -1855,6 +1879,12 @@ class MainWindow(QMainWindow):
         self.ultra = False
         self._ultra_at = 0.0
         self._ultra_warned = False
+        # Les tours de l'ultra tri, par ce qu'ils parcourent : ce qui est
+        # passe (garde, supprime, range) n'y revient qu'au tour suivant.
+        self._ultra_tours: dict = {}
+        # La video sur laquelle on vient de decider (garder, supprimer, ranger),
+        # en `normcase` : seule une decision la sort du tour.
+        self._ultra_choice = ""
         self.single_bar.add_similar(
             "Similaires : ▸ et Espace ne proposent plus que les vidéos qui ressemblent "
             "à celle-ci (l'index du Labo IA), tous dossiers confondus. Décocher : "
@@ -3652,6 +3682,25 @@ class MainWindow(QMainWindow):
                 gone.add(os.path.normcase(str(job.src)))
         return gone
 
+    @staticmethod
+    def _in_trash(key: str) -> bool:
+        """Ce chemin (`normcase`) dort-il dans une corbeille ?
+
+        L'analyse d'un dossier descend aussi dans sa corbeille de seance : ce
+        qu'on venait de supprimer ressortait au tirage au hasard.
+        """
+        local_trash = os.path.normcase(str(actions.LOCAL_TRASH)).rstrip("\\/")
+        return (os.sep + TRASH_FOLDER_NAME + os.sep in key
+                or key.startswith(local_trash + os.sep))
+
+    def _departed(self) -> set:
+        """`_gone_paths`, plus ce que l'historique a deja range ou ecarte."""
+        gone = self._gone_paths()
+        for entry in self.history:
+            if entry.action in ("move", "delete") and entry.src is not None:
+                gone.add(os.path.normcase(str(entry.src)))
+        return gone
+
     def _still_here(self, groups: list) -> list:
         """Les groupes de doublons, sans ce qui a ete ecarte ou range depuis.
 
@@ -5035,6 +5084,8 @@ class MainWindow(QMainWindow):
 
     def _burst_next(self) -> None:
         if not self.cfg["burst"] or self.browsing or not self.items or self._quiet:
+            return
+        if self.ultra and self._ultra_next():
             return
         if self._stays_in_folder():
             # La rafale reste dans le dossier, comme → ; avant la borne de la
@@ -7393,6 +7444,7 @@ class MainWindow(QMainWindow):
         item = self.items[self.index]
         # Les comptes se refont plus bas (`_update_page_bar`), une seule fois.
         self._rebuild_commands()
+        self._show_ultra_tally()
 
         self._describe(item)
 
@@ -8107,6 +8159,13 @@ class MainWindow(QMainWindow):
         echec garde (`keep` et « error ») est une alerte : aucun autre bandeau,
         pas meme un echec, ne la remplace avant qu'on l'ait lue.
         """
+        floating = getattr(self, "floating", None)
+        if floating is not None and floating.active and not self._quiet:
+            # Le lecteur flottant le dit aussi : Prisme est souvent reduit ou
+            # recouvert pendant qu'il joue, et l'on triait sans rien lire.
+            floating.say(text, BANNER_TONES.get(tone, BANNER_TONES["info"]), seconds)
+            if self.isMinimized() and tone != "error":
+                return
         if self._quiet or self.isMinimized():
             # Retenu, et montre au retour : un « Échec sur … » dit pendant le
             # repli ou fenetre reduite etait efface sans avoir ete lu, et l'on
@@ -10388,8 +10447,10 @@ class MainWindow(QMainWindow):
         if not playing:
             self.single_bar.hide()
             self.single.marks.hide()
+            self.single.hide_tally()
             self.single.tuck_strip(now=True)
             return
+        self.single.place_tally()
         self._note_pointer_moves()
         if self.cinema:
             self._watch_cinema_strip(area)
@@ -10574,6 +10635,7 @@ class MainWindow(QMainWindow):
         self.floating.auto = auto
         self.floating.open(path, item.name, position, muted=self.cfg["muted"],
                            geometry=self.cfg["float_geometry"])
+        self._show_ultra_tally()
         if not auto:
             self.show_banner("Lecteur flottant : déplacez-le, agrandissez-le. "
                              "↩ ou Échap le ramène dans Prisme.", "info")
@@ -10587,6 +10649,7 @@ class MainWindow(QMainWindow):
         self.cfg["float_geometry"] = self.floating.geometry_to_keep()
         self.cfg.save_soon()
         self.floating.close_quietly()
+        self._show_ultra_tally()
         if activate:
             if self.isMinimized():
                 self.setWindowState(
@@ -10608,6 +10671,7 @@ class MainWindow(QMainWindow):
         self.cfg.save_soon()
         self.float_timer.stop()
         self.floating.close_quietly()
+        self._show_ultra_tally()
 
     def _resume_sheet(self, path: str, position: int) -> None:
         """La fiche reprend la video du lecteur flottant, a son instant."""
@@ -11008,7 +11072,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Ce qui cede sa place quand la ligne ne tient plus, du premier sacrifie
     # au dernier : les boutons ronds (retrouves en tete du menu ⋯), puis les
-    # onglets passent en icones, et la lune en tout dernier. Le fil d'Ariane,
+    # onglets passent en icones ; le son et le de ne partent qu'apres -- on
+    # s'en sert a tout instant --, et la lune en tout dernier. Le fil d'Ariane,
     # lui, s'abrege de lui-meme jusqu'a `CRUMBS_ROOM`.
     CRUMBS_ROOM = 160
     FOLD_LABELS = {
@@ -11021,7 +11086,7 @@ class MainWindow(QMainWindow):
         "quiet_button": "S'effacer   (Ctrl+K)",
     }
     FOLD_ORDER = ("labo_button", "web_button", "float_button", "tree_button",
-                  "random_button", "mute_button", "tabs", "quiet_button")
+                  "tabs", "mute_button", "random_button", "quiet_button")
 
     def _row_need(self, widget) -> int:
         """La place qu'un element de la premiere ligne ne peut pas ceder."""
@@ -11250,6 +11315,9 @@ class MainWindow(QMainWindow):
         """
         item = self.current
         if self.browsing or item is None or item.kind == MODE_FOLDERS:
+            return
+        if self.ultra and self._ultra_next():
+            # Finie sans choix : la suivante du tour, elle reste a trier.
             return
         if self._stays_in_folder():
             # Comme → : la case vaut aussi pour la suite qui vient toute seule.
@@ -12126,13 +12194,8 @@ class MainWindow(QMainWindow):
         self._random_on = False
         self.play_in_app(video)
 
-    def pick_random(self) -> None:
-        """Lance une vidéo au hasard, piochée dans tout ce que l'analyse connaît.
-
-        Tirer parmi les seuls éléments affichés ramenait toujours les mêmes :
-        en mode dossier, la liste ne compte que quelques dizaines d'entrées.
-        """
-        import random
+    def _random_pool(self) -> tuple:
+        """(dossiers, poids cumules) : le vivier du tirage general."""
         # Toute la collection, meme quand on est entre dans un dossier : la
         # liste affichee n'etait plus, apres un premier tirage, que le dossier
         # ou il avait mene — le hasard « general » tournait en rond dedans.
@@ -12153,7 +12216,25 @@ class MainWindow(QMainWindow):
                 folders.append(item)
                 weights.append(total)
             memo = self._random_memo = (key, folders, weights)
-        _key, folders, weights = memo
+        return memo[1], memo[2]
+
+    def _may_draw(self, pick: str, gone: set) -> bool:
+        key = os.path.normcase(pick)
+        return (key not in gone and not self._in_trash(key)
+                and not under_veiled(pick))
+
+    def pick_random(self, skip=None) -> bool:
+        """Lance une vidéo au hasard, piochée dans tout ce que l'analyse connaît.
+
+        Tirer parmi les seuls éléments affichés ramenait toujours les mêmes :
+        en mode dossier, la liste ne compte que quelques dizaines d'entrées.
+
+        `skip` (chemins `normcase`) : ce que l'ultra tri a deja vu passer ce
+        tour-ci. Rien a tirer hors de lui : False, sans un mot -- le tour est
+        fini, c'est a l'ultra tri de le dire.
+        """
+        import random
+        folders, weights = self._random_pool()
         video = ""
         if folders:
             # Sans remise : une video tiree ne revient qu'une fois toutes
@@ -12163,14 +12244,21 @@ class MainWindow(QMainWindow):
             showing = self.current
             avoid = ({str(showing.path)} if showing is not None
                      and showing.kind != MODE_FOLDERS else set())
+            # Ce qui est parti (corbeille, rangement) ne se tire plus : un
+            # petit dossier, le paquet epuise, ramenait les videos supprimees
+            # -- une fiche noire, « Déjà traité ».
+            gone = self._departed()
+            if skip:
+                gone |= skip
             video = self._random_deck.draw_with(
                 lambda: str(random.choice(
                     random.choices(folders, cum_weights=weights)[0].videos)),
                 lambda: [str(v) for item in folders for v in item.videos],
-                avoid, accept=lambda pick: not under_veiled(pick))
+                avoid, accept=lambda pick: self._may_draw(pick, gone))
         if not video:
-            self.show_banner("Aucune vidéo à tirer au sort", "quiet")
-            return
+            if skip is None:
+                self.show_banner("Aucune vidéo à tirer au sort", "quiet")
+            return False
         self.show_banner(
             f"Au hasard parmi {weights[-1]} vidéos : « {Path(video).name} »",
             "info")
@@ -12196,6 +12284,10 @@ class MainWindow(QMainWindow):
             self._random_history = (self._random_history + [previous])[-50:]
         self._random_run = os.path.normcase(video)
         self._random_path = video
+        # La fiche s'est ouverte avant que le tirage ne se sache en cours :
+        # la pastille de l'ultra tri comptait encore la liste.
+        self._show_ultra_tally()
+        return True
 
     def _in_random_run(self) -> bool:
         """Est-on toujours dans un enchainement de tirages au de ?
@@ -12934,6 +13026,7 @@ class MainWindow(QMainWindow):
             return
         state, why = self._submit_delete(item)
         if state == "sent":
+            self._ultra_chose(item)
             self._show_deleted(self._deleted_text(item))
             return self.advance()
         if why:
@@ -12949,6 +13042,7 @@ class MainWindow(QMainWindow):
         label = dest.get("label") or dest_dir.name
         state, why = self._submit_move(item, dest)
         if state == "sent":
+            self._ultra_chose(item)
             self.show_banner(f"« {item.name} » → {label}", "done")
             return self.advance()
         if why:
@@ -13423,11 +13517,18 @@ class MainWindow(QMainWindow):
         """Ctrl+U, le ⚡ du bandeau : clic gauche garde, clic droit supprime."""
         on = (not self.ultra) if on is None else bool(on)
         if on and not self._ultra_warned:
+            # Depuis le lecteur flottant, la question vient sur lui : Prisme
+            # est peut-etre reduit, et elle attendait derriere.
+            asker = self.floating if self.floating.active else self
             answer = QMessageBox.question(
-                self, "Ultra tri",
+                asker, "Ultra tri",
                 "Sur la fiche d'une vidéo, tout se fait à la souris :\n\n"
                 "   • clic gauche sur l'image : on la garde, et c'est la suivante ;\n"
                 "   • clic droit sur l'image : on la supprime.\n\n"
+                "Une vidéo triée ne revient qu'au tour suivant ; passée sans "
+                "choix (Espace, →), elle reste à trier et reviendra. La "
+                "pastille ⚡ en haut à gauche de l'image dit combien sont "
+                "déjà triées, sur combien.\n\n"
                 "Ce qui est supprimé passe par la corbeille de séance : Ctrl+Z le "
                 "reprend. Sur le NAS, c'est détruit pour de bon à la fermeture de "
                 "Prisme.\n\nActiver l'ultra tri ?")
@@ -13445,6 +13546,7 @@ class MainWindow(QMainWindow):
             box.setChecked(on)
             box.blockSignals(False)
         self._show_task_pills()
+        self._show_ultra_tally()
         self.show_banner("⚡ Ultra tri : clic gauche, on garde ; clic droit, on supprime. "
                          "Ctrl+U pour arrêter." if on else "Ultra tri arrêté.",
                          "info" if on else "quiet")
@@ -13461,11 +13563,205 @@ class MainWindow(QMainWindow):
             return
         self._ultra_at = now
         if button == "left":
+            # Garder est un choix : la video sort du tour (Espace, lui, passe
+            # sans choisir).
+            self._ultra_chose(item)
             return self.act_skip()
         if item.kind == MODE_FOLDERS or item.is_tag:
             return self.show_banner("Ultra tri : le clic droit ne supprime que des vidéos, "
                                     "jamais un dossier entier.", "quiet")
         self.act_delete()
+
+    # Ce que l'ultra tri parcourt n'a pas toujours de fin : le hasard tire sans
+    # cesse, et la voisine dans le dossier (« rester dans ce dossier ») fait le
+    # tour. Un petit dossier ramenait donc tres vite les memes videos -- et
+    # celles qu'on venait de supprimer, sur une fiche noire, « Déjà traité ».
+    # Chaque tour retient ce qui est passe (garde, supprime, range) : rien n'y
+    # revient avant que tout le reste soit passe.
+    def _ultra_video(self):
+        """La video de la fiche, si l'ultra tri vaut pour elle ; None sinon."""
+        item = self.current
+        if (not self.ultra or self.browsing or item is None or self.tab == TAB_SPLIT
+                or item.kind == MODE_FOLDERS or item.is_tag):
+            return None
+        return item
+
+    def _ultra_tour(self, item) -> dict:
+        """Le tour en cours pour ce que l'on parcourt depuis cette video."""
+        if self._in_random_run():
+            key, kind = ("hasard", str(self.top_root())), "hasard"
+        elif self._stays_in_folder():
+            key = ("dossier", os.path.normcase(str(Path(item.path).parent)))
+            kind = "dossier"
+        else:
+            key, kind = ("liste", str(self.root), self.mode, self.tab), "liste"
+        tour = self._ultra_tours.get(key)
+        if tour is None:
+            tour = self._ultra_tours[key] = {"kind": kind, "passed": set(),
+                                             "total": 0, "mark": None}
+        return tour
+
+    def _ultra_count(self, item) -> tuple:
+        """(passees, total) dans le tour en cours."""
+        tour = self._ultra_tour(item)
+        passed = tour["passed"]
+        if tour["kind"] == "hasard":
+            # Toute la collection, qu'on ne recompte que si elle change.
+            folders, weights = self._random_pool()
+            mark = ("hasard", weights[-1] if weights else 0)
+            if tour["mark"] == mark:
+                return len(passed), tour["total"]
+            pool = (str(video) for folder in folders for video in folder.videos)
+        elif tour["kind"] == "liste":
+            # La liste peut compter toute la collection : on ne la recompte
+            # que si elle change. Passer une video la retire du reste et
+            # l'ajoute aux passees -- le total ne bouge pas.
+            mark = (id(self.items), len(self.items))
+            if tour["mark"] == mark:
+                return len(passed), tour["total"]
+            pool = (str(other.path) for other in self.items
+                    if other.kind != MODE_FOLDERS and not other.is_tag
+                    and not other.locked)
+        else:
+            mark = None
+            pool = (str(video) for video in self._folder_videos(str(item.path)))
+        gone = self._departed()
+        rest = 0
+        for path in pool:
+            key = os.path.normcase(path)
+            if key not in passed and key not in gone and not self._in_trash(key):
+                rest += 1
+        tour["mark"] = mark
+        tour["total"] = len(passed) + rest
+        return len(passed), tour["total"]
+
+    def _show_ultra_tally(self) -> None:
+        """« ⚡ 12 / 40 triées », en haut a gauche de l'image."""
+        single = getattr(self, "single", None)
+        if single is None:
+            return
+        text = ""
+        item = self._ultra_video() if getattr(self, "ultra", False) else None
+        if item is not None:
+            done, total = self._ultra_count(item)
+            if total:
+                text = f"⚡ {done} / {total} triées"
+        # La ou la video joue : la fiche, ou le lecteur flottant. Le guet des
+        # bandeaux la repose ensuite a chaque battement.
+        floating = getattr(self, "floating", None)
+        afloat = floating is not None and floating.active
+        if afloat:
+            single.tally_text = text
+            single.hide_tally()
+            floating.player.set_tally(text)
+        else:
+            single.set_tally(text)
+            if floating is not None:
+                floating.player.tally_text = text
+
+    def _ultra_next(self) -> bool:
+        """La suivante de l'ultra tri, jamais deja passee dans ce tour.
+
+        False quand ce n'est pas a lui de choisir (un dossier, un mot-cle, une
+        analyse qui apporte encore des videos) : `advance` fait comme avant.
+        """
+        item = self._ultra_video()
+        if item is None:
+            return False
+        tour = self._ultra_tour(item)
+        passed = tour["passed"]
+        here = os.path.normcase(str(item.path))
+        # Seul un choix la sort du tour. Passee sans choisir (Espace, →, la
+        # fin de la video), elle n'est pas triee : elle reviendra.
+        chosen, self._ultra_choice = self._ultra_choice == here, ""
+        if chosen:
+            passed.add(here)
+        if tour["kind"] == "hasard":
+            moved = self.pick_random(skip=passed)
+        elif tour["kind"] == "dossier":
+            moved = self._ultra_folder_step(item, passed)
+        else:
+            moved = self._ultra_list_step(passed)
+            if not moved and self.scanning:
+                return False
+        if moved:
+            return True
+        if here not in passed and here not in self._departed():
+            # Plus qu'elle a trier : on ne boucle pas sur elle, on le dit.
+            self.show_banner("⚡ C'est la dernière vidéo pas encore triée de ce tour : "
+                             "clic gauche pour la garder, clic droit pour la supprimer.",
+                             "info")
+            return True
+        return self._ultra_round_done(tour, item)
+
+    def _ultra_chose(self, item) -> None:
+        """Une decision sur cette video : elle compte comme triee."""
+        if self.ultra and item is not None:
+            self._ultra_choice = os.path.normcase(str(item.path))
+
+    def _ultra_list_step(self, passed) -> bool:
+        """La prochaine de la liste, hors ce tour et ce qui est parti."""
+        gone = self._departed()
+        count = len(self.items)
+        for offset in range(1, count):
+            # Jusqu'au bout de la liste, puis depuis le debut : un tour
+            # commence la ou l'on a ouvert la fiche, pas forcement en tete.
+            position = (self.index + offset) % count
+            other = self.items[position]
+            if other.kind == MODE_FOLDERS or other.is_tag or other.locked:
+                continue
+            key = os.path.normcase(str(other.path))
+            if key in passed or key in gone:
+                continue
+            self.show_item(position)
+            return True
+        return False
+
+    def _ultra_folder_step(self, item, passed) -> bool:
+        """La prochaine du dossier, hors ce tour et ce qui est parti."""
+        listing = [str(video) for video in self._folder_videos(str(item.path))]
+        keys = [os.path.normcase(path) for path in listing]
+        here = os.path.normcase(str(item.path))
+        at = keys.index(here) if here in keys else -1
+        gone = self._departed()
+        locked = {os.path.normcase(str(other.path)) for other in self.items
+                  if other.locked}
+        for offset in range(1, len(listing) + 1):
+            position = (at + offset) % len(listing)
+            key = keys[position]
+            if key == here or key in passed or key in gone or key in locked:
+                continue
+            target = listing[position]
+            for index, other in enumerate(self.items):
+                if str(other.path) == target:
+                    self.show_item(index)
+                    return True
+            self.play_in_app(target)
+            return True
+        return False
+
+    def _ultra_round_done(self, tour, item) -> bool:
+        """Tout est passe : on le dit, et un nouveau tour commence."""
+        count = len(tour["passed"])
+        tour["passed"] = set()
+        tour["total"], tour["mark"] = 0, None
+        # Pas de page « Tri terminé » : elle coupait la video, jusque dans le
+        # lecteur flottant, noir. On repart, et le bandeau le dit.
+        # Le nouveau tour part de zero : rien n'y est trie sans un choix.
+        if tour["kind"] == "hasard":
+            moved = self.pick_random()
+        elif tour["kind"] == "liste":
+            moved = self._ultra_list_step(tour["passed"])
+        else:
+            moved = self._ultra_folder_step(item, tour["passed"])
+        if not moved:
+            self.show_banner("C'est la seule vidéo qui reste ici.", "quiet")
+            self._show_ultra_tally()
+            return True
+        # Apres le tirage, dont le bandeau aurait recouvert celui-ci.
+        self.show_banner(f"⚡ Tour complet : les {count} vidéos sont passées — "
+                         "un nouveau tour commence.", "done")
+        return True
 
     # -- les videos abimees (repair.py) -------------------------------------------
     def open_repair(self) -> None:
@@ -14297,6 +14593,9 @@ class MainWindow(QMainWindow):
         toute la collection.
         """
         item = self.current
+        if delta > 0 and self.ultra and self._ultra_next():
+            # → en ultra tri : la suivante du tour, sans rien trier.
+            return
         if self._in_random_run():
             return self.pick_random() if delta > 0 else self._random_back()
         if self._stays_in_folder():
@@ -14515,6 +14814,8 @@ class MainWindow(QMainWindow):
         return listing[(at + delta) % len(listing)]
 
     def advance(self) -> None:
+        if self.ultra and self._ultra_next():
+            return
         if self._in_random_run():
             return self.pick_random()
         if self.index + 1 >= len(self.items):

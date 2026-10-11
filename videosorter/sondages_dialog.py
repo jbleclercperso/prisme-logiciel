@@ -430,6 +430,17 @@ class SurveysWindow(QWidget):
         self.to_button.clicked.connect(self._to_menu)
         form.addWidget(self.to_button)
         lay.addLayout(form)
+        # Pour qui le sondage est realise : la page l'annonce aux visiteurs
+        # (« Sondage réalisé pour … »), a la place de « l'organisateur ».
+        line = QHBoxLayout()
+        line.addWidget(_label("Réalisé pour :", "sDim", page))
+        self.source = QLineEdit(page)
+        self.source.setPlaceholderText("Le nom du magazine — les visiteurs liront "
+                                       "« Sondage réalisé pour … »")
+        self.source.setMaxLength(sondages.SOURCE_MAX)
+        self.source.textEdited.connect(lambda text: self._edit(source=text))
+        line.addWidget(self.source, 1)
+        lay.addLayout(line)
 
         split = QSplitter(Qt.Horizontal, page)
         split.setChildrenCollapsible(False)
@@ -852,6 +863,9 @@ class SurveysWindow(QWidget):
         if self.message.text() != survey["message"]:
             self.message.setText(survey["message"])
         self.message.setReadOnly(not draft)
+        if self.source.text() != survey["source"]:
+            self.source.setText(survey["source"])
+        self.source.setReadOnly(not draft)
         self.reward.blockSignals(True)
         self.reward.setValue(survey["reward"])
         self.reward.blockSignals(False)
@@ -1370,6 +1384,8 @@ class SurveysWindow(QWidget):
         survey = sondages.clean({
             "id": sondages.new_id(), "kind": kind, "state": "brouillon",
             "title": FIRST_TITLES[kind],
+            # Le magazine du dernier sondage : on ne le retape pas a chaque fois.
+            "source": next((one["source"] for one in self.surveys if one["source"]), ""),
             "reward": sondages.REWARD, "created": now, "updated": now, "items": []})
         self.surveys.insert(0, survey)
         self._save_now()
