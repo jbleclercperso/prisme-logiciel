@@ -5693,6 +5693,10 @@ def check_navigation(app, window, base) -> None:
     window.cfg["aside_split"] = None
     window.open_aside(at("Trois"))
     pump(app, 0.4)
+    shown = next((card.video for card in window.board.cards
+                  if card.index == at("Trois") and card.video), "")
+    check(not shown or os.path.normcase(window.aside_current) == os.path.normcase(shown),
+          f"clic droit sur un dossier : la vidéo de sa vignette ({Path(shown).name})")
     check(window.middle.sizes()[2] >= window.ASIDE_MIN_WIDTH,
           f"sans largeur retenue, il s'ouvre large ({window.middle.sizes()})")
     wanted = window.items[window.aside_index].item_id

@@ -10283,9 +10283,12 @@ class MainWindow(QMainWindow):
             return
         # La video que montre la vignette de la carte : un dossier ouvrait
         # sinon sa premiere video par ordre des noms, une autre que celle
-        # qu'on avait sous les yeux.
+        # qu'on avait sous les yeux. La carte se reconnait a son identifiant :
+        # une liste rebatie en fond (analyse, filtre) porte d'autres objets
+        # pour les memes dossiers, et le dossier repartait de sa premiere video.
         card = next((card for card in self.board.cards
-                     if card.index == position and card.item is item and card.video), None)
+                     if card.index == position and card.item is not None
+                     and card.item.item_id == item.item_id and card.video), None)
         self.aside_item_id = item.item_id
         self._aside_hint = position
         self.aside_playlist = []
