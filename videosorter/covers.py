@@ -1,21 +1,17 @@
-"""Les couvertures des dossiers changent, sans jamais ralentir l'affichage.
+"""Les couvertures des dossiers changent a chaque lancement de Prisme.
 
 Une carte de dossier montrait toujours la meme image : celle de sa premiere
-video. Elle change desormais de temps en temps, selon le principe des
-applications de photos (« stale-while-revalidate ») :
+video. Elle change desormais d'un lancement a l'autre -- jamais pendant
+qu'on s'en sert (une image qui bouge en cours de lecture derangeait) :
 
 - une carte ne montre **que** des images deja faites : l'affichage n'attend
   jamais une extraction ;
 - pendant qu'on regarde une carte, sa **prochaine** couverture se prepare en
-  fond, une a la fois, en cedant la place des que Prisme demande une image ;
-- quand son tour vient, la carte passe a cette couverture -- si elle est
-  prete ; sinon elle garde l'actuelle, et reessaiera ;
-- chaque dossier a sa propre horloge, decalee des autres : les couvertures
-  changent quelques-unes a la fois, jamais toutes ensemble.
+  fond, une fois, en cedant la place des que Prisme demande une image ;
+- au lancement suivant, la carte part de cette couverture preparee.
 
-Seuls les dossiers qu'on regarde coutent une extraction : ceux de la page
-affichee, fenetre active, une par tour (`period`, reglable). L'etat (couverture actuelle, prochaine prete) tient dans un petit
-fichier, a cote des reglages.
+Seuls les dossiers qu'on regarde coutent une extraction. L'etat (couverture
+actuelle, prochaine prete) tient dans un petit fichier, a cote des reglages.
 """
 from __future__ import annotations
 
@@ -31,7 +27,7 @@ from pathlib import Path
 from .config import PRIVATE_DIR
 
 COVERS_PATH = PRIVATE_DIR / "couvertures.json"
-PERIOD_S = 40.0              # une nouvelle couverture toutes les ~40 s, par dossier
+PERIOD_S = 40.0              # apres un echec d'extraction, attente avant de reessayer
 MAX_WAITING = 200            # au-dela, les plus anciennes demandes tombent
 SAVE_EVERY_S = 15.0
 PAUSE_BETWEEN_S = 0.5        # entre deux extractions : un travail de fond
@@ -68,6 +64,15 @@ class Covers:
                 self._state = data if isinstance(data, dict) else {}
             except (OSError, ValueError):
                 self._state = {}
+            # Un nouveau lancement : chaque dossier passe a la couverture
+            # preparee la derniere fois, et la garde jusqu'au suivant.
+            for entry in self._state.values():
+                if not isinstance(entry, dict):
+                    continue
+                ready = int(entry.get("n", -1))
+                if ready >= 0 and ready != entry.get("i"):
+                    entry["i"], entry["t"], entry["n"] = ready, time.time(), -1
+                    self._dirty = True
         return self._state
 
     def save(self, force: bool = False) -> None:
@@ -101,10 +106,6 @@ class Covers:
             self._dirty = True
         return entry
 
-    def _due(self, key: str, entry: dict) -> bool:
-        wait = self.period * (0.75 + 0.5 * _fraction(key, "rythme"))
-        return time.time() - float(entry.get("t", 0)) >= wait
-
     def current(self, key: str, count: int) -> int:
         """L'index de la couverture a montrer, sans rien changer."""
         if count < 2:
@@ -113,17 +114,13 @@ class Covers:
             return int(self._entry(key, count)["i"])
 
     def show(self, key: str, videos: list) -> int:
-        """L'index de la couverture a montrer maintenant. Passe a la suivante
-        si son tour est venu et qu'elle est prete ; sinon la prepare."""
+        """L'index de la couverture a montrer : celle de ce lancement, qui ne
+        change pas. Prepare au besoin celle du lancement suivant."""
         count = len(videos)
         if count < 2:
             return 0
         with self._lock:
             entry = self._entry(key, count)
-            ready = int(entry.get("n", -1))
-            if 0 <= ready < count and ready != entry["i"] and self._due(key, entry):
-                entry["i"], entry["t"], entry["n"] = ready, time.time(), -1
-                self._dirty = True
             shown = int(entry["i"])
             # Une extraction ratee (fichier abime, NAS absent) ne se retente
             # qu'au tour suivant, pas a chaque affichage.
@@ -133,18 +130,6 @@ class Covers:
             self._prepare(key, videos, shown)
         self.save()
         return shown
-
-    def due_ready(self, key: str, count: int) -> bool:
-        """Cette carte changerait-elle d'image si on la redemandait ?"""
-        if count < 2:
-            return False
-        with self._lock:
-            entry = self._load().get(key)
-            if not isinstance(entry, dict):
-                return False
-            ready = int(entry.get("n", -1))
-            return (0 <= ready < count and ready != entry.get("i")
-                    and self._due(key, entry))
 
     def _next_index(self, key: str, count: int, shown: int) -> int:
         """Une autre video du dossier, au hasard -- mais pas celles d'il y a

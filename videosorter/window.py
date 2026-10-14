@@ -2060,20 +2060,13 @@ class MainWindow(QMainWindow):
         self.board_timer.setInterval(1000)
         self.board_timer.timeout.connect(self._flush_board)
 
-        # Les couvertures des dossiers changent d'elles-memes (covers.py) :
-        # la prochaine se prepare en fond, en cedant la place a ce qu'on
-        # regarde, et la carte ne change que quand elle est prete -- jamais
-        # d'attente a l'affichage. Seule la page affichee travaille, et
-        # seulement fenetre active.
+        # Les couvertures des dossiers changent a chaque lancement (covers.py),
+        # jamais en cours d'usage : la prochaine se prepare en fond, en
+        # cedant la place a ce qu'on regarde, et sert au lancement suivant.
         COVERS.period = float(self.cfg["cover_period_s"] or 0) or COVERS.period
         COVERS.make = self._make_cover
         COVERS.wait_quiet = media.FOREGROUND.wait
         self._cover_applied: dict = {}      # dossier -> couverture posee sur sa carte
-        self.cover_timer = QTimer(self)
-        self.cover_timer.setInterval(2000)
-        self.cover_timer.timeout.connect(self._turn_covers)
-        if self.cfg["cover_period_s"]:
-            self.cover_timer.start()
 
     # ------------------------------------------------------------------
     # Racine et analyse
@@ -10163,7 +10156,7 @@ class MainWindow(QMainWindow):
                 label.setText(said[0])
             self._empty_said = None
 
-    # -- les couvertures qui changent ---------------------------------------
+    # -- les couvertures, une par lancement -----------------------------------
     def _covers_on(self, item) -> bool:
         return (bool(self.cfg["cover_period_s"]) and item.kind == MODE_FOLDERS
                 and not item.locked and not item.is_tag and len(item.videos) >= 2)
@@ -10192,34 +10185,6 @@ class MainWindow(QMainWindow):
         self.board.set_thumb(position, str(ready))
         self._cover_applied[str(item.path)] = index
         return True
-
-    def _turn_covers(self) -> None:
-        """Toutes les deux secondes : les cartes de la page dont le tour est
-        venu (et la nouvelle image prete) changent de couverture."""
-        if (not self.browsing or not self.isActiveWindow() or self.tab == TAB_SPLIT
-                or self.board.isHidden()):
-            return
-        items = self.board.items
-        first, last = self.board._page_bounds()
-        hovered = self.board.hovered_card()
-        for position in range(max(0, first), min(last, len(items))):
-            item = items[position]
-            if not self._covers_on(item):
-                continue
-            card = self.board._card_for(position)
-            if card is None or not card.thumb_path:
-                continue            # sa premiere image n'est pas encore la
-            if card is hovered:
-                # Sous la souris, la couverture ne change pas : l'apercu joue
-                # sa video, et un clic doit ouvrir celle-la, pas la suivante.
-                continue
-            key = str(item.path)
-            index = COVERS.show(key, item.videos)
-            # On ne touche a la carte que si sa couverture change vraiment :
-            # la reposer toutes les deux secondes remettait la page en place,
-            # et la planche tournait la page toute seule.
-            if index != self._cover_applied.get(key, 0):
-                self._cover_now(position, item, index)
 
     def on_board_preview(self, position: int) -> None:
         """Une carte réclame son image : on lui construit sa première vignette."""

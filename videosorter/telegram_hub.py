@@ -24,7 +24,6 @@ import asyncio
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import threading
 import time
@@ -49,6 +48,8 @@ DOWNLOADS = APP_DIR / "telegram-downloads"
 URL_RE = re.compile(r"(?:https?://)?t\.me/([A-Za-z0-9_]{4,})", re.I)
 JOURNAL_MAX = 300
 BANK_PAGE = 48          # médias par page dans la banque
+DURATION_CHOICES = ((0, "Toutes"), (10, "10 s"), (30, "30 s"), (60, "1 min"),
+                    (180, "3 min"), (600, "10 min"))
 
 STYLE = """
 QDialog { background: #101318; color: #e8edf2; }
@@ -174,31 +175,6 @@ def telegram_links(key: str, username: str = "", top: int = 0) -> list[str]:
         return [f"tg://privatepost?channel={key[1:]}&post={post}",
                 f"https://t.me/c/{key[1:]}/{post}"]
     return []
-
-
-def session_copy():
-    """La session du compte, recopiée en mémoire (clé et carnet des groupes)
-    pour un second client : les files de fond et de téléchargement ne se
-    disputent pas le fichier SQLite avec celle des clics. Lu en lecture
-    seule. None : pas de session sur le disque."""
-    from telethon.crypto import AuthKey
-    from telethon.sessions import StringSession
-    path = SESSION_PATH.with_suffix(".session")
-    if not path.exists():
-        return None
-    con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10)
-    try:
-        found = con.execute("select dc_id, server_address, port, auth_key from sessions").fetchone()
-        rows = con.execute("select id, hash, username, phone, name from entities").fetchall()
-    finally:
-        con.close()
-    if not found or not found[3]:
-        return None
-    copy = StringSession()
-    copy.set_dc(found[0], found[1], found[2])
-    copy.auth_key = AuthKey(data=found[3])
-    copy._entities = set(rows)
-    return copy
 
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv"}
@@ -452,9 +428,11 @@ def human_when(stamp: float) -> str:
     return time.strftime("%d/%m %H:%M", time.localtime(stamp)) if stamp else "jamais"
 
 
-# -- trois files, un client chacune ---------------------------------------------
-# « ui » : les clics courts (médias, lecture, rejoindre, connexion), sur la
-# session du disque. « recherche » : une recherche, qui peut durer.
+# -- des files, une seule connexion ---------------------------------------------
+# Chaque file passe ses travaux l'un après l'autre ; les files tournent
+# ensemble, sur la même connexion (`link`).
+# « ui » : les clics courts (médias, rejoindre, connexion). « lecture » : le
+# média double-cliqué. « recherche » : une recherche, qui peut durer.
 # « fond » : recomptage des groupes et vérifications. « dl » : les gros
 # téléchargements. Un clic n'attend plus derrière un recomptage de cent
 # groupes, une recherche ou « Tout télécharger ».
@@ -514,9 +492,101 @@ def hub() -> _Hub:
     return HUB
 
 
-class TelegramWorker(QThread):
-    """Un client Telethon, hors du fil de l'interface."""
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{round(seconds / 60)} min"
+    return f"{seconds // 3600} h {seconds % 3600 // 60:02d}"
 
+
+class _Link:
+    """La seule connexion à Telegram : un client, ouvert une fois et gardé.
+    Avant, chaque clic ouvrait la sienne (une seconde de poignée de main à
+    chaque fois, et plusieurs à la fois sur le même compte : Telegram s'en
+    méfie). Les travaux tournent ensemble sur ce client, dans son fil."""
+
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self._client = None
+        self._key = None
+        self._lock: asyncio.Lock | None = None
+        self.authorized = False
+        self.paused_until = 0.0
+        threading.Thread(target=self.loop.run_forever, daemon=True,
+                         name="prisme-telegram").start()
+
+    async def client(self, api_id: int, api_hash: str):
+        from telethon import TelegramClient
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if self._client is not None and self._key != (api_id, api_hash):
+                await self._client.disconnect()
+                self._client, self.authorized = None, False
+            if self._client is None:
+                # Les petites pauses demandées par Telegram (quelques
+                # secondes) sont respectées sans rien dire ; les longues
+                # remontent, et tout s'arrête le temps qu'il faut.
+                self._client = TelegramClient(str(SESSION_PATH), api_id, api_hash,
+                                              flood_sleep_threshold=15,
+                                              connection_retries=3, request_retries=3,
+                                              auto_reconnect=True)
+                self._key = (api_id, api_hash)
+            if not self._client.is_connected():
+                await self._client.connect()
+            return self._client
+
+    def warm(self, api_id: int, api_hash: str) -> None:
+        """Ouvre la connexion d'avance (à l'ouverture de la fenêtre) : le
+        premier clic n'attend pas la poignée de main."""
+        async def go():
+            try:
+                client = await self.client(api_id, api_hash)
+                if not self.authorized and await client.is_user_authorized():
+                    self.authorized = True
+            except Exception:  # noqa: BLE001 — le premier travail le dira
+                pass
+        if api_id and api_hash and not self.paused_for():
+            asyncio.run_coroutine_threadsafe(go(), self.loop)
+
+    def pause(self, seconds: int) -> None:
+        if seconds > 30:
+            self.paused_until = max(self.paused_until, time.time() + seconds)
+
+    def paused_for(self) -> float:
+        return max(0.0, self.paused_until - time.time())
+
+    def close(self) -> None:
+        """À la fermeture de Prisme : la session se referme proprement."""
+        try:
+            if self._client is not None:
+                asyncio.run_coroutine_threadsafe(self._client.disconnect(), self.loop).result(3)
+        except Exception:  # noqa: BLE001
+            pass
+        self._client = None
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+_LINK: _Link | None = None
+
+
+def link() -> _Link:
+    global _LINK
+    if _LINK is None:
+        import atexit
+        _LINK = _Link()
+        atexit.register(_LINK.close)
+    return _LINK
+
+
+class TelegramWorker(QObject):
+    """Un travail Telegram, sur la connexion partagée (`link`). Se lance et
+    se suit comme un fil : start, isRunning, started, finished."""
+
+    started = Signal()
+    finished = Signal()
     status = Signal(str)
     need_code = Signal()
     need_password = Signal()
@@ -541,6 +611,7 @@ class TelegramWorker(QThread):
         self.stop = False           # « Arrêter » : lu entre deux fichiers
         self.got = 0                # banque : médias de la page
         self.error = ""
+        self._running = False
         self.interactive = True
         self.query = ""
         self.pasted: list[str] = []
@@ -553,6 +624,8 @@ class TelegramWorker(QThread):
         self.targets: list[str] = []
         self.invites: dict[str, None] = {}
         self.kind = "all"           # banque, export : "all", "video", "photo"
+        self.min_duration = 0       # banque, export : vidéos plus courtes laissées de côté
+        self.short = 0
         self.skip_known = True
         self.known: set[tuple[str, int]] = set()
         self.skipped = 0
@@ -569,23 +642,50 @@ class TelegramWorker(QThread):
         self._password = password
         self._wait.set()
 
-    def _ask(self, kind: str) -> str:
+    async def _ask(self, kind: str) -> str:
         self._wait.clear()
         (self.need_code if kind == "code" else self.need_password).emit()
-        if not self._wait.wait(180):
+        # Attendre la saisie sans bloquer la connexion (les autres travaux
+        # continuent pendant ce temps).
+        got = await asyncio.get_running_loop().run_in_executor(None, self._wait.wait, 180)
+        if not got:
             raise TimeoutError("code Telegram non saisi")
         return self._code if kind == "code" else self._password
 
-    def run(self) -> None:
+    # -- comme un fil : start, isRunning, started, finished ---------------------
+    def start(self) -> None:
+        self._running = True
+        self.started.emit()
+        asyncio.run_coroutine_threadsafe(self._main(), link().loop)
+
+    def isRunning(self) -> bool:
+        return self._running
+
+    async def _main(self) -> None:
         try:
-            asyncio.run(self._run())
+            await self._run()
         except Exception as exc:  # noqa: BLE001 — remonté à l'interface
-            self.error = f"{type(exc).__name__} : {exc}"
-            self.failed.emit(self.error)
+            seconds = getattr(exc, "seconds", None)
+            name = type(exc).__name__
+            if name == "FloodWaitError" and seconds:
+                link().pause(int(seconds))
+                self.error = (f"Telegram demande une pause de {_duration(seconds)}. "
+                              "Rien n'est cassé : Prisme reprendra tout seul ensuite.")
+            elif name in ("AuthKeyUnregisteredError", "AuthKeyDuplicatedError",
+                          "SessionRevokedError", "SessionExpiredError", "UnauthorizedError"):
+                link().authorized = False
+                self.error = ("Telegram a fermé la session de Prisme : reconnecte-toi "
+                              "(onglet Compte, « Connecter »).")
+            else:
+                self.error = f"{type(exc).__name__} : {exc}"
+            if self.interactive:
+                self.failed.emit(self.error)
+        finally:
+            self._running = False
+            self.finished.emit()
 
     async def _run(self) -> None:
         try:
-            from telethon import TelegramClient
             from telethon.errors import SessionPasswordNeededError
         except ImportError:
             self.failed.emit("Telethon n'est pas installé. Lance : pip install telethon")
@@ -595,22 +695,20 @@ class TelegramWorker(QThread):
         if not api_id or not api_hash:
             self.failed.emit("api_id et api_hash manquent (onglet Compte).")
             return
-        session = str(SESSION_PATH)
-        if self.lane != "ui":
-            try:
-                session = session_copy() or session
-            except (sqlite3.Error, ValueError) as exc:
-                self.status.emit(f"Session illisible pour l'instant ({exc}) : nouvel essai plus tard.")
-                return
-        client = TelegramClient(session, api_id, api_hash)
-        await client.connect()
-        try:
+        shared = link()
+        wait = shared.paused_for()
+        if wait:
+            # Garde-fou : Telegram a demandé une pause ; insister la rallonge.
+            if self.interactive and self.lane != "fond":
+                self.failed.emit(f"Telegram a demandé une pause : encore {_duration(wait)}. "
+                                 "Rien n'est cassé, réessaie ensuite.")
+            return
+        client = await shared.client(api_id, api_hash)
+        if not shared.authorized:
             if not await client.is_user_authorized():
-                if not self.interactive:
-                    return          # en fond : pas de code demandé à l'improviste
-                if self.lane != "ui":
-                    # Une session recopiée : la connexion ne serait pas gardée.
-                    self.failed.emit("Pas encore connecté : onglet Compte, « Connecter ».")
+                if not self.interactive or self.job != "login":
+                    if self.interactive and self.lane != "fond":
+                        self.failed.emit("Pas encore connecté : onglet Compte, « Connecter ».")
                     return
                 phone = self.state.get("phone") or ""
                 if not phone:
@@ -619,35 +717,34 @@ class TelegramWorker(QThread):
                 await client.send_code_request(phone)
                 self.status.emit("Code envoyé dans Telegram.")
                 try:
-                    await client.sign_in(phone, self._ask("code"))
+                    await client.sign_in(phone, await self._ask("code"))
                 except SessionPasswordNeededError:
-                    await client.sign_in(password=self._ask("password"))
-            if self.job == "login" or not self.state.get("me"):
-                # Une requête de moins à chaque clic : le nom est déjà connu.
-                me = await client.get_me()
-                who = me.first_name or me.username or str(me.id)
-                update_state(lambda s: s.__setitem__("me", who))
-                self.status.emit(f"Connecté : {who}")
-            if self.job == "search":
-                self.search_done.emit(await self._search(client))
-            elif self.job == "content":
-                self.search_done.emit(await self._content(client))
-            elif self.job == "dialogs":
-                self.joined_done.emit(await self._dialogs(client))
-            elif self.job == "join":
-                self.join_done.emit(await self._join(client))
-            elif self.job == "check":
-                self.checked.emit(await self._check(client))
-            elif self.job == "bank":
-                self.bank_done.emit(await self._bank(client))
-            elif self.job == "download":
-                self.file_ready.emit(await self._download(client) or "")
-            elif self.job == "download_many":
-                self.batch_done.emit(await self._download_many(client))
-            elif self.job == "export":
-                self.batch_done.emit(await self._export(client))
-        finally:
-            await client.disconnect()
+                    await client.sign_in(password=await self._ask("password"))
+            shared.authorized = True
+        if self.job == "login" or not self.state.get("me"):
+            # Une requête de moins à chaque clic : le nom est déjà connu.
+            me = await client.get_me()
+            who = me.first_name or me.username or str(me.id)
+            update_state(lambda s: s.__setitem__("me", who))
+            self.status.emit(f"Connecté : {who}")
+        if self.job == "search":
+            self.search_done.emit(await self._search(client))
+        elif self.job == "content":
+            self.search_done.emit(await self._content(client))
+        elif self.job == "dialogs":
+            self.joined_done.emit(await self._dialogs(client))
+        elif self.job == "join":
+            self.join_done.emit(await self._join(client))
+        elif self.job == "check":
+            self.checked.emit(await self._check(client))
+        elif self.job == "bank":
+            self.bank_done.emit(await self._bank(client))
+        elif self.job == "download":
+            self.file_ready.emit(await self._download(client) or "")
+        elif self.job == "download_many":
+            self.batch_done.emit(await self._download_many(client))
+        elif self.job == "export":
+            self.batch_done.emit(await self._export(client))
 
     # -- retrouver un groupe a partir de sa cle --------------------------------
     async def _resolve(self, client, key: str):
@@ -990,8 +1087,15 @@ class TelegramWorker(QThread):
         self.joined_progress.emit(rows)
         unseen: dict[str, int] = {}
         for at, row in enumerate(rows, 1):
-            self.status.emit(f"Comptage des photos et vidéos : {at}/{len(rows)} — {row['title']}")
             key = row["key"]
+            before = known.get(key) or {}
+            # Rien de neuf dans le groupe depuis le dernier comptage (même
+            # dernier message, même lecture) : ses comptes n'ont pas bougé.
+            # Deux requêtes de moins par groupe, et Telegram moins sollicité.
+            if (before.get("medias") is not None and before.get("top") == row["top"]
+                    and before.get("read_max") == row["read_max"] and key in state["unseen"]):
+                continue
+            self.status.emit(f"Comptage des photos et vidéos : {at}/{len(rows)} — {row['title']}")
             # Vu : jusqu'à la dernière lecture dans Telegram, ou jusqu'à
             # « Marquer comme vus » si c'est plus loin.
             seen_from = max(int(state["seen_from"].get(key) or 0), row["read_max"])
@@ -1001,6 +1105,7 @@ class TelegramWorker(QThread):
                                if seen_from else row["medias"])
             except FloodWaitError as exc:
                 if exc.seconds > 60:
+                    link().pause(exc.seconds)
                     self.status.emit(f"Telegram demande d'attendre {exc.seconds} s : "
                                      "comptage arrêté, il reprendra au prochain « Actualiser ».")
                     break
@@ -1190,11 +1295,17 @@ class TelegramWorker(QThread):
             # seule requête pour toute la page.
             msgs = await client.get_messages(target, filter=self._photo_video(self.kind), **kwargs)
             self.got = len(msgs)
-            for start in range(0, len(msgs), 8):
-                batch = msgs[start:start + 8]
+            # Un petit premier paquet (les premières vignettes en une
+            # seconde), puis de plus gros.
+            cuts = [0, 6] + list(range(18, len(msgs), 12)) + [len(msgs)]
+            for start, end in zip(cuts, cuts[1:]):
+                batch = msgs[start:end]
+                if not batch:
+                    continue
                 thumbs = [THUMBS / f"{safe_name(self.channel)}_{m.id}.jpg" for m in batch]
                 try:
-                    await asyncio.gather(*(self._thumb(m, t) for m, t in zip(batch, thumbs)))
+                    await asyncio.gather(*(self._thumb(m, t) for m, t in zip(batch, thumbs)
+                                           if not self._too_short(m)))
                 except FloodWaitError as exc:
                     await asyncio.sleep(min(exc.seconds, 15))
                 part = [self._bank_item(m, t) for m, t in zip(batch, thumbs)]
@@ -1228,6 +1339,12 @@ class TelegramWorker(QThread):
             "thumb": str(thumb) if thumb.exists() else "",
         }
 
+    def _too_short(self, msg) -> bool:
+        """Une vidéo sous la durée choisie (les photos passent toujours)."""
+        if not self.min_duration or not msg_is_video(msg) or not msg.file:
+            return False
+        return float(getattr(msg.file, "duration", 0) or 0) < self.min_duration
+
     async def _get(self, msg) -> tuple[str, bool]:
         """Télécharge le média : (le fichier, nouveau ?). Déjà là : le fichier
         existant, pas nouveau. Déjà dans la bibliothèque : rien."""
@@ -1249,7 +1366,8 @@ class TelegramWorker(QThread):
     def _tell(self, done: int, total: int, new: int, state: str = "run", folder: str = "") -> None:
         self.progress.emit({"title": self.title, "key": self.channel, "kind": self.kind,
                             "done": done, "total": total, "new": new,
-                            "skipped": self.skipped, "state": state, "folder": folder})
+                            "skipped": self.skipped, "short": self.short, "state": state,
+                            "folder": folder})
 
     async def _download(self, client) -> str:
         target = await self._resolve(client, self.channel)
@@ -1270,6 +1388,11 @@ class TelegramWorker(QThread):
             if self.stop:
                 break
             if msg is None:
+                continue
+            if self._too_short(msg):
+                self.short += 1
+                done += 1
+                self._tell(done, total, n)
                 continue
             try:
                 path, new = await self._get(msg)
@@ -1413,9 +1536,10 @@ class _DownloadBar(QWidget):
                                f"ce que tu as déjà…{more}")
             self.bar.setRange(0, 0)
         elif state == "run":
+            short = f", {info['short']} trop courts" if info.get("short") else ""
             self.label.setText(f"⬇ Téléchargement des {what} de « {title} » : {done} / "
                                f"{total or '?'} — {info.get('new', 0)} nouveaux, "
-                               f"{info.get('skipped', 0)} déjà là{more}")
+                               f"{info.get('skipped', 0)} déjà là{short}{more}")
             if total:
                 self.bar.setRange(0, total)
                 self.bar.setValue(min(done, total))
@@ -1478,8 +1602,12 @@ class TelegramDialog(QDialog):
             # La liste du compte se met à jour seule à l'ouverture (elle est
             # gardée : on la voit tout de suite, puis elle se rafraîchit).
             stale = time.time() - float(self.state.get("joined_at") or 0) > 600
-            if SESSION_PATH.with_suffix(".session").exists() and (stale or not self.state["joined"]):
-                QTimer.singleShot(300, self.load_groups)
+            if SESSION_PATH.with_suffix(".session").exists():
+                api_id = str(self.state.get("api_id") or "")
+                link().warm(int(api_id) if api_id.isdigit() else 0,
+                            self.state.get("api_hash") or "")
+                if stale or not self.state["joined"]:
+                    QTimer.singleShot(300, self.load_groups)
 
     # == onglets =================================================================
     def _groups_tab(self) -> QWidget:
@@ -2532,12 +2660,13 @@ class TelegramDialog(QDialog):
         subprocess.Popen(f'explorer /select,"{folders[0]}"')
 
     # == medias ==================================================================
-    def _export(self, key: str, title: str, kind: str = "all") -> None:
+    def _export(self, key: str, title: str, kind: str = "all", min_duration: int = 0) -> None:
         what = {"video": "toutes les vidéos", "photo": "toutes les photos"}.get(
             kind, "toutes les photos et vidéos")
         self.status.setText(f"⬇ Téléchargement lancé : {what} de « {title} ». L'avancement "
                             "s'affiche dans la barre ; tu peux continuer à parcourir.")
-        self._start("export", channel=key, title=title, skip_known=False, kind=kind)
+        self._start("export", channel=key, title=title, skip_known=False, kind=kind,
+                    min_duration=min_duration)
 
     def open_bank(self, key: str, title: str = "", before_id: int = 0, kind: str = "all") -> None:
         """La fenêtre des médias s'ouvre tout de suite ; les vignettes y
@@ -2555,7 +2684,8 @@ class TelegramDialog(QDialog):
         window.activateWindow()
         window.loading_started()
         self.status.setText(f"Lecture des médias de « {title} »…")
-        worker = self._start("bank", channel=key, title=title, before_id=before_id, kind=kind)
+        worker = self._start("bank", channel=key, title=title, before_id=before_id, kind=kind,
+                             min_duration=window.min_duration)
         worker.finished.connect(self._bank_finished)
 
     def _bank_for(self, worker) -> "MediaBank | None":
@@ -2667,6 +2797,21 @@ class MediaBank(QDialog):
             top.addWidget(button)
             self.kind_buttons[kind] = button
         box.addLayout(top)
+        # Les vidéos trop courtes (extraits de 3-4 s) : masquées, et sautées
+        # par « Tout télécharger ». Le choix est gardé d'une fois sur l'autre.
+        lengths = QHBoxLayout()
+        lengths.addWidget(QLabel("Vidéos d'au moins :", self))
+        self.min_duration = int(load_state().get("min_duration") or 0)
+        self.length_buttons = {}
+        for seconds, text in DURATION_CHOICES:
+            button = QPushButton(text, self)
+            button.setCheckable(True)
+            button.setChecked(seconds == self.min_duration)
+            button.clicked.connect(lambda _c=False, s=seconds: self.set_min_duration(s))
+            lengths.addWidget(button)
+            self.length_buttons[seconds] = button
+        lengths.addStretch(1)
+        box.addLayout(lengths)
         box.addWidget(_DownloadBar(owner, self))
         self.grid = QListWidget(self)
         use_cards(self.grid, 236)
@@ -2691,7 +2836,8 @@ class MediaBank(QDialog):
         self.everything.setToolTip("Toutes les photos et vidéos du groupe (ou seulement les "
                                    "vidéos, ou les photos, selon le choix en haut), pas seulement "
                                    "celles affichées. Ce qui est déjà dans le dossier est sauté.")
-        self.everything.clicked.connect(lambda: owner._export(self.key, self.title, self.kind))
+        self.everything.clicked.connect(
+            lambda: owner._export(self.key, self.title, self.kind, self.min_duration))
         row.addWidget(self.everything)
         bulk = QPushButton("Télécharger les cochés", self)
         bulk.clicked.connect(self._download_checked)
@@ -2720,18 +2866,39 @@ class MediaBank(QDialog):
         value = self.totals.get(self.kind)
         return None if value is None else int(value)
 
+    def _too_short(self, item: dict) -> bool:
+        return bool(self.min_duration and item.get("video")
+                    and float(item.get("duration") or 0) < self.min_duration)
+
+    def set_min_duration(self, seconds: int) -> None:
+        """Masque les vidéos plus courtes, sans rien relire dans Telegram ;
+        la suite se charge s'il ne reste pas de quoi remplir la fenêtre."""
+        for value, button in self.length_buttons.items():
+            button.setChecked(value == seconds)
+        self.min_duration = seconds
+        update_state(lambda s: s.__setitem__("min_duration", seconds))
+        for i in range(self.grid.count()):
+            cell = self.grid.item(i)
+            cell.setHidden(self._too_short(cell.data(Qt.UserRole) or {}))
+        self._show_info()
+        QTimer.singleShot(0, self._near_end)
+
     def _show_info(self) -> None:
-        shown = len(self.items)
+        loaded = len(self.items)
+        hidden = sum(1 for item in self.items if self._too_short(item))
+        shown = loaded - hidden
         total = self._total()
         of = f" sur {total:,}".replace(",", " ") if total is not None else ""
         if self.loading:
             text = f"{shown}{of} affichés — chargement de la suite…" if shown else \
                 "Chargement des médias…"
-        elif self.exhausted or (total is not None and shown >= total):
+        elif self.exhausted or (total is not None and loaded >= total):
             text = (f"Tout est affiché : {shown}." if shown else
                     "Aucune photo ni vidéo ici (ou Telegram n'en montre pas à ton compte).")
         else:
             text = f"{shown}{of} affichés — fais défiler pour voir la suite."
+        if hidden:
+            text += f"  ({hidden} vidéo(s) trop courte(s) masquée(s))"
         self.info.setText(text)
         self.setWindowTitle(f"Médias — {self.title} ({shown}{of})")
 
@@ -2796,6 +2963,7 @@ class MediaBank(QDialog):
             cell.setToolTip(item.get("title") or "")
             cell.setData(Qt.UserRole, item)
             self.grid.addItem(cell)
+            cell.setHidden(self._too_short(item))
         self._show_info()
 
     def set_kind(self, kind: str) -> None:
@@ -2842,7 +3010,7 @@ class MediaBank(QDialog):
         ids = []
         for i in range(self.grid.count()):
             cell = self.grid.item(i)
-            if cell.checkState() == Qt.Checked:
+            if cell.checkState() == Qt.Checked and not cell.isHidden():
                 ids.append((cell.data(Qt.UserRole) or {}).get("id"))
         ids = [i for i in ids if i]
         if not ids:
@@ -2853,7 +3021,9 @@ class MediaBank(QDialog):
     def _check_all(self, on: bool) -> None:
         state = Qt.Checked if on else Qt.Unchecked
         for i in range(self.grid.count()):
-            self.grid.item(i).setCheckState(state)
+            cell = self.grid.item(i)
+            if not cell.isHidden():
+                cell.setCheckState(state)
 
 
 # -- en fond, depuis la fenetre principale --------------------------------------
