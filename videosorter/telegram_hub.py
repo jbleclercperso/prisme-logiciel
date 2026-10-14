@@ -24,17 +24,19 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
+import subprocess
 import threading
 import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
-    QVBoxLayout, QWidget,
+    QProgressBar, QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .cartes import ROLE_CHIP, ROLE_RES, ROLE_SUB, use_cards
@@ -46,6 +48,7 @@ THUMBS = APP_DIR / "telegram-thumbs"
 DOWNLOADS = APP_DIR / "telegram-downloads"
 URL_RE = re.compile(r"(?:https?://)?t\.me/([A-Za-z0-9_]{4,})", re.I)
 JOURNAL_MAX = 300
+BANK_PAGE = 48          # médias par page dans la banque
 
 STYLE = """
 QDialog { background: #101318; color: #e8edf2; }
@@ -137,7 +140,65 @@ def safe_name(text: str) -> str:
 
 
 def channel_folder(state: dict, title: str, key: str) -> Path:
+    """L'ancien dossier unique du groupe : on n'y écrit plus, mais ce qui y
+    est déjà n'est pas retéléchargé."""
     return download_root(state) / safe_name(title or key)
+
+
+def media_folder(state: dict, title: str, key: str, video: bool) -> Path:
+    """Les vidéos dans « Groupe - Vids », les photos dans « Groupe - Pix »,
+    côte à côte dans le dossier des téléchargements."""
+    return download_root(state) / f"{safe_name(title or key)} - {'Vids' if video else 'Pix'}"
+
+
+def group_folders(state: dict, title: str, key: str) -> list[Path]:
+    """Les dossiers du groupe qui existent déjà sur le disque."""
+    return [p for p in (media_folder(state, title, key, True),
+                        media_folder(state, title, key, False),
+                        channel_folder(state, title, key)) if p.is_dir()]
+
+
+def msg_is_video(msg) -> bool:
+    mime = (msg.file.mime_type or "") if msg.file else ""
+    return bool(msg.video) or mime.startswith("video")
+
+
+def telegram_links(key: str, username: str = "", top: int = 0) -> list[str]:
+    """De quoi ouvrir le groupe dans Telegram : l'appli d'abord (tg://), le
+    navigateur ensuite. Un petit groupe privé (g<id>) n'a pas de lien."""
+    username = username or ("" if key[:1] in "cg" and key[1:].isdigit() else key)
+    if username:
+        return [f"tg://resolve?domain={username}", f"https://t.me/{username}"]
+    if key[:1] == "c" and key[1:].isdigit():
+        post = max(1, int(top or 0))
+        return [f"tg://privatepost?channel={key[1:]}&post={post}",
+                f"https://t.me/c/{key[1:]}/{post}"]
+    return []
+
+
+def session_copy():
+    """La session du compte, recopiée en mémoire (clé et carnet des groupes)
+    pour un second client : les files de fond et de téléchargement ne se
+    disputent pas le fichier SQLite avec celle des clics. Lu en lecture
+    seule. None : pas de session sur le disque."""
+    from telethon.crypto import AuthKey
+    from telethon.sessions import StringSession
+    path = SESSION_PATH.with_suffix(".session")
+    if not path.exists():
+        return None
+    con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10)
+    try:
+        found = con.execute("select dc_id, server_address, port, auth_key from sessions").fetchone()
+        rows = con.execute("select id, hash, username, phone, name from entities").fetchall()
+    finally:
+        con.close()
+    if not found or not found[3]:
+        return None
+    copy = StringSession()
+    copy.set_dc(found[0], found[1], found[2])
+    copy.auth_key = AuthKey(data=found[3])
+    copy._entities = set(rows)
+    return copy
 
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv"}
@@ -391,9 +452,16 @@ def human_when(stamp: float) -> str:
     return time.strftime("%d/%m %H:%M", time.localtime(stamp)) if stamp else "jamais"
 
 
-# -- un seul client a la fois ---------------------------------------------------
+# -- trois files, un client chacune ---------------------------------------------
+# « ui » : ce que l'on vient de cliquer (médias, lecture, recherche, connexion),
+# sur la session du disque. « fond » : recomptage des groupes et vérifications.
+# « dl » : les gros téléchargements. Un clic n'attend plus derrière un
+# recomptage de cent groupes ni derrière « Tout télécharger ».
+JOB_LANE = {"dialogs": "fond", "check": "fond", "export": "dl", "download_many": "dl"}
+
+
 class _Queue(QObject):
-    """Les travaux Telegram passent l'un après l'autre (vit dans le fil de
+    """Les travaux d'une file passent l'un après l'autre (vit dans le fil de
     l'interface : la fin d'un travail y arrive en file, pas dans son fil)."""
 
     def __init__(self):
@@ -423,16 +491,17 @@ class _Hub(QObject):
     checked = Signal(dict)
 
 
-_QUEUE: _Queue | None = None
+_QUEUES: dict[str, _Queue] = {}
 HUB: _Hub | None = None
 
 
-def queue() -> _Queue:
-    global _QUEUE, HUB
-    if _QUEUE is None:
-        _QUEUE = _Queue()
+def queue(lane: str = "ui") -> _Queue:
+    global HUB
+    if HUB is None:
         HUB = _Hub()
-    return _QUEUE
+    if lane not in _QUEUES:
+        _QUEUES[lane] = _Queue()
+    return _QUEUES[lane]
 
 
 def hub() -> _Hub:
@@ -452,14 +521,21 @@ class TelegramWorker(QThread):
     join_done = Signal(list)
     checked = Signal(dict)
     bank_done = Signal(list)
+    bank_part = Signal(list)
+    bank_totals = Signal(dict)
     file_ready = Signal(str)
     batch_done = Signal(int)
+    progress = Signal(dict)
     failed = Signal(str)
 
     def __init__(self, state: dict, job: str = "login"):
         super().__init__()
         self.state = state
         self.job = job
+        self.lane = JOB_LANE.get(job, "ui")
+        self.stop = False           # « Arrêter » : lu entre deux fichiers
+        self.got = 0                # banque : médias de la page
+        self.error = ""
         self.interactive = True
         self.query = ""
         self.pasted: list[str] = []
@@ -499,7 +575,8 @@ class TelegramWorker(QThread):
         try:
             asyncio.run(self._run())
         except Exception as exc:  # noqa: BLE001 — remonté à l'interface
-            self.failed.emit(f"{type(exc).__name__} : {exc}")
+            self.error = f"{type(exc).__name__} : {exc}"
+            self.failed.emit(self.error)
 
     async def _run(self) -> None:
         try:
@@ -513,12 +590,23 @@ class TelegramWorker(QThread):
         if not api_id or not api_hash:
             self.failed.emit("api_id et api_hash manquent (onglet Compte).")
             return
-        client = TelegramClient(str(SESSION_PATH), api_id, api_hash)
+        session = str(SESSION_PATH)
+        if self.lane != "ui":
+            try:
+                session = session_copy() or session
+            except (sqlite3.Error, ValueError) as exc:
+                self.status.emit(f"Session illisible pour l'instant ({exc}) : nouvel essai plus tard.")
+                return
+        client = TelegramClient(session, api_id, api_hash)
         await client.connect()
         try:
             if not await client.is_user_authorized():
                 if not self.interactive:
                     return          # en fond : pas de code demandé à l'improviste
+                if self.lane != "ui":
+                    # Une session recopiée : la connexion ne serait pas gardée.
+                    self.failed.emit("Pas encore connecté : onglet Compte, « Connecter ».")
+                    return
                 phone = self.state.get("phone") or ""
                 if not phone:
                     self.failed.emit("Numéro manquant, au format international (+33…).")
@@ -529,10 +617,12 @@ class TelegramWorker(QThread):
                     await client.sign_in(phone, self._ask("code"))
                 except SessionPasswordNeededError:
                     await client.sign_in(password=self._ask("password"))
-            me = await client.get_me()
-            who = me.first_name or me.username or str(me.id)
-            update_state(lambda s: s.__setitem__("me", who))
-            self.status.emit(f"Connecté : {who}")
+            if self.job == "login" or not self.state.get("me"):
+                # Une requête de moins à chaque clic : le nom est déjà connu.
+                me = await client.get_me()
+                who = me.first_name or me.username or str(me.id)
+                update_state(lambda s: s.__setitem__("me", who))
+                self.status.emit(f"Connecté : {who}")
             if self.job == "search":
                 self.search_done.emit(await self._search(client))
             elif self.job == "content":
@@ -830,10 +920,10 @@ class TelegramWorker(QThread):
                 continue
         return ""
 
-    async def _count(self, client, target, min_id: int = 0) -> int:
+    async def _count(self, client, target, min_id: int = 0, kind: str = "all") -> int:
         """Photos et vidéos du groupe (après `min_id`), comptées par Telegram
         lui-même : une seule requête, quel que soit le nombre de messages."""
-        kwargs = {"limit": 0, "filter": self._photo_video()}
+        kwargs = {"limit": 0, "filter": self._photo_video(kind)}
         if min_id:
             kwargs["min_id"] = int(min_id)
         found = await client.get_messages(target, **kwargs)
@@ -990,13 +1080,13 @@ class TelegramWorker(QThread):
                         fresh = [m async for m in client.iter_messages(
                             target, min_id=int(auto_from), filter=self._photo_video(), limit=300)]
                         if fresh:
-                            target_dir = channel_folder(state, title, key)
-                            folder = str(target_dir)
                             for n, msg in enumerate(reversed(fresh), 1):   # du plus ancien
                                 self.status.emit(f"{title} : téléchargement {n}/{len(fresh)}")
                                 try:
-                                    if await self._save(msg, target_dir):
+                                    saved = await self._save(msg, title, key)
+                                    if saved:
                                         got += 1
+                                        folder = str(Path(saved).parent)
                                 except FloodWaitError as exc:
                                     await asyncio.sleep(min(exc.seconds, 30))
                                 except Exception:  # noqa: BLE001
@@ -1037,10 +1127,10 @@ class TelegramWorker(QThread):
         return {"total": total, "telecharges": downloaded_total, "lines": lines,
                 "journal": journal}
 
-    async def _save(self, msg, folder: Path) -> str:
-        """Enregistre le média du message dans `folder`, sans doublon : un
-        fichier de même nom et même taille déjà là est gardé tel quel."""
-        folder.mkdir(parents=True, exist_ok=True)
+    def _target(self, msg, title: str, key: str) -> tuple[Path, Path | None]:
+        """Où va le média (« Groupe - Vids » ou « Groupe - Pix »), et le
+        fichier déjà sur le disque s'il y est : même nom et même taille, dans
+        son dossier ou dans l'ancien dossier unique du groupe."""
         size = (msg.file.size if msg.file else 0) or 0
         name = (msg.file.name if msg.file else "") or ""
         ext = (msg.file.ext if msg.file else "") or (".jpg" if msg.photo else ".mp4")
@@ -1048,109 +1138,164 @@ class TelegramWorker(QThread):
             stamp = msg.date.astimezone().strftime("%Y-%m-%d_%H-%M") if msg.date else "media"
             name = f"{stamp}_{msg.id}{ext}"
         name = safe_name(name)
+        folder = media_folder(self.state, title, key, msg_is_video(msg))
+        for place in (folder, channel_folder(self.state, title, key)):
+            old = place / name
+            if old.exists() and (not size or old.stat().st_size == size):
+                return folder / name, old
         path = folder / name
         if path.exists():
-            if size and path.stat().st_size == size:
-                return ""
             path = folder / f"{path.stem}_{msg.id}{path.suffix}"
+        return path, None
+
+    async def _save(self, msg, title: str, key: str) -> str:
+        """Le nouveau fichier, ou "" s'il était déjà là."""
+        path, existing = self._target(msg, title, key)
+        if existing is not None:
+            return ""
+        path.parent.mkdir(parents=True, exist_ok=True)
         got = await msg.download_media(file=str(path))
         return str(got or "")
 
     # -- banque de medias ------------------------------------------------------
     async def _bank(self, client) -> list:
-        """Les médias du groupe, lus dans Telegram, vignette en local."""
+        """Une page de médias du groupe, lue dans Telegram, vignettes en local.
+        Les vignettes arrivent par paquets (lus ensemble) : la fenêtre se
+        remplit tout de suite. À la première page, les comptes du groupe."""
         from telethon.errors import FloodWaitError
         THUMBS.mkdir(parents=True, exist_ok=True)
+        self.got = 0
         items = []
-        kwargs = {"limit": 48}
+        kwargs = {"limit": BANK_PAGE}
         if self.before_id:
             kwargs["offset_id"] = self.before_id
         try:
             target = await self._resolve(client, self.channel)
-            # Les photos et vidéos seulement, filtrées par Telegram : lire les
-            # 48 derniers messages ne trouvait rien dans un groupe bavard.
-            async for msg in client.iter_messages(target, filter=self._photo_video(self.kind),
-                                                  **kwargs):
-                thumb = THUMBS / f"{safe_name(self.channel)}_{msg.id}.jpg"
+            # Les photos et vidéos seulement, filtrées par Telegram : une
+            # seule requête pour toute la page.
+            msgs = await client.get_messages(target, filter=self._photo_video(self.kind), **kwargs)
+            self.got = len(msgs)
+            for start in range(0, len(msgs), 8):
+                batch = msgs[start:start + 8]
+                thumbs = [THUMBS / f"{safe_name(self.channel)}_{m.id}.jpg" for m in batch]
                 try:
-                    await self._thumb(msg, thumb)
+                    await asyncio.gather(*(self._thumb(m, t) for m, t in zip(batch, thumbs)))
                 except FloodWaitError as exc:
                     await asyncio.sleep(min(exc.seconds, 15))
-                file = msg.file
-                mime = (file.mime_type or "") if file else ""
-                items.append({
-                    "id": msg.id,
-                    "date": msg.date.astimezone().strftime("%d/%m/%y %H:%M") if msg.date else "",
-                    "title": (msg.text or (file.name if file else "") or "").replace("\n", " ")[:140],
-                    "size": (file.size if file else 0) or 0,
-                    "duration": float(getattr(file, "duration", 0) or 0) if file else 0.0,
-                    "height": int(getattr(file, "height", 0) or 0) if file else 0,
-                    "mime": mime,
-                    "video": bool(msg.video) or mime.startswith("video"),
-                    "thumb": str(thumb) if thumb.exists() else "",
-                })
-                if len(items) % 8 == 0:
-                    self.status.emit(f"{len(items)} médias lus…")
+                part = [self._bank_item(m, t) for m, t in zip(batch, thumbs)]
+                items += part
+                self.bank_part.emit(part)
+                if start == 0 and not self.before_id:
+                    totals = {self.kind: int(getattr(msgs, "total", 0) or 0)}
+                    for kind in ("all", "video", "photo"):
+                        if kind not in totals:
+                            totals[kind] = await self._count(client, target, kind=kind)
+                    self.bank_totals.emit(totals)
+            if not msgs and not self.before_id:
+                self.bank_totals.emit({"all": 0, "video": 0, "photo": 0})
         except FloodWaitError as exc:
             self.status.emit(f"Telegram demande d'attendre {exc.seconds} s.")
         return items
+
+    @staticmethod
+    def _bank_item(msg, thumb: Path) -> dict:
+        file = msg.file
+        mime = (file.mime_type or "") if file else ""
+        return {
+            "id": msg.id,
+            "date": msg.date.astimezone().strftime("%d/%m/%y %H:%M") if msg.date else "",
+            "title": (msg.text or (file.name if file else "") or "").replace("\n", " ")[:140],
+            "size": (file.size if file else 0) or 0,
+            "duration": float(getattr(file, "duration", 0) or 0) if file else 0.0,
+            "height": int(getattr(file, "height", 0) or 0) if file else 0,
+            "mime": mime,
+            "video": bool(msg.video) or mime.startswith("video"),
+            "thumb": str(thumb) if thumb.exists() else "",
+        }
+
+    async def _get(self, msg) -> tuple[str, bool]:
+        """Télécharge le média : (le fichier, nouveau ?). Déjà là : le fichier
+        existant, pas nouveau. Déjà dans la bibliothèque : rien."""
+        name = (msg.file.name if msg.file else "") or ""
+        size = (msg.file.size if msg.file else 0) or 0
+        if self.skip_known and already_in_library(name, size, self.known):
+            self.skipped += 1
+            return "", False
+        path, existing = self._target(msg, self.title, self.channel)
+        if existing is not None:
+            self.skipped += 1
+            return str(existing), False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        got = await msg.download_media(file=str(path))
+        if got and name and size:
+            self.known.add((name.lower(), int(size)))
+        return str(got or ""), bool(got)
+
+    def _tell(self, done: int, total: int, new: int, state: str = "run", folder: str = "") -> None:
+        self.progress.emit({"title": self.title, "key": self.channel, "kind": self.kind,
+                            "done": done, "total": total, "new": new,
+                            "skipped": self.skipped, "state": state, "folder": folder})
 
     async def _download(self, client) -> str:
         target = await self._resolve(client, self.channel)
         msg = await client.get_messages(target, ids=self.message_id)
         if msg is None:
             return ""
-        name = (msg.file.name if msg.file else "") or ""
-        size = (msg.file.size if msg.file else 0) or 0
-        if self.skip_known and already_in_library(name, size, self.known):
-            self.skipped += 1
-            self.status.emit(f"Déjà dans la bibliothèque : {name or msg.id}")
-            return ""
-        folder = channel_folder(self.state, self.title, self.channel)
-        path = await self._save(msg, folder)
-        if not path:
-            # Déjà dans le dossier du groupe : c'est lui qu'on rend.
-            existing = folder / safe_name(name) if name else None
-            if existing is not None and existing.exists():
-                return str(existing)
-            self.skipped += 1
-        if path and name and size:
-            self.known.add((name.lower(), int(size)))
+        path, _new = await self._get(msg)
         return path
+
+    async def _fetch_all(self, client, msgs, total: int) -> int:
+        """Le cœur des gros téléchargements : un par un, avec l'avancement,
+        jusqu'au bout ou jusqu'à « Arrêter »."""
+        from telethon.errors import FloodWaitError
+        n = done = 0
+        last = ""
+        self._tell(0, total, 0)
+        async for msg in msgs:
+            if self.stop:
+                break
+            if msg is None:
+                continue
+            try:
+                path, new = await self._get(msg)
+            except FloodWaitError as exc:
+                self.status.emit(f"Telegram demande d'attendre {exc.seconds} s…")
+                await asyncio.sleep(exc.seconds + 1)
+                path, new = await self._get(msg)
+            except Exception as exc:  # noqa: BLE001 — un fichier illisible n'arrête pas le reste
+                self.status.emit(f"Sauté (illisible) : {str(exc)[:60]}")
+                path, new = "", False
+            done += 1
+            n += new
+            if path:
+                last = str(Path(path).parent)
+            self._tell(done, total, n)
+        self._tell(done, total, n, "stopped" if self.stop else "done", last)
+        return n
 
     async def _download_many(self, client) -> int:
         if self.skip_known and not self.known:
-            self.status.emit("Lecture de la bibliothèque…")
+            self._tell(0, len(self.message_ids), 0, "library")
             self.known = library_keys()
-        n = 0
         self.skipped = 0
-        for at, mid in enumerate(self.message_ids, 1):
-            self.message_id = mid
-            self.status.emit(f"Téléchargement {at}/{len(self.message_ids)}")
-            if await self._download(client):
-                n += 1
-            await asyncio.sleep(0.4)
-        self.status.emit(f"{n} nouveaux, {self.skipped} déjà présents")
-        return n
+        target = await self._resolve(client, self.channel)
+        msgs = await client.get_messages(target, ids=list(self.message_ids))
+
+        async def each():
+            for msg in msgs:
+                yield msg
+        return await self._fetch_all(client, each(), len(self.message_ids))
 
     async def _export(self, client) -> int:
         """Photos et vidéos du groupe, sans reprendre ce qui est déjà sur le disque."""
         if self.skip_known and not self.known:
-            self.status.emit("Lecture de la bibliothèque…")
+            self._tell(0, 0, 0, "library")
             self.known = library_keys()
-        n = 0
         self.skipped = 0
         target = await self._resolve(client, self.channel)
-        async for msg in client.iter_messages(target, limit=None,
-                                              filter=self._photo_video(self.kind)):
-            self.message_id = msg.id
-            if await self._download(client):
-                n += 1
-            if (n + self.skipped) % 20 == 0:
-                self.status.emit(f"Export : {n} nouveaux, {self.skipped} déjà présents")
-            await asyncio.sleep(0.3)
-        self.status.emit(f"Export fini : {n} nouveaux, {self.skipped} déjà sur le disque")
-        return n
+        total = await self._count(client, target, kind=self.kind)
+        msgs = client.iter_messages(target, limit=None, filter=self._photo_video(self.kind))
+        return await self._fetch_all(client, msgs, total)
 
 
 def _cell(text, sort=None, tip: str = "") -> QTableWidgetItem:
@@ -1205,7 +1350,74 @@ def _table(parent, headers: list[str], stretch: int) -> QTableWidget:
     return table
 
 
+class _DownloadBar(QWidget):
+    """L'avancement des téléchargements : dans la fenêtre Telegram et dans
+    celle des médias, la même barre. Cachée tant que rien ne tourne."""
+
+    def __init__(self, owner: "TelegramDialog", parent=None):
+        super().__init__(parent)
+        self.owner = owner
+        self.folder: Path | None = None
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        self.label = QLabel("", self)
+        self.label.setObjectName("tgTotal")
+        lay.addWidget(self.label, 1)
+        self.bar = QProgressBar(self)
+        self.bar.setFixedWidth(260)
+        self.bar.setTextVisible(True)
+        lay.addWidget(self.bar)
+        self.stop = QPushButton("Arrêter", self)
+        self.stop.clicked.connect(owner.stop_downloads)
+        lay.addWidget(self.stop)
+        self.open = QPushButton("Ouvrir le dossier", self)
+        self.open.clicked.connect(lambda: self.folder and owner._open_folder(self.folder))
+        lay.addWidget(self.open)
+        self.hide()
+        owner.download_info.connect(self.show_info)
+        if owner.last_download:
+            self.show_info(owner.last_download)
+
+    def show_info(self, info: dict) -> None:
+        state = info.get("state")
+        done, total = int(info.get("done") or 0), int(info.get("total") or 0)
+        what = {"video": "vidéos", "photo": "photos"}.get(info.get("kind"), "médias")
+        title = info.get("title") or ""
+        waiting = int(info.get("waiting") or 0)
+        more = f"  (+{waiting} en attente)" if waiting else ""
+        running = state in ("wait", "library", "run")
+        self.stop.setVisible(running)
+        self.bar.setVisible(running)
+        self.folder = Path(info["folder"]) if info.get("folder") else None
+        self.open.setVisible(not running and self.folder is not None)
+        if state == "wait":
+            self.label.setText(f"⏳ En attente : {what} de « {title} »{more}")
+            self.bar.setRange(0, 0)
+        elif state == "library":
+            self.label.setText(f"⬇ « {title} » : lecture de la bibliothèque, pour sauter "
+                               f"ce que tu as déjà…{more}")
+            self.bar.setRange(0, 0)
+        elif state == "run":
+            self.label.setText(f"⬇ Téléchargement des {what} de « {title} » : {done} / "
+                               f"{total or '?'} — {info.get('new', 0)} nouveaux, "
+                               f"{info.get('skipped', 0)} déjà là{more}")
+            if total:
+                self.bar.setRange(0, total)
+                self.bar.setValue(min(done, total))
+            else:
+                self.bar.setRange(0, 0)
+        elif state in ("done", "stopped"):
+            head = "✔ Fini" if state == "done" else "■ Arrêté"
+            self.label.setText(f"{head} — « {title} » : {info.get('new', 0)} nouveaux, "
+                               f"{info.get('skipped', 0)} déjà là{more}")
+        elif state == "failed":
+            self.label.setText(f"✖ Échec — « {title} » : {info.get('error', '')}"[:200])
+        self.setVisible(True)
+
+
 class TelegramDialog(QDialog):
+    download_info = Signal(dict)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Prisme — Telegram")
@@ -1215,6 +1427,8 @@ class TelegramDialog(QDialog):
         self.found: list[dict] = []
         self.rows: list[dict] = []
         self.mode = "groupe"
+        self.last_download: dict = {}
+        self._bank_window = None
         box = QVBoxLayout(self)
         top = QHBoxLayout()
         head = QLabel("Telegram", self)
@@ -1229,6 +1443,7 @@ class TelegramDialog(QDialog):
         self.status.setObjectName("tgStatus")
         self.status.setWordWrap(True)
         box.addWidget(self.status)
+        box.addWidget(_DownloadBar(self, self))
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self._groups_tab(), "Mes groupes")
         self.tabs.addTab(self._search_tab(), "Recherche")
@@ -1291,25 +1506,36 @@ class TelegramDialog(QDialog):
         self.total = QLabel("", page)
         self.total.setObjectName("tgTotal")
         lay.addWidget(self.total)
+        # Ce qui tourne en fond (recomptage, vérifications) : à part, pour ne
+        # pas couvrir la réponse aux clics.
+        self.background = QLabel("", page)
+        self.background.setObjectName("tgLead")
+        lay.addWidget(self.background)
         self.groups = _table(page, ["Alerte", "Auto", "Nom", "Type", "Membres", "Médias",
-                                    "Non vus", "Messages non lus", "Activité"], 2)
+                                    "Non vus", "Messages non lus", "Activité", "Telegram"], 2)
         for col, tip in ((5, "Photos et vidéos du groupe, en tout"),
                          (6, "Photos et vidéos arrivées depuis ta dernière lecture"),
                          (7, "Messages non lus dans Telegram, texte compris"),
-                         (8, "Dernier message du groupe")):
+                         (8, "Dernier message du groupe"),
+                         (9, "Un clic : ouvrir le groupe dans Telegram")):
             self.groups.horizontalHeaderItem(col).setToolTip(tip)
         for col in (0, 1):
             self.groups.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self.groups.setColumnWidth(col, 64)
         self.groups.setSortingEnabled(True)
         self.groups.itemChanged.connect(self._group_flag)
-        self.groups.itemDoubleClicked.connect(lambda _i: self.open_group_bank())
+        self.groups.itemClicked.connect(self._group_clicked)
+        self.groups.itemDoubleClicked.connect(
+            lambda item: item.column() not in (0, 1, 9) and self.open_group_bank())
         lay.addWidget(self.groups, 1)
         row = QHBoxLayout()
         bank = QPushButton("Voir les médias", page)
         bank.setObjectName("tgPrimary")
         bank.clicked.connect(self.open_group_bank)
         row.addWidget(bank)
+        tg = QPushButton("Ouvrir dans Telegram", page)
+        tg.clicked.connect(self.open_group_telegram)
+        row.addWidget(tg)
         folder = QPushButton("Ouvrir le dossier", page)
         folder.clicked.connect(self.open_group_folder)
         row.addWidget(folder)
@@ -1487,7 +1713,8 @@ class TelegramDialog(QDialog):
         form.addRow("Téléphone", self.phone)
         where = QHBoxLayout()
         self.download_dir = QLineEdit(str(download_root(self.state)), page)
-        self.download_dir.setToolTip("Chaque groupe y a son dossier, à son nom.")
+        self.download_dir.setToolTip("Chaque groupe y a deux dossiers, à son nom : "
+                                     "« Groupe - Vids » et « Groupe - Pix ».")
         where.addWidget(self.download_dir, 1)
         pick = QPushButton("Choisir…", page)
         pick.clicked.connect(self._pick_dir)
@@ -1544,7 +1771,8 @@ class TelegramDialog(QDialog):
     def _worker(self, job: str) -> TelegramWorker:
         self._save_account()
         worker = TelegramWorker(self.state, job)
-        worker.status.connect(self._on_status)
+        worker.status.connect({"fond": self._on_background, "dl": self._on_dl_status}.get(
+            worker.lane, self._on_status))
         worker.failed.connect(self._failed)
         worker.need_code.connect(self._ask_code)
         worker.need_password.connect(self._ask_password)
@@ -1553,9 +1781,24 @@ class TelegramDialog(QDialog):
 
     def _on_status(self, text: str) -> None:
         self.status.setText(text)
+        window = self._bank_window
+        if window is not None and window.isVisible():
+            window.note.setText(text)
         if text.startswith("Connecté"):
             self.state["me"] = load_state().get("me") or ""
             self._show_who()
+
+    def _on_background(self, text: str) -> None:
+        self.background.setText(f"En fond : {text}" if text else "")
+
+    def _fond_finished(self) -> None:
+        if not queue("fond").busy():
+            self._on_background("")
+
+    def _on_dl_status(self, text: str) -> None:
+        window = self._bank_window
+        if window is not None and window.isVisible():
+            window.note.setText(text)
 
     def _start(self, job: str, **settings) -> TelegramWorker:
         worker = self._worker(job)
@@ -1567,25 +1810,83 @@ class TelegramDialog(QDialog):
         worker.join_done.connect(self._joined_result)
         worker.checked.connect(lambda report: hub().checked.emit(report))
         worker.bank_done.connect(self._open_bank)
+        worker.bank_part.connect(self._bank_part)
+        worker.bank_totals.connect(self._bank_totals)
         worker.file_ready.connect(self._play)
         worker.batch_done.connect(self._batch_done)
-        if queue().busy():
-            self.status.setText("Un travail Telegram est en cours ; celui-ci suit juste après.")
-        queue().launch(worker)
+        worker.progress.connect(self._on_progress)
+        lane = queue(worker.lane)
+        if worker.lane == "fond":
+            worker.finished.connect(self._fond_finished)
+        elif worker.lane == "dl":
+            worker.finished.connect(self._dl_finished)
+            if lane.busy():
+                self._on_progress({"title": worker.title, "kind": worker.kind, "state": "wait"},
+                                  worker)
+        elif lane.busy():
+            self.status.setText("Un instant : le travail précédent se termine, celui-ci suit.")
+        lane.launch(worker)
         return worker
 
     def _ask_code(self) -> None:
         from PySide6.QtWidgets import QInputDialog
+        worker = self.sender()
         code, ok = QInputDialog.getText(self, "Code Telegram", "Code reçu dans Telegram :")
-        if queue().current is not None:
-            queue().current.give_code(code if ok else "")
+        if isinstance(worker, TelegramWorker):
+            worker.give_code(code if ok else "")
 
     def _ask_password(self) -> None:
         from PySide6.QtWidgets import QInputDialog
+        worker = self.sender()
         password, ok = QInputDialog.getText(
             self, "Mot de passe Telegram", "Mot de passe 2FA :", QLineEdit.Password)
-        if queue().current is not None:
-            queue().current.give_password(password if ok else "")
+        if isinstance(worker, TelegramWorker):
+            worker.give_password(password if ok else "")
+
+    # == telechargements ==========================================================
+    def _on_progress(self, info: dict, worker=None) -> None:
+        worker = worker or self.sender()
+        lane = queue("dl")
+        info = dict(info, waiting=len(lane.waiting))
+        if info.get("state") == "wait" and lane.current is not None and self.last_download:
+            # La barre garde le travail en cours ; elle dit seulement qu'un
+            # autre attend son tour.
+            info = dict(self.last_download, waiting=len(lane.waiting) + 1)
+        self.last_download = info
+        self.download_info.emit(info)
+        if info.get("state") in ("done", "stopped") and worker is not None:
+            self._announce_download(info)
+
+    def _dl_finished(self) -> None:
+        worker = self.sender()
+        state = self.last_download.get("state")
+        if isinstance(worker, TelegramWorker) and state not in ("done", "stopped", "failed") \
+                and self.last_download.get("key") in (worker.channel, None):
+            # Le travail s'est arrêté sans dire « fini » : une erreur.
+            self._on_progress({"title": worker.title, "key": worker.channel, "kind": worker.kind,
+                               "state": "failed", "error": "voir le message d'erreur"}, worker)
+
+    def _announce_download(self, info: dict) -> None:
+        text = (f"Telegram : « {info.get('title')} » — {info.get('new', 0)} nouveau(x) "
+                f"téléchargé(s), {info.get('skipped', 0)} déjà là")
+        folder = info.get("folder")
+        show = getattr(self.parent(), "show_banner", None)
+        if show is not None:
+            try:
+                show(text + (". Clic : le dossier." if folder else "."), "done",
+                     action=(lambda: self._open_folder(Path(folder))) if folder else None,
+                     seconds=10)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def stop_downloads(self) -> None:
+        lane = queue("dl")
+        for worker in lane.waiting:
+            worker.stop = True
+        lane.waiting.clear()
+        if lane.current is not None:
+            lane.current.stop = True
+            self.status.setText("Arrêt après le fichier en cours…")
 
     def _failed(self, text: str) -> None:
         self.status.setText(text)
@@ -1593,7 +1894,7 @@ class TelegramDialog(QDialog):
 
     # == mes groupes =============================================================
     def load_groups(self) -> None:
-        self.status.setText("Lecture de tes groupes dans Telegram…")
+        self._on_background("lecture de tes groupes dans Telegram…")
         self._start("dialogs")
 
     def _show_joined(self, rows: list) -> None:
@@ -1680,6 +1981,14 @@ class TelegramDialog(QDialog):
             table.setItem(i, 7, _cell(str(row.get("non_lus") or ""), int(row.get("non_lus") or 0)))
             act = float(row.get("activite") or 0)
             table.setItem(i, 8, _cell(human_when(act) if act else "", act))
+            can = bool(telegram_links(row["key"], row.get("username") or ""))
+            link = _cell("Ouvrir ↗" if can else "—",
+                         tip="Ouvrir le groupe dans Telegram" if can else
+                         "Petit groupe privé : Telegram ne donne pas de lien direct")
+            link.setData(Qt.UserRole, row["key"])
+            if can:
+                link.setForeground(QColor("#6fb3ff"))
+            table.setItem(i, 9, link)
         table.setSortingEnabled(True)
         table.blockSignals(False)
         followed = sum(1 for r in all_rows if r["alert"] or r["auto"])
@@ -1726,16 +2035,45 @@ class TelegramDialog(QDialog):
                     entry["alert"] = entry["auto"] = False
         self.state = update_state(change)
         QTimer.singleShot(0, self._fill_groups)
+        name = row["title"]
         if auto and item.column() == 1:
-            self.status.setText(f"Auto sur « {row['title']} » : à partir de maintenant, chaque "
-                                "photo ou vidéo qui y arrive est téléchargée dans "
-                                f"{channel_folder(self.state, row['title'], key)}. "
-                                "Pour celles déjà là : « Tout télécharger ».")
+            self.status.setText(f"✔ Auto activé sur « {name} » : chaque nouvelle photo ou vidéo "
+                                f"sera téléchargée (« {safe_name(name)} - Vids » et "
+                                f"« {safe_name(name)} - Pix »). Pour celles déjà là : "
+                                "« Tout télécharger ».")
             self._start("check", only=[key])
         elif alert and not row["alert"]:
-            self.status.setText(f"Alerte sur « {row['title']} » : Prisme te prévient quand il y "
-                                "arrive des photos ou vidéos.")
+            self.status.setText(f"✔ Alerte activée sur « {name} » : Prisme te prévient quand il "
+                                "y arrive des photos ou vidéos.")
             self._start("check", only=[key])
+        elif item.column() == 1:
+            self.status.setText(f"✔ Auto désactivé sur « {name} ».")
+        else:
+            self.status.setText(f"✔ Alerte désactivée sur « {name} ».")
+
+    def _group_clicked(self, item: QTableWidgetItem) -> None:
+        if item.column() == 9:
+            self.open_in_telegram(item.data(Qt.UserRole))
+
+    def open_group_telegram(self) -> None:
+        row = self._current_group()
+        if row:
+            self.open_in_telegram(row["key"])
+
+    def open_in_telegram(self, key: str) -> None:
+        row = next((r for r in self._group_rows() if r["key"] == key), None) or {"key": key}
+        top = row.get("top") or (self.state.get("top") or {}).get(key) or 0
+        links = telegram_links(key, row.get("username") or "", top)
+        title = row.get("title") or key
+        if not links:
+            self.status.setText(f"« {title} » est un petit groupe privé : Telegram ne donne pas "
+                                "de lien pour l'ouvrir, cherche-le dans l'appli.")
+            return
+        for url in links:
+            if QDesktopServices.openUrl(QUrl(url)):
+                self.status.setText(f"Ouverture de « {title} » dans Telegram…")
+                return
+        self.status.setText(f"Impossible d'ouvrir « {title} » : {links[-1]}")
 
     def _current_group(self) -> dict | None:
         row = self.groups.currentRow()
@@ -1753,7 +2091,7 @@ class TelegramDialog(QDialog):
     def open_group_folder(self) -> None:
         row = self._current_group()
         if row:
-            self._open_folder(channel_folder(self.state, row["title"], row["key"]))
+            self.open_group_folders(row["title"], row["key"])
 
     def export_group(self) -> None:
         row = self._current_group()
@@ -2144,54 +2482,95 @@ class TelegramDialog(QDialog):
             return
         os.startfile(str(folder))
 
+    def open_group_folders(self, title: str, key: str) -> None:
+        """« Groupe - Vids » et « Groupe - Pix » : un seul, on l'ouvre ; les
+        deux, l'explorateur s'ouvre dessus, côte à côte."""
+        folders = group_folders(self.state, title, key)
+        if not folders:
+            self.status.setText(f"Rien n'a encore été téléchargé de « {title} ».")
+            return
+        if len(folders) == 1:
+            os.startfile(str(folders[0]))
+            return
+        subprocess.Popen(f'explorer /select,"{folders[0]}"')
+
     # == medias ==================================================================
     def _export(self, key: str, title: str, kind: str = "all") -> None:
         what = {"video": "toutes les vidéos", "photo": "toutes les photos"}.get(
             kind, "toutes les photos et vidéos")
-        self.status.setText(f"Téléchargement de {what} de « {title} »… "
-                            f"(dossier : {channel_folder(self.state, title, key)})")
+        self.status.setText(f"⬇ Téléchargement lancé : {what} de « {title} ». L'avancement "
+                            "s'affiche dans la barre ; tu peux continuer à parcourir.")
         self._start("export", channel=key, title=title, skip_known=False, kind=kind)
 
     def open_bank(self, key: str, title: str = "", before_id: int = 0, kind: str = "all") -> None:
+        """La fenêtre des médias s'ouvre tout de suite ; les vignettes y
+        arrivent par paquets."""
         if not key:
             self.status.setText("Ce groupe n'a pas de lien lisible.")
             return
-        self._bank_key = key
-        self._bank_title = title or key
-        self._bank_kind = kind
-        self.status.setText(f"Lecture des médias de « {self._bank_title} »…")
-        self._start("bank", channel=key, title=self._bank_title, before_id=before_id, kind=kind)
-
-    def _open_bank(self, items: list) -> None:
-        window = getattr(self, "_bank_window", None)
-        same = window is not None and window.isVisible() and window.key == self._bank_key
-        if not items and not same:
-            self.status.setText(f"« {self._bank_title} » ne contient aucune photo ni vidéo "
-                                "(ou Telegram n'en montre pas à ton compte).")
-            return
-        if not same:
-            window = MediaBank(self, self._bank_key, self._bank_title)
+        title = title or key
+        window = self._bank_window
+        if window is None or not window.isVisible() or window.key != key:
+            window = MediaBank(self, key, title)
             self._bank_window = window
-        window.add_items(items)
         window.show()
         window.raise_()
         window.activateWindow()
-        self.status.setText(f"{len(window.items)} médias de « {self._bank_title} ».")
+        window.loading_started()
+        self.status.setText(f"Lecture des médias de « {title} »…")
+        worker = self._start("bank", channel=key, title=title, before_id=before_id, kind=kind)
+        worker.finished.connect(self._bank_finished)
+
+    def _bank_for(self, worker) -> "MediaBank | None":
+        """La fenêtre des médias à qui revient ce que lit `worker` (pas une
+        page d'avant, d'un autre groupe ou d'un autre choix Tout/Vidéos/Photos)."""
+        window = self._bank_window
+        if window is None or not window.isVisible() or not isinstance(worker, TelegramWorker):
+            return None
+        if window.key != worker.channel or window.kind != worker.kind:
+            return None
+        return window
+
+    def _bank_part(self, items: list) -> None:
+        window = self._bank_for(self.sender())
+        if window is not None:
+            window.add_items(items)
+
+    def _bank_totals(self, totals: dict) -> None:
+        window = self._bank_for(self.sender())
+        if window is not None:
+            window.set_totals(totals)
+
+    def _open_bank(self, items: list) -> None:
+        window = self._bank_for(self.sender())
+        if window is not None:
+            window.add_items(items)
+            self.status.setText(f"{len(window.items)} médias de « {window.title} » affichés.")
+
+    def _bank_finished(self) -> None:
+        worker = self.sender()
+        window = self._bank_for(worker)
+        if window is not None:
+            window.page_done(worker.got, worker.error)
 
     def download_and_play(self, key: str, message_id: int, title: str = "") -> None:
-        self.status.setText("Téléchargement du média…")
+        self.status.setText("Téléchargement du média, il s'ouvre dès qu'il arrive…")
+        self._on_dl_status("Téléchargement du média, il s'ouvre dès qu'il arrive…")
         self._start("download", channel=key, title=title or key, message_id=message_id,
                     skip_known=False)
 
     def download_many(self, key: str, title: str, ids: list[int], skip_known: bool) -> None:
+        self.status.setText(f"⬇ Téléchargement lancé : {len(ids)} média(s) de « {title} ».")
         self._start("download_many", channel=key, title=title, message_ids=list(ids),
                     skip_known=skip_known)
 
     def _play(self, path: str) -> None:
         if not path:
             self.status.setText("Téléchargement impossible (déjà présent ailleurs, ou protégé).")
+            self._on_dl_status(self.status.text())
             return
         self.status.setText(f"Arrivé : {path}")
+        self._on_dl_status(f"Arrivé : {Path(path).name}")
         play = getattr(self.parent(), "_aside_play", None)
         if play is not None and Path(path).suffix.lower() in VIDEO_EXT:
             # Le lecteur de Prisme, celui de la fenêtre principale.
@@ -2202,12 +2581,14 @@ class TelegramDialog(QDialog):
     def _batch_done(self, n: int) -> None:
         worker = self.sender() if isinstance(self.sender(), TelegramWorker) else self._current
         skipped = getattr(worker, "skipped", 0)
-        folder = channel_folder(self.state, worker.title, worker.channel)
-        self.status.setText(f"{n} nouveau(x), {skipped} déjà présent(s). Dossier : {folder}")
+        self.status.setText(f"« {worker.title} » : {n} nouveau(x), {skipped} déjà là. Dossiers : "
+                            f"« {safe_name(worker.title)} - Vids » et « - Pix », dans "
+                            f"{download_root(self.state)}")
 
 
 class MediaBank(QDialog):
-    """Les médias d'un groupe, en vignettes comme dans la fenêtre principale."""
+    """Les médias d'un groupe, en vignettes comme dans la fenêtre principale.
+    Défiler suffit : la page suivante se lit avant d'arriver en bas."""
 
     def __init__(self, owner: TelegramDialog, key: str, title: str):
         super().__init__(owner)
@@ -2215,13 +2596,25 @@ class MediaBank(QDialog):
         self.key = key
         self.title = title
         self.items: list[dict] = []
+        self.totals: dict = {}
+        self.loading = False
+        self.exhausted = False
         self.setWindowTitle(f"Médias — {title}")
         self.setStyleSheet(STYLE)
         self.resize(1180, 760)
         box = QVBoxLayout(self)
+        head_row = QHBoxLayout()
         head = QLabel(title, self)
         head.setObjectName("tgHead")
-        box.addWidget(head)
+        head_row.addWidget(head)
+        self.counts = QLabel("", self)
+        self.counts.setObjectName("tgTotal")
+        head_row.addWidget(self.counts)
+        head_row.addStretch(1)
+        tg = QPushButton("Ouvrir dans Telegram", self)
+        tg.clicked.connect(lambda: owner.open_in_telegram(self.key))
+        head_row.addWidget(tg)
+        box.addLayout(head_row)
         top = QHBoxLayout()
         lead = QLabel("Double-clic : télécharger et lire dans Prisme. La case, en haut à gauche "
                       "(au survol) : choisir pour « Télécharger les cochés ».", self)
@@ -2237,22 +2630,32 @@ class MediaBank(QDialog):
             top.addWidget(button)
             self.kind_buttons[kind] = button
         box.addLayout(top)
+        box.addWidget(_DownloadBar(owner, self))
         self.grid = QListWidget(self)
         use_cards(self.grid, 236)
         self.grid.itemDoubleClicked.connect(self._open)
         self.grid.verticalScrollBar().valueChanged.connect(self._near_end)
+        self.grid.verticalScrollBar().rangeChanged.connect(lambda *_a: self._near_end())
         box.addWidget(self.grid, 1)
+        info_row = QHBoxLayout()
+        self.info = QLabel("", self)
+        self.info.setObjectName("tgLead")
+        info_row.addWidget(self.info, 1)
+        self.note = QLabel("", self)
+        self.note.setObjectName("tgLead")
+        info_row.addWidget(self.note)
+        box.addLayout(info_row)
         row = QHBoxLayout()
         play = QPushButton("Lire", self)
         play.setObjectName("tgPrimary")
         play.clicked.connect(lambda: self._open(self.grid.currentItem()))
         row.addWidget(play)
-        everything = QPushButton("Tout télécharger", self)
-        everything.setToolTip("Toutes les photos et vidéos du groupe (ou seulement les vidéos, "
-                              "ou les photos, selon le choix en haut), pas seulement celles "
-                              "affichées. Ce qui est déjà dans le dossier est sauté.")
-        everything.clicked.connect(lambda: owner._export(self.key, self.title, self.kind))
-        row.addWidget(everything)
+        self.everything = QPushButton("Tout télécharger", self)
+        self.everything.setToolTip("Toutes les photos et vidéos du groupe (ou seulement les "
+                                   "vidéos, ou les photos, selon le choix en haut), pas seulement "
+                                   "celles affichées. Ce qui est déjà dans le dossier est sauté.")
+        self.everything.clicked.connect(lambda: owner._export(self.key, self.title, self.kind))
+        row.addWidget(self.everything)
         bulk = QPushButton("Télécharger les cochés", self)
         bulk.clicked.connect(self._download_checked)
         row.addWidget(bulk)
@@ -2267,22 +2670,76 @@ class MediaBank(QDialog):
                                    "retéléchargée. (Lire la bibliothèque prend un moment.)")
         row.addWidget(self.skip_known)
         row.addStretch(1)
-        more = QPushButton("Charger la suite", self)
-        more.clicked.connect(self._more)
-        row.addWidget(more)
         folder = QPushButton("Ouvrir le dossier", self)
-        folder.clicked.connect(lambda: owner._open_folder(channel_folder(owner.state, title, key)))
+        folder.setToolTip("« Groupe - Vids » et « Groupe - Pix », dans le dossier des "
+                          "téléchargements Telegram.")
+        folder.clicked.connect(lambda: owner.open_group_folders(self.title, self.key))
         row.addWidget(folder)
         box.addLayout(row)
-        self._asked_more = False
+        self._show_info()
+
+    # -- l'etat de la liste -------------------------------------------------------
+    def _total(self) -> int | None:
+        value = self.totals.get(self.kind)
+        return None if value is None else int(value)
+
+    def _show_info(self) -> None:
+        shown = len(self.items)
+        total = self._total()
+        of = f" sur {total:,}".replace(",", " ") if total is not None else ""
+        if self.loading:
+            text = f"{shown}{of} affichés — chargement de la suite…" if shown else \
+                "Chargement des médias…"
+        elif self.exhausted or (total is not None and shown >= total):
+            text = (f"Tout est affiché : {shown}." if shown else
+                    "Aucune photo ni vidéo ici (ou Telegram n'en montre pas à ton compte).")
+        else:
+            text = f"{shown}{of} affichés — fais défiler pour voir la suite."
+        self.info.setText(text)
+        self.setWindowTitle(f"Médias — {self.title} ({shown}{of})")
+
+    def set_totals(self, totals: dict) -> None:
+        self.totals = dict(totals)
+
+        def fmt(n) -> str:
+            return f"{int(n):,}".replace(",", " ")
+        videos, photos = totals.get("video"), totals.get("photo")
+        if videos is not None and photos is not None:
+            self.counts.setText(f"   {fmt(videos)} vidéos · {fmt(photos)} photos")
+        for kind, text in (("all", "Tout"), ("video", "Vidéos"), ("photo", "Photos")):
+            if totals.get(kind) is not None:
+                self.kind_buttons[kind].setText(f"{text} ({fmt(totals[kind])})")
+        total = self._total()
+        if total is not None:
+            self.everything.setText(f"Tout télécharger ({fmt(total)})")
+        self._show_info()
+
+    def loading_started(self) -> None:
+        self.loading = True
+        self._show_info()
+
+    def page_done(self, got: int, error: str = "") -> None:
+        self.loading = False
+        if error:
+            # Pas « tout est affiché » : la page a échoué, défiler réessaie.
+            self._show_info()
+            self.info.setText(self.info.text() + f"  (échec : {error[:80]} — fais défiler "
+                                                 "pour réessayer)")
+            return
+        if got < BANK_PAGE:
+            self.exhausted = True
+        self._show_info()
+        # La page ne remplit pas la fenêtre, ou l'on est déjà en bas : la
+        # suite tout de suite.
+        QTimer.singleShot(0, self._near_end)
 
     def add_items(self, items: list) -> None:
         from .scan import human_duration, human_size
-        self._asked_more = False
         known = {item["id"] for item in self.items}
         for item in items:
             if item["id"] in known:
                 continue
+            known.add(item["id"])
             self.items.append(item)
             cell = QListWidgetItem(item.get("title") or ("vidéo" if item.get("video") else "photo"))
             cell.setFlags(cell.flags() | Qt.ItemIsUserCheckable)
@@ -2302,7 +2759,7 @@ class MediaBank(QDialog):
             cell.setToolTip(item.get("title") or "")
             cell.setData(Qt.UserRole, item)
             self.grid.addItem(cell)
-        self.setWindowTitle(f"Médias — {self.title} ({len(self.items)})")
+        self._show_info()
 
     def set_kind(self, kind: str) -> None:
         """Tout, les vidéos seules, ou les photos seules : Telegram les trie."""
@@ -2312,18 +2769,27 @@ class MediaBank(QDialog):
             return
         self.kind = kind
         self.items = []
+        self.exhausted = False
         self.grid.clear()
+        total = self._total()
+        if total is not None:
+            self.everything.setText(f"Tout télécharger ({total:,})".replace(",", " "))
         self.owner.open_bank(self.key, self.title, 0, kind)
 
-    def _near_end(self, value: int) -> None:
+    def _near_end(self, *_args) -> None:
+        """Moins d'un écran avant le bas (ou pas de quoi défiler) : la suite."""
         bar = self.grid.verticalScrollBar()
-        if value >= bar.maximum() - 40 and bar.maximum() > 0 and not self._asked_more:
+        if bar.maximum() == 0 or bar.value() >= bar.maximum() - max(bar.pageStep(), 200):
             self._more()
 
     def _more(self) -> None:
-        if not self.items or self._asked_more:
+        if not self.items or self.loading or self.exhausted:
             return
-        self._asked_more = True
+        total = self._total()
+        if total is not None and len(self.items) >= total:
+            self.exhausted = True
+            self._show_info()
+            return
         oldest = min(item["id"] for item in self.items)
         self.owner.open_bank(self.key, self.title, before_id=oldest, kind=self.kind)
 
@@ -2332,6 +2798,7 @@ class MediaBank(QDialog):
             return
         item = cell.data(Qt.UserRole)
         if item:
+            self.note.setText("Téléchargement du média, il s'ouvre dès qu'il arrive…")
             self.owner.download_and_play(self.key, item["id"], self.title)
 
     def _download_checked(self) -> None:
@@ -2342,7 +2809,7 @@ class MediaBank(QDialog):
                 ids.append((cell.data(Qt.UserRole) or {}).get("id"))
         ids = [i for i in ids if i]
         if not ids:
-            self.owner.status.setText("Coche au moins une vignette.")
+            self.note.setText("Coche au moins une vignette.")
             return
         self.owner.download_many(self.key, self.title, ids, self.skip_known.isChecked())
 
@@ -2359,13 +2826,13 @@ def _watch_once(window) -> None:
         return
     if not any(c.get("alert") or c.get("auto") for c in state["channels"]):
         return
-    if not SESSION_PATH.with_suffix(".session").exists() or queue().busy():
+    if not SESSION_PATH.with_suffix(".session").exists() or queue("fond").busy():
         return
     worker = TelegramWorker(state, "check")
     worker.interactive = False
     worker.checked.connect(lambda report: hub().checked.emit(report))
     window._telegram_check_worker = worker
-    queue().launch(worker)
+    queue(worker.lane).launch(worker)
 
 
 def _announce(window, report: dict) -> None:
