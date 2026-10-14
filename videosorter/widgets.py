@@ -2012,6 +2012,7 @@ class _Deck:
         self.player.setAudioOutput(self.audio)
         self.path = ""
         self.primed = False      # une image de `path` est arrivee sur la surface
+        self.path_shown = False  # la surface a deja montre une video
 
     def clear(self) -> None:
         self.player.stop()
@@ -2087,6 +2088,12 @@ class SinglePlayer(QWidget):
         # Assez pour voir, assez peu pour tenir sur un ecran agrandi.
         self.video_area.setMinimumHeight(180)
         self.decks = [_Deck(self.video_area), _Deck(self.video_area)]
+        # Reaffiche apres le noir d'un changement de fichier, le widget video
+        # lisait, recevait ses images, se disait visible -- et l'ecran restait
+        # noir tant que rien ne passait au-dessus (lecteur de droite ouvert
+        # sur un dossier pendant que l'apercu de la planche jouait). Le meme
+        # remede que la planche : un point releve au-dessus a chaque affichage.
+        self.wake = VideoWake(self.video_area)
         self._active = 0
         self._muted = False
         # Les photos : une image fixe a la place des lecteurs, lue hors du
@@ -2103,10 +2110,7 @@ class SinglePlayer(QWidget):
         # Le widget video de Windows avale les clics : on lui prend ses gestes
         # a la source, comme la planche le fait deja.
         for deck in self.decks:
-            deck.video.mousePressEvent = self._scrub_press
-            deck.video.mouseMoveEvent = self._scrub_move
-            deck.video.mouseReleaseEvent = self._scrub_release
-            deck.video.mouseDoubleClickEvent = self._double_click
+            self._take_gestures(deck.video)
         self._scrub_x0 = None
         self._scrub_pos0 = 0
         self._scrubbing = False
@@ -2170,8 +2174,7 @@ class SinglePlayer(QWidget):
         self.blackout_timer.setSingleShot(True)
         self.blackout_timer.timeout.connect(self._end_blackout)
         for deck in self.decks:
-            deck.video.videoSink().videoFrameChanged.connect(
-                lambda frame, d=deck: self._on_frame(d, frame))
+            self._watch_frames(deck)
             deck.player.mediaStatusChanged.connect(
                 lambda status, d=deck: self._on_status(d, status))
             deck.player.positionChanged.connect(
@@ -2658,6 +2661,7 @@ class SinglePlayer(QWidget):
             if spare.primed:
                 self._awaiting_frame = False
                 spare.video.show()
+                self.wake.over(spare.video.geometry())
             else:
                 self._awaiting_frame = True
             spare.player.setPosition(0)
@@ -2674,6 +2678,8 @@ class SinglePlayer(QWidget):
         # nouveau fichier arrivee.
         self._awaiting_frame = True
         self._blackout = True
+        if deck.path_shown:
+            self._renew_surface(deck)
         deck.video.hide()
         try:
             deck.video.videoSink().setVideoFrame(QVideoFrame())
@@ -2682,6 +2688,39 @@ class SinglePlayer(QWidget):
         self.blackout_timer.start(180)
         deck.player.setSource(QUrl.fromLocalFile(path))
         deck.player.play()
+
+    def _take_gestures(self, video) -> None:
+        video.mousePressEvent = self._scrub_press
+        video.mouseMoveEvent = self._scrub_move
+        video.mouseReleaseEvent = self._scrub_release
+        video.mouseDoubleClickEvent = self._double_click
+
+    def _watch_frames(self, deck) -> None:
+        deck.video.videoSink().videoFrameChanged.connect(
+            lambda frame, d=deck: self._on_frame(d, frame))
+
+    def _renew_surface(self, deck) -> None:
+        """Une surface neuve pour ce lecteur, a la place de l'ancienne.
+
+        Sous Windows, une surface qui avait deja montre une video pouvait
+        rester noire pour la suivante quand l'apercu de la planche avait joue
+        entre-temps : le lecteur lisait, les images arrivaient (vertes,
+        verifie), la surface se disait visible -- et l'ecran restait noir,
+        une fois sur deux, quoi qu'on lui fasse (repeindre, cacher, montrer,
+        redimensionner). Une surface neuve affiche aussitot. Elle prend la
+        place exacte de l'ancienne, sous la mosaique et les pastilles."""
+        old = deck.video
+        fresh = QVideoWidget(self.video_area)
+        fresh.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        fresh.setGeometry(old.geometry())
+        fresh.hide()
+        fresh.stackUnder(old)
+        self._take_gestures(fresh)
+        deck.video = fresh
+        deck.player.setVideoOutput(fresh)
+        self._watch_frames(deck)
+        old.hide()
+        old.deleteLater()
 
     def _on_frame(self, deck, frame) -> None:
         """Premiere image d'un fichier : la reserve s'arrete dessus, la fiche l'attend."""
@@ -2696,11 +2735,13 @@ class SinglePlayer(QWidget):
                 deck.player.pause()
             return
         deck.primed = True
+        deck.path_shown = True
         if not self._awaiting_frame:
             return
         self._awaiting_frame = False
         if not self._blackout:
             deck.video.show()
+            self.wake.over(deck.video.geometry())
 
     def _on_deck_position(self, deck, position: int) -> None:
         if deck is self.decks[self._active]:
@@ -2710,6 +2751,7 @@ class SinglePlayer(QWidget):
         self._blackout = False
         if not self._awaiting_frame:
             self.video.show()
+            self.wake.over(self.video.geometry())
 
     def set_plan(self, plan: list) -> None:
         for slot, tile in enumerate(self.tiles):

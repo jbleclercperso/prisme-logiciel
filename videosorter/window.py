@@ -10201,6 +10201,7 @@ class MainWindow(QMainWindow):
             return
         items = self.board.items
         first, last = self.board._page_bounds()
+        hovered = self.board.hovered_card()
         for position in range(max(0, first), min(last, len(items))):
             item = items[position]
             if not self._covers_on(item):
@@ -10208,6 +10209,10 @@ class MainWindow(QMainWindow):
             card = self.board._card_for(position)
             if card is None or not card.thumb_path:
                 continue            # sa premiere image n'est pas encore la
+            if card is hovered:
+                # Sous la souris, la couverture ne change pas : l'apercu joue
+                # sa video, et un clic doit ouvrir celle-la, pas la suivante.
+                continue
             key = str(item.path)
             index = COVERS.show(key, item.videos)
             # On ne touche a la carte que si sa couverture change vraiment :
@@ -10300,7 +10305,11 @@ class MainWindow(QMainWindow):
         self.aside_item_id = item.item_id
         self._aside_hint = position
         self.aside_playlist = []
-        if card is not None:
+        playing = self.board.playing_at(position)
+        if playing is not None:
+            # L'apercu au survol jouait : sa video, la ou il en etait.
+            self._aside_play(playing[0], item.name, str(item.path), start_s=playing[1])
+        elif card is not None:
             # A l'instant de la vignette : ce qu'on avait sous les yeux.
             self._aside_play(card.video, item.name, str(item.path), start_s=card.ts)
         else:

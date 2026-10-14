@@ -991,6 +991,21 @@ class BoardView(QWidget):
         if self.floating.card is not None:
             self.floating.sync(self.floating.card)
 
+    def hovered_card(self):
+        """La carte sous la souris, ou None."""
+        if 0 <= self.hovered < len(self.cards):
+            return self.cards[self.hovered]
+        return None
+
+    def playing_at(self, position: int):
+        """(video, secondes) que joue l'apercu au survol de cette carte, ou
+        None s'il ne joue pas pour elle : c'est ce qu'on a sous les yeux."""
+        card = self.hovered_card()
+        if (card is None or card.index != position or not self.video.isVisible()
+                or not self._source_video):
+            return None
+        return self._source_video, max(0.0, self.player.position() / 1000.0)
+
     def _video_clicked(self, event) -> None:
         """Renvoie le clic tombe sur l'apercu a la carte qui est dessous."""
         if not (0 <= self.hovered < len(self.cards)):
