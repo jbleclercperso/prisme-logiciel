@@ -2766,6 +2766,10 @@ class MediaBank(QDialog):
         self.totals: dict = {}
         self.loading = False
         self.exhausted = False
+        self._ids: set[int] = set()
+        self.hidden = 0             # vidéos lues mais masquées (trop courtes)
+        self.idle_pages = 0         # pages d'affilée sans rien de visible
+        self._visible_before = 0
         self.setWindowTitle(f"Médias — {title}")
         self.setStyleSheet(STYLE)
         self.resize(1180, 760)
@@ -2826,6 +2830,12 @@ class MediaBank(QDialog):
         self.note = QLabel("", self)
         self.note.setObjectName("tgLead")
         info_row.addWidget(self.note)
+        self.further = QPushButton("Chercher plus loin", self)
+        self.further.setToolTip("Le filtre de durée masque tout ce qui a été lu : lire les "
+                                "pages suivantes du groupe.")
+        self.further.clicked.connect(self._search_further)
+        self.further.hide()
+        info_row.addWidget(self.further)
         box.addLayout(info_row)
         row = QHBoxLayout()
         play = QPushButton("Lire", self)
@@ -2877,15 +2887,19 @@ class MediaBank(QDialog):
             button.setChecked(value == seconds)
         self.min_duration = seconds
         update_state(lambda s: s.__setitem__("min_duration", seconds))
+        self.hidden = 0
         for i in range(self.grid.count()):
             cell = self.grid.item(i)
-            cell.setHidden(self._too_short(cell.data(Qt.UserRole) or {}))
+            short = self._too_short(cell.data(Qt.UserRole) or {})
+            cell.setHidden(short)
+            self.hidden += short
+        self.idle_pages = 0
         self._show_info()
         QTimer.singleShot(0, self._near_end)
 
     def _show_info(self) -> None:
         loaded = len(self.items)
-        hidden = sum(1 for item in self.items if self._too_short(item))
+        hidden = self.hidden
         shown = loaded - hidden
         total = self._total()
         of = f" sur {total:,}".replace(",", " ") if total is not None else ""
@@ -2920,6 +2934,8 @@ class MediaBank(QDialog):
 
     def loading_started(self) -> None:
         self.loading = True
+        self._visible_before = len(self.items) - self.hidden
+        self.further.hide()
         self._show_info()
 
     def page_done(self, got: int, error: str = "") -> None:
@@ -2932,18 +2948,32 @@ class MediaBank(QDialog):
             return
         if got < BANK_PAGE:
             self.exhausted = True
+        # Garde-fou : un filtre qui masque tout ferait lire le groupe entier
+        # page après page. Trois pages sans rien de visible : on s'arrête et
+        # l'on demande.
+        visible = len(self.items) - self.hidden
+        self.idle_pages = 0 if visible > self._visible_before else self.idle_pages + 1
         self._show_info()
+        if self.idle_pages >= 3 and not self.exhausted:
+            self.info.setText(self.info.text() + "  — rien d'assez long dans les dernières "
+                                                 "pages lues.")
+            self.further.show()
+            return
         # La page ne remplit pas la fenêtre, ou l'on est déjà en bas : la
         # suite tout de suite.
         QTimer.singleShot(0, self._near_end)
 
+    def _search_further(self) -> None:
+        self.idle_pages = 0
+        self.further.hide()
+        self._more()
+
     def add_items(self, items: list) -> None:
         from .scan import human_duration, human_size
-        known = {item["id"] for item in self.items}
         for item in items:
-            if item["id"] in known:
+            if item["id"] in self._ids:
                 continue
-            known.add(item["id"])
+            self._ids.add(item["id"])
             self.items.append(item)
             cell = QListWidgetItem(item.get("title") or ("vidéo" if item.get("video") else "photo"))
             cell.setFlags(cell.flags() | Qt.ItemIsUserCheckable)
@@ -2963,7 +2993,9 @@ class MediaBank(QDialog):
             cell.setToolTip(item.get("title") or "")
             cell.setData(Qt.UserRole, item)
             self.grid.addItem(cell)
-            cell.setHidden(self._too_short(item))
+            short = self._too_short(item)
+            cell.setHidden(short)
+            self.hidden += short
         self._show_info()
 
     def set_kind(self, kind: str) -> None:
@@ -2974,6 +3006,8 @@ class MediaBank(QDialog):
             return
         self.kind = kind
         self.items = []
+        self._ids.clear()
+        self.hidden = self.idle_pages = 0
         self.exhausted = False
         self.grid.clear()
         total = self._total()
@@ -2988,7 +3022,7 @@ class MediaBank(QDialog):
             self._more()
 
     def _more(self) -> None:
-        if not self.items or self.loading or self.exhausted:
+        if not self.items or self.loading or self.exhausted or self.idle_pages >= 3:
             return
         total = self._total()
         if total is not None and len(self.items) >= total:
