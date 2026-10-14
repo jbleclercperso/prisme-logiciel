@@ -15,17 +15,18 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, QRect, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QObject, QProcess, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QSizePolicy,
     QApplication, QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
-    QPushButton, QScrollArea, QSpinBox, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
+    QPushButton, QScrollArea, QSpinBox, QStyle, QStyledItemDelegate,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import ia, iapython
+from .cartes import ROLE_CHIP, ROLE_RES, ROLE_SUB, set_card_width, use_cards
 
 # Tout est ecrit en clair sur fond sombre : les onglets et les boutons natifs
 # de Windows sortaient en gris pale sur gris, illisibles.
@@ -167,65 +168,17 @@ def _label(text: str, name: str, parent) -> QLabel:
     return label
 
 
-class _CheckCorner(QStyledItemDelegate):
-    """La case d'un resultat, posee sur la vignette en haut a droite : sur sa
-    colonne a gauche, elle volait de la largeur a l'image. Un clic dessus
-    coche ou decoche ; le reste de la vignette garde ses gestes (double-clic :
-    lire)."""
-
-    SIZE = 20
-
-    def initStyleOption(self, option, index):
-        super().initStyleOption(option, index)
-        # La case native n'est plus dessinee : l'image prend sa place.
-        option.features &= ~QStyleOptionViewItem.HasCheckIndicator
-
-    def _box(self, option, index) -> QRect:
-        opt = QStyleOptionViewItem(option)
-        self.initStyleOption(opt, index)
-        widget = opt.widget
-        style = widget.style() if widget is not None else QApplication.style()
-        icon = style.subElementRect(QStyle.SE_ItemViewItemDecoration, opt, widget)
-        if not icon.isValid() or icon.width() <= 0:
-            icon = opt.rect
-        size = self.SIZE
-        return QRect(icon.right() - size - 4, icon.top() + 4, size, size)
-
-    def paint(self, painter, option, index):
-        super().paint(painter, option, index)
-        state = index.data(Qt.CheckStateRole)
-        if state is None:
-            return
-        checked = Qt.CheckState(state) == Qt.Checked
-        box = self._box(option, index)
-        painter.save()
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor("#f5c542" if checked else "#e9eef4"), 1.6))
-        painter.setBrush(QColor("#f5c542") if checked else QColor(8, 10, 13, 170))
-        painter.drawRoundedRect(box, 4, 4)
-        if checked:
-            pen = QPen(QColor("#16181d"), 2.4)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen)
-            x, y, w, h = box.x(), box.y(), box.width(), box.height()
-            painter.drawPolyline([QPoint(x + int(w * 0.24), y + int(h * 0.52)),
-                                  QPoint(x + int(w * 0.43), y + int(h * 0.72)),
-                                  QPoint(x + int(w * 0.78), y + int(h * 0.30))])
-        painter.restore()
-
-    def editorEvent(self, event, model, option, index):
-        if (event.type() in (QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick)
-                and event.button() == Qt.LeftButton
-                and index.flags() & Qt.ItemIsUserCheckable
-                and self._box(option, index).adjusted(-4, -4, 4, 4).contains(
-                    event.position().toPoint())):
-            if event.type() == QEvent.MouseButtonRelease:
-                state = Qt.CheckState(index.data(Qt.CheckStateRole))
-                model.setData(index, Qt.Unchecked if state == Qt.Checked else Qt.Checked,
-                              Qt.CheckStateRole)
-            return True
-        return super().editorEvent(event, model, option, index)
+def _card_roles(item, video: str, ts: float, mark: str = "") -> None:
+    """Ce que montre la vignette (cartes.py) : la duree de la video dans la
+    pastille, sa resolution devant le nom, et l'instant de l'image trouvee."""
+    from .index import INDEX
+    from .scan import human_duration
+    info = INDEX.probe(video) or {}
+    if info.get("duration"):
+        item.setData(ROLE_CHIP, human_duration(info["duration"]))
+    item.setData(ROLE_RES, int(info.get("height") or 0))
+    minutes, seconds = divmod(int(ts), 60)
+    item.setData(ROLE_SUB, f"{mark}image à {minutes}:{seconds:02d}")
 
 
 class _Frames(QObject):
@@ -612,21 +565,15 @@ class LaboWindow(QWidget):
     # -- utilitaires ---------------------------------------------------------------
     def _result_list(self, parent) -> QListWidget:
         view = QListWidget(parent)
-        view.setViewMode(QListView.IconMode)
-        view.setResizeMode(QListView.Adjust)
-        view.setIconSize(QSize(224, 126))
-        view.setGridSize(QSize(240, 178))
-        view.setSpacing(4)
-        view.setWordWrap(True)
-        view.setMovement(QListView.Static)
-        view.setUniformItemSizes(True)
+        # Les vignettes de la fenetre principale : duree en haut a droite,
+        # case en haut a gauche, « 1080p · nom » dessous (cartes.py).
+        use_cards(view, 236)
         view.itemDoubleClicked.connect(self._play)
         view.setContextMenuPolicy(Qt.CustomContextMenu)
         view.customContextMenuRequested.connect(
             lambda point, v=view: self._result_menu(v, point))
-        view.setItemDelegate(_CheckCorner(view))
         view.setToolTip("Double-clic : lire la vidéo au moment de l'image trouvée. "
-                        "La case, en haut à droite : la choisir. Clic droit : la suite.")
+                        "La case, en haut à gauche : la choisir. Clic droit : la suite.")
         return view
 
     def _result_menu(self, view, point) -> None:
@@ -1363,9 +1310,7 @@ class LaboWindow(QWidget):
                   label=f"Indexation {ia.ENGINES.get(getattr(self.engine, 'name', ''), {}).get('short', '')}")
 
     def _resize_thumbs(self, width: int) -> None:
-        height = int(width * 9 / 16)
-        self.results.setIconSize(QSize(width, height))
-        self.results.setGridSize(QSize(width + 14, height + 48))
+        set_card_width(self.results, width + 8)
 
     def _more_results(self) -> None:
         self._top += 60
@@ -1557,9 +1502,8 @@ class LaboWindow(QWidget):
                  + (" — la suite arrive en descendant" if self._can_more else ""))
                 if rows else "")
         for video, ts, _score in fresh:
-            minutes, seconds = divmod(int(ts), 60)
-            mark = "✓ exemple · " if video in good else ""
-            item = QListWidgetItem(f"{mark}{Path(video).name}\nà {minutes}:{seconds:02d}")
+            item = QListWidgetItem(Path(video).name)
+            _card_roles(item, video, ts, "✓ exemple · " if video in good else "")
             item.setData(Qt.UserRole, video)
             item.setData(Qt.UserRole + 1, float(ts))
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -1995,12 +1939,7 @@ class LaboWindow(QWidget):
             head = _label(spec.get("short", name), "labScore", page)
             column.addWidget(head)
             view = QListWidget(page)
-            view.setViewMode(QListView.IconMode)
-            view.setResizeMode(QListView.Adjust)
-            view.setIconSize(QSize(176, 99))
-            view.setGridSize(QSize(188, 140))
-            view.setMovement(QListView.Static)
-            view.setWordWrap(True)
+            use_cards(view, 190)
             view.itemDoubleClicked.connect(self._play)
             view.itemChanged.connect(lambda item, n=name: self._bench_mark(n, item))
             column.addWidget(view, 1)
@@ -2233,8 +2172,8 @@ class LaboWindow(QWidget):
         for name, view in self.bench_views.items():
             view.clear()
             for video, ts in found.get(name, []):
-                minutes, seconds = divmod(int(ts), 60)
-                item = QListWidgetItem(f"{Path(video).name}\n{minutes}:{seconds:02d}")
+                item = QListWidgetItem(Path(video).name)
+                _card_roles(item, video, ts)
                 item.setData(Qt.UserRole, video)
                 item.setData(Qt.UserRole + 1, float(ts))
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)

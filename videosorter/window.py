@@ -45,7 +45,7 @@ from .header import (
     CONTENT_FOLDERS, CONTENT_VIDEOS, HEADER_STYLE, TAB_FOLDERS,
     TAB_FAVS, TAB_SPLIT, TAB_TAGS, TAB_VIDEOS, TABS, VIEW_BROWSE, VIEW_EDIT, Breadcrumb, Chips,
     ControlBar, KindToggle, Segmented,
-    build_overflow,
+    build_overflow, in_ranges, quick_ranges,
 )
 from . import media
 from .covers import COVERS
@@ -85,7 +85,7 @@ from .scan import (
     set_veiled, under_veiled,
     MODE_FILES, MODE_FLAT, MODE_FOLDERS, PARENT_PREFIX, Item, RefreshThread,
     RootUnreadable, cached_items, canon_root, fast_path, human_duration,
-    human_resolution, human_size, known_media, list_entries,
+    human_resolution, human_size, known_media, list_entries, short_side,
 )
 from .index import INDEX
 from .transfer import Transfer, TransferQueue
@@ -1457,6 +1457,7 @@ class MainWindow(QMainWindow):
         self.controls.set_orientations(self.cfg["orientations"])
         self.controls.set_folder_bounds(int(self.cfg["folder_min"] or 0),
                                         int(self.cfg["folder_max"] or 0))
+        self.controls.quick.set_all(self.cfg["quick_filters"])
         # Les criteres valent des le depart, pas seulement apres un premier
         # clic sur un chip : sans cela, un filtre retenu d'une session a
         # l'autre s'affichait coche mais ne filtrait rien.
@@ -5861,20 +5862,24 @@ class MainWindow(QMainWindow):
                          "Recliquer l'onglet rend la collection.", "info", seconds=8)
 
     def _telegram_follow(self) -> None:
-        """Chaînes suivies : nouvelles vidéos, sans reprendre la bibliothèque."""
+        """Groupes suivis : verifies au lancement puis a intervalle regulier,
+        fenetre Telegram ouverte ou non ; un bandeau dit ce qui est arrive."""
         try:
-            from .telegram_hub import start_follow
-            start_follow(self)
+            from .telegram_hub import start_watch
+            start_watch(self)
         except Exception:
             pass
 
-    def open_telegram(self) -> None:
-        """Recherche de channels publics et alertes sur ceux qu'on suit."""
+    def open_telegram(self, journal: bool = False) -> None:
+        """Ses groupes, leurs alertes, la recherche ; `journal` : ouvrir sur
+        le journal (clic sur le bandeau d'une alerte)."""
         from .telegram_hub import TelegramDialog
         dialog = getattr(self, "_telegram_dialog", None)
         if dialog is None or not shiboken6.isValid(dialog):
             dialog = TelegramDialog(self)
             self._telegram_dialog = dialog
+        if journal:
+            dialog.show_journal()
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -8663,6 +8668,7 @@ class MainWindow(QMainWindow):
             active.append(f"dossiers d'au moins {low} vidéos")
         if high:
             active.append(f"dossiers d'au plus {high} vidéos")
+        active.extend(self.controls.quick.labels())
         return active
 
     def reset_filters(self) -> None:
@@ -8670,6 +8676,7 @@ class MainWindow(QMainWindow):
         self.controls.set_terms("", "")
         self.controls.set_orientations(("vertical", "horizontal"))
         self.controls.set_folder_bounds(0, 0)
+        self.controls.quick.clear()
         self.cfg["only_unseen"] = False
         self.controls.set_unseen(False)
         self.wall.set_unseen(False)
@@ -10813,7 +10820,7 @@ class MainWindow(QMainWindow):
 
     SESSION_FILTERS = (("filter_include", ""), ("filter_exclude", ""),
                        ("only_unseen", False), ("orientations", []),
-                       ("folder_min", 0), ("folder_max", 0),
+                       ("folder_min", 0), ("folder_max", 0), ("quick_filters", {}),
                        ("sort_mode", "random"), ("tab", TAB_FOLDERS))
 
     @classmethod
@@ -12603,6 +12610,12 @@ class MainWindow(QMainWindow):
         wanted = rules.get("orientations") if rules else None
         orient = next(iter(wanted)) if wanted is not None and len(wanted) == 1 else None
         probe = INDEX.probe
+        # Les pastilles de la barre (duree, taille, resolution) : strictes
+        # comme l'orientation, ce qui n'est pas encore sonde n'y entre pas.
+        ranges = quick_ranges(rules.get("quick") if rules else None)
+        by_duration = ranges.get("duration")
+        by_size = ranges.get("size")
+        by_res = ranges.get("resolution")
 
         def keep(item) -> bool:
             is_tag = item.is_tag
@@ -12628,7 +12641,23 @@ class MainWindow(QMainWindow):
                         return False
                     if folder_max and item.video_count > folder_max:
                         return False
+                    if by_size and not in_ranges(item.size, by_size):
+                        return False
+                    if by_duration or by_res:
+                        total, height = known_media(item)
+                        if by_duration and not in_ranges(total, by_duration):
+                            return False
+                        if by_res and not in_ranges(height, by_res):
+                            return False
                 return True
+            if by_size and not in_ranges(item.size, by_size):
+                return False
+            if by_duration or by_res:
+                info = probe(item.path) or {}
+                if by_duration and not in_ranges(info.get("duration") or 0, by_duration):
+                    return False
+                if by_res and not in_ranges(short_side(info), by_res):
+                    return False
             if orient is not None:
                 # Strict : ce dont on ignore l'orientation est ecarte aussi.
                 # Le laisser passer donnait « Verticales » plein
@@ -12662,6 +12691,7 @@ class MainWindow(QMainWindow):
         self.cfg["orientations"] = list(rules.get("orientations") or [])
         self.cfg["folder_min"] = int(rules.get("folder_min") or 0)
         self.cfg["folder_max"] = int(rules.get("folder_max") or 0)
+        self.cfg["quick_filters"] = self.controls.quick.all_selections()
         self.cfg["filter_include"] = rules["include"]
         self.cfg["filter_exclude"] = rules["exclude"]
         # Une seule ecriture, un instant plus tard : `apply_filter` en

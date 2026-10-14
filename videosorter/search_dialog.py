@@ -79,6 +79,7 @@ QWidget#webSearch QTabBar::tab { color: #c9d1db; background: #161b22; padding: 4
 QWidget#webSearch QTabBar::tab:selected { background: #222a35; color: #ffffff; }
 QLabel#head { color: #ffffff; font-size: 13px; font-weight: 600; }
 QLabel#dim { color: #8b94a1; font-size: 12px; }
+QListWidget#siteList { font-size: 13px; }
 QFrame#card { background: #151a21; border: 1px solid #1f2630; border-radius: 10px; }
 QFrame#card:hover { border-color: #3a4452; }
 QLabel#thumb { background: #07090c; border-radius: 8px; }
@@ -926,16 +927,37 @@ class WebSearchWindow(QWidget):
         panel.setMinimumWidth(280)
         box = QVBoxLayout(panel)
         box.setContentsMargins(0, 0, 6, 0)
+        top = QHBoxLayout()
         head = QLabel("Sites", panel)
         head.setObjectName("head")
-        box.addWidget(head)
+        top.addWidget(head)
+        self.site_count = QLabel("", panel)
+        self.site_count.setObjectName("site")
+        top.addWidget(self.site_count)
+        top.addStretch(1)
+        # Des centaines de sites dans une colonne de 380 px : on n'y voyait
+        # rien. « Agrandir » donne au panneau l'essentiel de la fenetre (plus
+        # de colonnes, plus de lignes), un second clic rend les resultats.
+        self.grow_sites = QPushButton("⤢ Agrandir", panel)
+        self.grow_sites.setCheckable(True)
+        self.grow_sites.setToolTip("Les sites sur toute la fenêtre ; recliquer pour "
+                                   "revenir aux réglages et aux résultats.")
+        self.grow_sites.toggled.connect(self._grow_sites)
+        top.addWidget(self.grow_sites)
+        box.addLayout(top)
         # Deux faces : cocher les sites de cette recherche-ci, ou coller et
         # modifier la liste en texte, un par ligne, comme avant.
         self.site_tabs = QTabWidget(panel)
         choose = QWidget(self.site_tabs)
         choose_box = QVBoxLayout(choose)
         choose_box.setContentsMargins(0, 4, 0, 0)
+        self.site_filter = QLineEdit(choose)
+        self.site_filter.setPlaceholderText("Filtrer les sites…")
+        self.site_filter.setClearButtonEnabled(True)
+        self.site_filter.textChanged.connect(self._filter_sites)
+        choose_box.addWidget(self.site_filter)
         self.site_list = QListWidget(choose)
+        self.site_list.setObjectName("siteList")
         self.site_list.setToolTip("Cochez les sites à interroger pour cette recherche.\n"
                                   "Vert : il a donné des vidéos ; jaune : rien pour ces "
                                   "mots ; rouge : rien à en tirer.")
@@ -973,13 +995,26 @@ class WebSearchWindow(QWidget):
         # a l'autre.
         lower = QWidget(panel)
         lower_box = QVBoxLayout(lower)
-        lower_box.setContentsMargins(0, 0, 0, 0)
+        lower_box.setContentsMargins(0, 0, 6, 0)
+        # Les reglages defilent : poses tels quels, leur hauteur minimale
+        # prenait tout, et il ne restait aux sites que trois lignes.
+        self.lower_area = QScrollArea(panel)
+        self.lower_area.setWidgetResizable(True)
+        self.lower_area.setFrameShape(QFrame.NoFrame)
+        self.lower_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.lower_area.setWidget(lower)
+        self.lower_area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget "
+                                      "{ background: transparent; }")
         side = QSplitter(Qt.Vertical, panel)
         side.setHandleWidth(8)
         side.addWidget(self.site_tabs)
-        side.addWidget(lower)
+        side.addWidget(self.lower_area)
         side.setStretchFactor(0, 1)
         side.setCollapsible(0, False)
+        side.setStretchFactor(1, 0)
+        # Une fois la fenetre a sa taille : trois cinquiemes aux sites.
+        QTimer.singleShot(0, self._share_side)
+        self.side_split = side
         box.addWidget(side, 1)
         box = lower_box
         self._unchecked = set(self.cfg.get("web_search_unchecked", []) or [])
@@ -1384,6 +1419,41 @@ class WebSearchWindow(QWidget):
             item.setToolTip(f"{line}\n{why}" if why else line)
             item.setData(Qt.UserRole, name)
         self.site_list.blockSignals(False)
+        self._filter_sites()
+
+    def _filter_sites(self, *_args) -> None:
+        """Ne montrer que les sites dont le nom contient le texte du filtre ;
+        et dire combien sont coches."""
+        needle = self.site_filter.text().strip().lower()
+        checked = 0
+        for row in range(self.site_list.count()):
+            item = self.site_list.item(row)
+            item.setHidden(bool(needle) and needle not in item.text().lower())
+            checked += item.checkState() == Qt.Checked
+        self.site_count.setText(f"{checked} cochés sur {self.site_list.count()}")
+
+    def _share_side(self) -> None:
+        """Trois cinquiemes de la hauteur aux sites (en pixels : le partage
+        en proportions, lui, etait refuse)."""
+        total = sum(self.side_split.sizes())
+        if total > 0:
+            self.side_split.setSizes([total * 3 // 5, total - total * 3 // 5])
+
+    def _grow_sites(self, on: bool) -> None:
+        """Les sites seuls, sur toute la fenetre (reglages et resultats
+        caches le temps de choisir) ; recliquer rend tout."""
+        results = self.main_split.widget(1)
+        if on:
+            self._sizes_before = self.main_split.sizes()
+            self.lower_area.hide()
+            results.hide()
+            self.grow_sites.setText("⤡ Réduire")
+        else:
+            self.lower_area.show()
+            results.show()
+            if getattr(self, "_sizes_before", None):
+                self.main_split.setSizes(self._sizes_before)
+            self.grow_sites.setText("⤢ Agrandir")
 
     def _site_checked(self, item) -> None:
         name = item.data(Qt.UserRole)
@@ -1393,6 +1463,7 @@ class WebSearchWindow(QWidget):
             self._unchecked.add(name)
         self.cfg["web_search_unchecked"] = sorted(self._unchecked)
         self.cfg.save_soon() if hasattr(self.cfg, "save_soon") else self.cfg.save()
+        self._filter_sites()
 
     def _check_all(self, on: bool) -> None:
         names = [site_name(line) for line in split_lines(self.sites.toPlainText())]

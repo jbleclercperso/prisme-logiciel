@@ -386,6 +386,7 @@ DEFAULTS = {
     "orientations": ["vertical", "horizontal"],  # ce qu'on veut voir
     "folder_min": 0,             # dossiers d'au moins tant de videos (0 : tous)
     "folder_max": 0,             # d'au plus tant (0 : sans limite)
+    "quick_filters": {},         # pastilles de la barre : {vue: {critere: [cles]}}
     "searches": [],              # recherches enregistrees : nom, requete, tri, non-vus, onglet
     "burst": False,              # rafale : passer tout seul apres quelques secondes
     "wall_panes": 3,             # panneaux du mur
@@ -430,6 +431,7 @@ PER_KIND = frozenset({
     "filter_exclude", "tab", "tags", "last_item", "collection", "searches",
     "thumbs_last_run", "sort_mode", "stars_pick", "only_unseen",
     "folder_min", "folder_max", "orientations", "pins", "tag_members", "roots",
+    "quick_filters",
     "roots_off",
 })
 

@@ -192,8 +192,20 @@ class Item:
         return not (self.is_tag or self.loose_only)
 
 
+def short_side(info: dict) -> int:
+    """La resolution d'une video, couchee ou debout : son petit cote. Une
+    video de telephone 1080x1920 est une « 1080p », pas une « 1440p »."""
+    width, height = int(info.get("width") or 0), int(info.get("height") or 0)
+    return min(width, height) if width and height else height
+
+
 def known_media(item) -> tuple:
-    """(durée totale connue, hauteur maximale connue) d'après le cache de sondage.
+    """(durée totale connue, résolution de la plupart des vidéos) d'après le
+    cache de sondage.
+
+    La résolution d'un dossier est celle du plus grand nombre de ses vidéos
+    (720p, 1080p, 4K…), pas la plus haute : un seul fichier 4K faisait passer
+    tout un dossier de 720p en tête du tri. À égalité, la plus haute.
 
     Un dossier n'est jamais sondé en entier : on ne connaît que les vidéos déjà
     regardées pour un aperçu. Les filtres chiffrés s'appuient donc sur ce qu'on
@@ -201,8 +213,8 @@ def known_media(item) -> tuple:
     """
     probes = _index().probes.get
     total = 0.0
-    height = 0
     known = 0
+    classes: dict[str, list] = {}
     for video in item.videos:
         found = probes(str(video))
         info = found[1] if found is not None else None
@@ -210,9 +222,12 @@ def known_media(item) -> tuple:
             continue
         known += 1
         total += info.get("duration") or 0.0
-        height = max(height, info.get("height") or 0)
+        h = short_side(info)
+        if h:
+            classes.setdefault(human_resolution(h), []).append(h)
     if not known:
         return (0.0, 0)
+    height = max((len(hs), max(hs)) for hs in classes.values())[1] if classes else 0
     # Extrapole la durée du dossier à partir de l'échantillon connu.
     if item.kind == MODE_FOLDERS and known < len(item.videos):
         total = total / known * len(item.videos)

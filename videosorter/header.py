@@ -226,6 +226,178 @@ class Chips(QWidget):
             button.style().polish(button)
 
 
+MB = 1024 * 1024
+# Les filtres en un clic, par critere : (cle, texte, depuis, jusqu'a). Une
+# pastille garde ce qui tombe dans sa tranche ; plusieurs pastilles d'un meme
+# critere s'additionnent (« 1080p ou 4K »), deux criteres se cumulent
+# (« 4K » et « 20 min + »). Les tranches d'un dossier portent sur le dossier
+# entier (duree totale, poids total), d'ou des paliers plus larges.
+RESOLUTIONS = (("r4k", "4K", 2000, None), ("r1440", "1440p", 1300, 2000),
+               ("r1080", "1080p", 1000, 1300), ("r720", "720p", 700, 1000),
+               ("rsd", "SD", 1, 700))
+QUICK = {
+    "videos": {
+        "duration": (("d1", "< 1 min", 0, 60), ("d5", "1–5 min", 60, 300),
+                     ("d20", "5–20 min", 300, 1200), ("d20p", "20 min +", 1200, None)),
+        "size": (("s100", "< 100 Mo", 0, 100 * MB), ("s1g", "100 Mo–1 Go", 100 * MB, 1024 * MB),
+                 ("s1gp", "> 1 Go", 1024 * MB, None)),
+        "resolution": RESOLUTIONS,
+    },
+    "folders": {
+        "duration": (("f10", "< 10 min", 0, 600), ("f60", "10 min–1 h", 600, 3600),
+                     ("f3h", "1–3 h", 3600, 10800), ("f3hp", "3 h +", 10800, None)),
+        "size": (("g1", "< 1 Go", 0, 1024 * MB), ("g10", "1–10 Go", 1024 * MB, 10240 * MB),
+                 ("g10p", "> 10 Go", 10240 * MB, None)),
+        "resolution": RESOLUTIONS,
+    },
+}
+QUICK_NAMES = {"duration": "Durée", "size": "Taille", "resolution": "Résolution"}
+# cle -> (critere, depuis, jusqu'a, texte), toutes vues confondues
+QUICK_KEYS = {key: (crit, low, high, text)
+              for view in QUICK.values() for crit, steps in view.items()
+              for key, text, low, high in steps}
+
+
+def quick_ranges(selection: dict) -> dict:
+    """{critere: [(depuis, jusqu'a), …]} pour les cles choisies."""
+    out: dict = {}
+    for keys in (selection or {}).values():
+        for key in keys or ():
+            found = QUICK_KEYS.get(key)
+            if found:
+                crit, low, high, _text = found
+                out.setdefault(crit, []).append((low, high))
+    return out
+
+
+def in_ranges(value, ranges) -> bool:
+    """Dans l'une des tranches ; une valeur inconnue (0) n'y est jamais."""
+    if not value:
+        return False
+    return any(value >= low and (high is None or value < high) for low, high in ranges)
+
+
+class QuickFilters(QWidget):
+    """La rangee sous la barre : les pastilles du critere qu'on vient de
+    trier (ou de cliquer du bouton droit), et un rappel des filtres poses sur
+    les autres criteres, chacun avec sa croix. Rien a ouvrir : un clic filtre,
+    un second retire. Le tri, lui, reste libre : filtrer la 4K et trier par
+    duree, c'est cliquer « 4K » puis « Durée »."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(0, 6, 0, 0)
+        self.row.setSpacing(6)
+        self.shown = ""
+        self.view = "videos"
+        self.photo = False
+        self.picked: dict = {"videos": {}, "folders": {}}
+        self.hide()
+
+    # -- etat ------------------------------------------------------------
+    def selection(self) -> dict:
+        """Les choix de la vue courante : {critere: [cles]}."""
+        allowed = ("resolution",) if self.photo else tuple(QUICK_NAMES)
+        return {crit: list(keys) for crit, keys in self.picked[self.view].items()
+                if keys and crit in allowed}
+
+    def all_selections(self) -> dict:
+        return {view: {c: list(k) for c, k in picks.items() if k}
+                for view, picks in self.picked.items()}
+
+    def set_all(self, saved) -> None:
+        self.picked = {"videos": {}, "folders": {}}
+        for view, picks in (saved or {}).items():
+            if view in self.picked and isinstance(picks, dict):
+                self.picked[view] = {c: [k for k in keys if k in QUICK_KEYS]
+                                     for c, keys in picks.items() if c in QUICK_NAMES}
+        self._rebuild()
+
+    def clear(self) -> None:
+        self.picked = {"videos": {}, "folders": {}}
+        self._rebuild()
+
+    def labels(self) -> list:
+        out = []
+        for crit, keys in self.selection().items():
+            texts = [QUICK_KEYS[k][3] for k in keys if k in QUICK_KEYS]
+            if texts:
+                out.append(f"{QUICK_NAMES[crit].lower()} {' ou '.join(texts)}")
+        return out
+
+    def set_view(self, view: str) -> None:
+        view = "folders" if view == "folders" else "videos"
+        if view != self.view:
+            self.view = view
+            self._rebuild()
+
+    def show_for(self, crit: str) -> None:
+        self.shown = crit if crit in QUICK_NAMES else ""
+        self._rebuild()
+
+    def toggle_for(self, crit: str) -> None:
+        self.show_for("" if crit == self.shown else crit)
+
+    # -- dessin ----------------------------------------------------------
+    def _chip(self, text: str, on: bool, tip: str, action) -> QPushButton:
+        button = QPushButton(text, self)
+        button.setObjectName("sortChip")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setProperty("chosen", "true" if on else "false")
+        button.setToolTip(tip)
+        button.clicked.connect(action)
+        return button
+
+    def _rebuild(self) -> None:
+        while self.row.count():
+            got = self.row.takeAt(0)
+            if got.widget() is not None:
+                got.widget().hide()
+                got.widget().deleteLater()
+        picks = self.picked[self.view]
+        allowed = ("resolution",) if self.photo else tuple(QUICK_NAMES)
+        shown = self.shown if self.shown in allowed else ""
+        if shown:
+            title = QLabel(f"{QUICK_NAMES[shown]} :", self)
+            title.setObjectName("counter")
+            self.row.addWidget(title)
+            chosen = picks.get(shown) or []
+            where = ("du dossier entier" if self.view == "folders" else "de la vidéo")
+            for key, text, _low, _high in QUICK[self.view][shown]:
+                self.row.addWidget(self._chip(
+                    text, key in chosen,
+                    f"Ne garder que ce qui tombe ici ({QUICK_NAMES[shown].lower()} {where}).\n"
+                    "Reclic : retirer. Ce qui n'est pas encore analysé n'apparaît pas.",
+                    lambda _c=False, c=shown, k=key: self._flip(c, k)))
+        for crit, keys in picks.items():
+            if crit == shown or not keys or crit not in allowed:
+                continue
+            texts = " ou ".join(QUICK_KEYS[k][3] for k in keys if k in QUICK_KEYS)
+            self.row.addWidget(self._chip(
+                f"{QUICK_NAMES[crit]} : {texts}  ✕", True, "Retirer ce filtre",
+                lambda _c=False, c=crit: self._drop(c)))
+        self.row.addStretch(1)
+        self.setVisible(self.row.count() > 1)
+
+    def _flip(self, crit: str, key: str) -> None:
+        keys = self.picked[self.view].setdefault(crit, [])
+        if key in keys:
+            keys.remove(key)
+        else:
+            keys.append(key)
+        self._rebuild()
+        self.changed.emit()
+
+    def _drop(self, crit: str) -> None:
+        self.picked[self.view].pop(crit, None)
+        self._rebuild()
+        self.changed.emit()
+
+
 class SortChips(QWidget):
     """Un critere par pastille : un clic decroissant, deux croissant, trois rien.
 
@@ -235,6 +407,7 @@ class SortChips(QWidget):
     """
 
     chosen = Signal(str)
+    peek = Signal(str)          # clic droit : ses filtres, sans changer le tri
 
     CRITERIA = (("date", "Date"), ("duration", "Durée"), ("size", "Taille"),
                 ("resolution", "Résolution"))
@@ -258,8 +431,13 @@ class SortChips(QWidget):
                 "ancien — reclic : l'inverse — troisième clic : au hasard"
                 if key == "date" else
                 "Clic : du plus grand au plus petit — "
-                "reclic : l'inverse — troisième clic : au hasard")
+                "reclic : l'inverse — troisième clic : au hasard.\n"
+                "Des pastilles apparaissent dessous pour filtrer. "
+                "Clic droit : les pastilles seules, sans changer le tri.")
             button.clicked.connect(lambda _c=False, k=key: self._cycle(k))
+            button.setContextMenuPolicy(Qt.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda _p, k=key: self.peek.emit(k))
             layout.addWidget(button)
             self.buttons[key] = button
         self._repaint()
@@ -605,6 +783,9 @@ class ControlBar(QWidget):
         row = FlowLayout(spacing=8)
         outer.addLayout(row)
         self.row = row
+        # Sous la rangee, et seulement quand elle sert : les filtres en un clic.
+        self.quick = QuickFilters(self)
+        outer.addWidget(self.quick)
 
         self.include = _Field("chercher…", 184)
         # Conserve sans etre montre : le filtre d'exclusion garde sa place dans
@@ -615,6 +796,12 @@ class ControlBar(QWidget):
 
         self.sorts = SortChips(self)
         self.sorts.chosen.connect(self.sortChanged)
+        # Trier par un critere montre ses pastilles ; les filtres deja poses
+        # sur les autres restent, et se lisent a cote. Trier et filtrer
+        # ensemble : « 4K » puis « Durée ».
+        self.sorts.chosen.connect(lambda _m: self.quick.show_for(self.sorts.key))
+        self.sorts.peek.connect(self.quick.toggle_for)
+        self.quick.changed.connect(self.changed)
         row.addWidget(self.sorts)
 
         # Conserve pour la fenetre, qui le relit encore : -1, aucune note
@@ -829,6 +1016,7 @@ class ControlBar(QWidget):
             "orientations": self.orientations(),
             "folder_min": int(self.folder_min.text() or 0),
             "folder_max": int(self.folder_max.text() or 0),
+            "quick": self.quick.selection(),
         }
 
     def set_terms(self, include: str, exclude: str) -> None:
@@ -913,6 +1101,11 @@ class ControlBar(QWidget):
         self.format_button.setVisible(not wall and not folders)
         self.folder_min.setVisible(folders)
         self.folder_max.setVisible(folders)
+        self.quick.set_view("folders" if folders else "videos")
+        if wall:
+            self.quick.hide()
+        else:
+            self.quick._rebuild()
         # Le meme reglage − 5 + sur toutes les planches, dossiers compris.
         self.column_chips.hide()
         for widget in (self.wider, self.columns_label, self.tighter):
@@ -927,6 +1120,8 @@ class ControlBar(QWidget):
         """Des photos : ni duree, ni taille a trier -- la resolution suffit."""
         for key in ("duration", "size"):
             self.sorts.buttons[key].setVisible(not on)
+        self.quick.photo = on
+        self.quick._rebuild()
         noun = "photos" if on else "vidéos"
         self.folder_min.setPlaceholderText(f"≥ {noun}")
         self.folder_max.setPlaceholderText(f"≤ {noun}")
