@@ -28,7 +28,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
@@ -92,6 +92,8 @@ def load_state() -> dict:
     for key, empty in (("api_id", ""), ("api_hash", ""), ("phone", ""), ("channels", []),
                        ("last_id", {}), ("unread", {}), ("joined", []), ("journal", []),
                        ("checked", {}), ("download_dir", ""), ("interval_min", 10),
+                       ("seen_from", {}), ("auto_from", {}), ("unseen", {}), ("top", {}),
+                       ("medias", {}),
                        ("me", "")):
         data.setdefault(key, empty)
     # Avant : une liste d'alertes {username, title, follow}. Maintenant chaque
@@ -337,6 +339,8 @@ class TelegramWorker(QThread):
     need_password = Signal()
     search_done = Signal(list)
     joined_done = Signal(list)
+    joined_progress = Signal(list)
+    join_done = Signal(list)
     checked = Signal(dict)
     bank_done = Signal(list)
     file_ready = Signal(str)
@@ -356,6 +360,8 @@ class TelegramWorker(QThread):
         self.message_id = 0
         self.message_ids: list[int] = []
         self.only: list[str] = []
+        self.targets: list[str] = []
+        self.kind = "all"           # banque, export : "all", "video", "photo"
         self.skip_known = True
         self.known: set[tuple[str, int]] = set()
         self.skipped = 0
@@ -423,6 +429,8 @@ class TelegramWorker(QThread):
                 self.search_done.emit(await self._content(client))
             elif self.job == "dialogs":
                 self.joined_done.emit(await self._dialogs(client))
+            elif self.job == "join":
+                self.join_done.emit(await self._join(client))
             elif self.job == "check":
                 self.checked.emit(await self._check(client))
             elif self.job == "bank":
@@ -460,6 +468,8 @@ class TelegramWorker(QThread):
 
     # -- recherche -------------------------------------------------------------
     async def _inspect(self, client, chat, flood) -> dict:
+        """La fiche d'un groupe trouvé : combien de photos et vidéos en tout,
+        la vignette des trois dernières, et la date du dernier message."""
         username = getattr(chat, "username", None)
         title = getattr(chat, "title", None) or username or "?"
         row = {
@@ -474,21 +484,23 @@ class TelegramWorker(QThread):
             "medias": 0,
             "jours": None,
             "dernier": "",
+            "apercus": [],
         }
         if not username:
             return row
         try:
-            last = None
-            medias = 0
-            async for msg in client.iter_messages(username, limit=40):
-                if last is None:
-                    last = msg
-                if is_media(msg):
-                    medias += 1
-            row["medias"] = medias
-            if last is not None and last.date is not None:
-                row["jours"] = int((time.time() - last.date.timestamp()) / 86400)
-                row["dernier"] = last.date.astimezone().strftime("%d/%m %H:%M")
+            row["medias"] = await self._count(client, username)
+            last = await client.get_messages(username, limit=1)
+            if last and last[0].date is not None:
+                row["jours"] = int((time.time() - last[0].date.timestamp()) / 86400)
+                row["dernier"] = last[0].date.astimezone().strftime("%d/%m/%y")
+            if row["medias"]:
+                THUMBS.mkdir(parents=True, exist_ok=True)
+                async for msg in client.iter_messages(username, limit=3,
+                                                      filter=self._photo_video()):
+                    got = await self._thumb(msg, THUMBS / f"{safe_name(username)}_{msg.id}.jpg")
+                    if got:
+                        row["apercus"].append(got)
         except flood as exc:
             await asyncio.sleep(min(exc.seconds, 20))
         except Exception:  # noqa: BLE001 — illisible, on garde la fiche
@@ -626,15 +638,55 @@ class TelegramWorker(QThread):
             row["acces"] = "à demander" if row["demande"] else "entrée libre"
             rows.append(row)
             self.status.emit(f"{len(rows)} groupes lus…")
-        rows.sort(key=lambda r: r.get("score") or 0, reverse=True)
+        rows.sort(key=lambda r: r.get("abonnes") or 0, reverse=True)
         return rows
+
+    # -- compter les medias -----------------------------------------------------
+    @staticmethod
+    def _photo_video(kind: str = "all"):
+        from telethon.tl.types import (InputMessagesFilterPhotos, InputMessagesFilterPhotoVideo,
+                                       InputMessagesFilterVideo)
+        return {"video": InputMessagesFilterVideo, "photo": InputMessagesFilterPhotos}.get(
+            kind, InputMessagesFilterPhotoVideo)()
+
+    async def _thumb(self, msg, path: Path) -> str:
+        """La vignette d'un média : une taille moyenne pour une photo (pas
+        la photo entière), la plus grande pour une vidéo (elle est petite)."""
+        if path.exists():
+            return str(path)
+        for which in ((2, -1) if msg.photo else (-1,)):
+            try:
+                got = await msg.download_media(file=str(path), thumb=which)
+                if got:
+                    return str(path)
+            except Exception:  # noqa: BLE001
+                continue
+        return ""
+
+    async def _count(self, client, target, min_id: int = 0) -> int:
+        """Photos et vidéos du groupe (après `min_id`), comptées par Telegram
+        lui-même : une seule requête, quel que soit le nombre de messages."""
+        kwargs = {"limit": 0, "filter": self._photo_video()}
+        if min_id:
+            kwargs["min_id"] = int(min_id)
+        found = await client.get_messages(target, **kwargs)
+        return int(getattr(found, "total", 0) or 0)
+
+    async def _top(self, client, target) -> int:
+        """Le numéro du dernier message du groupe."""
+        last = await client.get_messages(target, limit=1)
+        return int(last[0].id) if last else 0
 
     # -- mes groupes -----------------------------------------------------------
     async def _dialogs(self, client) -> list:
         """Toutes les conversations de groupe du compte : chaînes,
-        supergroupes ET petits groupes (ils manquaient : la liste restait vide
-        pour un compte qui n'a que ceux-là)."""
-        rows = []
+        supergroupes ET petits groupes ; puis, pour chacun, combien de photos
+        et vidéos il contient et combien n'ont pas encore été vues (après la
+        dernière lecture dans Telegram, ou « Marquer comme vus »)."""
+        from telethon.errors import FloodWaitError
+        state = load_state()
+        known = {r["key"]: r for r in state.get("joined") or []}
+        rows, entities = [], {}
         async for dialog in client.iter_dialogs():
             if not (dialog.is_group or dialog.is_channel):
                 continue
@@ -643,6 +695,7 @@ class TelegramWorker(QThread):
             small = not dialog.is_channel          # petit groupe (Chat)
             key = username or (f"g{ent.id}" if small else f"c{ent.id}")
             kind = "chaîne" if getattr(ent, "broadcast", False) else "groupe"
+            before = known.get(key) or {}
             rows.append({
                 "key": key,
                 "title": dialog.name or username or str(ent.id),
@@ -653,21 +706,90 @@ class TelegramWorker(QThread):
                 "activite": dialog.date.timestamp() if dialog.date else 0,
                 "public": bool(username),
                 "protege": bool(getattr(ent, "noforwards", False)),
+                "read_max": int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
+                "top": int(dialog.message.id) if dialog.message else 0,
+                # les comptes d'avant restent affichés le temps du recomptage
+                "medias": before.get("medias"),
             })
+            entities[key] = ent
         rows.sort(key=lambda r: r["title"].lower())
         update_state(lambda s: (s.__setitem__("joined", rows),
                                 s.__setitem__("joined_at", time.time())))
+        self.joined_progress.emit(rows)
+        unseen: dict[str, int] = {}
+        for at, row in enumerate(rows, 1):
+            self.status.emit(f"Comptage des photos et vidéos : {at}/{len(rows)} — {row['title']}")
+            key = row["key"]
+            # Vu : jusqu'à la dernière lecture dans Telegram, ou jusqu'à
+            # « Marquer comme vus » si c'est plus loin.
+            seen_from = max(int(state["seen_from"].get(key) or 0), row["read_max"])
+            try:
+                row["medias"] = await self._count(client, entities[key])
+                unseen[key] = (await self._count(client, entities[key], seen_from)
+                               if seen_from else row["medias"])
+            except FloodWaitError as exc:
+                if exc.seconds > 60:
+                    self.status.emit(f"Telegram demande d'attendre {exc.seconds} s : "
+                                     "comptage arrêté, il reprendra au prochain « Actualiser ».")
+                    break
+                await asyncio.sleep(exc.seconds + 1)
+            except Exception:  # noqa: BLE001 — un groupe illisible n'arrête pas les autres
+                row["medias"] = row.get("medias")
+            if at % 5 == 0 or at == len(rows):
+                self.joined_progress.emit(rows)
+            await asyncio.sleep(0.25)
+
+        def keep(s: dict) -> None:
+            s["joined"] = rows
+            s["unseen"].update(unseen)
+            for row in rows:
+                s["top"][row["key"]] = row["top"]
+        update_state(keep)
         return rows
+
+    async def _join(self, client) -> list:
+        """Rejoindre, ou demander à rejoindre : un nom public, ou un lien
+        d'invitation t.me/+… (groupe privé)."""
+        from telethon.errors import (FloodWaitError, InviteHashExpiredError,
+                                     InviteRequestSentError, UserAlreadyParticipantError)
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+        out = []
+        for raw in self.targets:
+            invite = re.search(r"t\.me/(?:\+|joinchat/)([A-Za-z0-9_-]+)", raw)
+            try:
+                if invite:
+                    await client(ImportChatInviteRequest(invite.group(1)))
+                else:
+                    await client(JoinChannelRequest(await client.get_entity(username_of(raw))))
+                out.append((raw, "rejoint"))
+            except InviteRequestSentError:
+                out.append((raw, "demande envoyée"))
+            except UserAlreadyParticipantError:
+                out.append((raw, "déjà membre"))
+            except InviteHashExpiredError:
+                out.append((raw, "lien expiré"))
+            except FloodWaitError as exc:
+                out.append((raw, f"Telegram demande d'attendre {exc.seconds} s"))
+                break
+            except Exception as exc:  # noqa: BLE001
+                out.append((raw, str(exc)[:80]))
+            await asyncio.sleep(1.0)
+        return out
 
     # -- alertes et telechargement automatique ---------------------------------
     async def _check(self, client) -> dict:
+        """Pour chaque groupe suivi : combien de photos et vidéos non vues
+        (Alerte), et le téléchargement de celles arrivées depuis qu'« Auto »
+        est coché. Le journal note ce qui est arrivé depuis le passage
+        précédent."""
         from telethon.errors import FloodWaitError
         state = load_state()
+        joined = {r["key"]: r for r in state.get("joined") or []}
         wanted = [c for c in state["channels"] if c.get("alert") or c.get("auto")]
         if self.only:
             wanted = [c for c in wanted if c["key"] in self.only]
-        last_ids: dict[str, int] = {}
-        added: dict[str, int] = {}
+        news: dict[str, dict] = {}
         journal: list[dict] = []
         lines: list[dict] = []
         total = downloaded_total = 0
@@ -675,17 +797,47 @@ class TelegramWorker(QThread):
             key = entry["key"]
             title = entry.get("title") or key
             self.status.emit(f"Vérification {at}/{len(wanted)} : {title}")
-            last = int(state["last_id"].get(key) or 0)
-            fresh = []
-            max_id = last
+            note = ""
+            got = 0
+            folder = ""
             try:
                 target = await self._resolve(client, key)
-                # Premier passage : le dernier message seulement, pour armer.
-                async for msg in client.iter_messages(target, min_id=last,
-                                                      limit=300 if last else 1):
-                    max_id = max(max_id, msg.id)
-                    if last and is_media(msg):
-                        fresh.append(msg)
+                top = await self._top(client, target)
+                # Un groupe du compte : vu jusqu'à la dernière lecture dans
+                # Telegram (ou « Marquer comme vus », si c'est plus loin). Une
+                # chaîne ajoutée à la main, sans lecture : depuis son ajout.
+                marked = int(state["seen_from"].get(key) or 0)
+                read_max = int(joined.get(key, {}).get("read_max") or 0)
+                seen_from = max(marked, read_max) or top
+                store_seen = not marked and not read_max
+                unseen = await self._count(client, target, seen_from)
+                medias = await self._count(client, target)
+                before = state["unseen"].get(key)
+                arrived = max(0, unseen - int(before)) if before is not None else 0
+                auto_from = state["auto_from"].get(key)
+                if entry.get("auto"):
+                    if auto_from is None:
+                        auto_from = top
+                        note = "Auto en place : ce qui arrive désormais sera téléchargé"
+                    else:
+                        fresh = [m async for m in client.iter_messages(
+                            target, min_id=int(auto_from), filter=self._photo_video(), limit=300)]
+                        if fresh:
+                            target_dir = channel_folder(state, title, key)
+                            folder = str(target_dir)
+                            for n, msg in enumerate(reversed(fresh), 1):   # du plus ancien
+                                self.status.emit(f"{title} : téléchargement {n}/{len(fresh)}")
+                                try:
+                                    if await self._save(msg, target_dir):
+                                        got += 1
+                                except FloodWaitError as exc:
+                                    await asyncio.sleep(min(exc.seconds, 30))
+                                except Exception:  # noqa: BLE001
+                                    continue
+                            arrived = max(arrived, len(fresh))
+                        auto_from = max([int(auto_from)] + [m.id for m in fresh])
+                news[key] = {"unseen": unseen, "top": top, "auto_from": auto_from, "medias": medias,
+                             "seen_from": seen_from if store_seen else None}
             except FloodWaitError as exc:
                 await asyncio.sleep(min(exc.seconds, 20))
                 lines.append({"key": key, "nouveaux": 0, "note": f"Telegram demande {exc.seconds} s"})
@@ -693,41 +845,25 @@ class TelegramWorker(QThread):
             except Exception as exc:  # noqa: BLE001
                 lines.append({"key": key, "nouveaux": 0, "note": str(exc)[:60]})
                 continue
-            last_ids[key] = max_id
-            if not last:
-                lines.append({"key": key, "nouveaux": 0,
-                              "note": "armé : les prochains médias seront comptés"})
-                continue
-            count = len(fresh)
-            got = 0
-            folder = ""
-            if entry.get("auto") and fresh:
-                target_dir = channel_folder(state, title, key)
-                folder = str(target_dir)
-                for n, msg in enumerate(reversed(fresh), 1):     # du plus ancien au plus récent
-                    self.status.emit(f"{title} : téléchargement {n}/{count}")
-                    try:
-                        if await self._save(msg, target_dir):
-                            got += 1
-                    except FloodWaitError as exc:
-                        await asyncio.sleep(min(exc.seconds, 30))
-                    except Exception:  # noqa: BLE001 — un média raté n'arrête pas les autres
-                        continue
-            added[key] = count - got if entry.get("auto") else count
-            total += count
+            total += arrived
             downloaded_total += got
-            if count:
+            if arrived or got:
                 journal.append({"when": time.time(), "key": key, "title": title,
-                                "nouveaux": count, "telecharges": got, "dossier": folder})
-            lines.append({"key": key, "nouveaux": count, "telecharges": got, "note": ""})
+                                "nouveaux": arrived, "telecharges": got, "dossier": folder})
+            lines.append({"key": key, "nouveaux": arrived, "telecharges": got, "note": note,
+                          "non_vus": unseen})
 
         now = time.time()
 
         def merge(s: dict) -> None:
-            s["last_id"].update(last_ids)
-            for k, n in added.items():
-                s["unread"][k] = int(s["unread"].get(k) or 0) + n
-            for k in last_ids:
+            for k, n in news.items():
+                s["unseen"][k] = n["unseen"]
+                s["top"][k] = n["top"]
+                s["medias"][k] = n["medias"]
+                if n["seen_from"]:
+                    s["seen_from"].setdefault(k, n["seen_from"])
+                if n["auto_from"] is not None:
+                    s["auto_from"][k] = n["auto_from"]
                 s["checked"][k] = now
             s["journal"] = (list(reversed(journal)) + s["journal"])[:JOURNAL_MAX]
         update_state(merge)
@@ -764,19 +900,15 @@ class TelegramWorker(QThread):
             kwargs["offset_id"] = self.before_id
         try:
             target = await self._resolve(client, self.channel)
-            async for msg in client.iter_messages(target, **kwargs):
-                if not is_media(msg):
-                    continue
+            # Les photos et vidéos seulement, filtrées par Telegram : lire les
+            # 48 derniers messages ne trouvait rien dans un groupe bavard.
+            async for msg in client.iter_messages(target, filter=self._photo_video(self.kind),
+                                                  **kwargs):
                 thumb = THUMBS / f"{safe_name(self.channel)}_{msg.id}.jpg"
-                if not thumb.exists():
-                    try:
-                        got = await msg.download_media(file=str(thumb), thumb=-1)
-                        if not got and msg.photo:
-                            await msg.download_media(file=str(thumb))
-                    except FloodWaitError as exc:
-                        await asyncio.sleep(min(exc.seconds, 15))
-                    except Exception:  # noqa: BLE001
-                        pass
+                try:
+                    await self._thumb(msg, thumb)
+                except FloodWaitError as exc:
+                    await asyncio.sleep(min(exc.seconds, 15))
                 file = msg.file
                 mime = (file.mime_type or "") if file else ""
                 items.append({
@@ -842,9 +974,8 @@ class TelegramWorker(QThread):
         n = 0
         self.skipped = 0
         target = await self._resolve(client, self.channel)
-        async for msg in client.iter_messages(target, limit=None):
-            if not is_media(msg):
-                continue
+        async for msg in client.iter_messages(target, limit=None,
+                                              filter=self._photo_video(self.kind)):
             self.message_id = msg.id
             if await self._download(client):
                 n += 1
@@ -873,6 +1004,26 @@ class _SortItem(QTableWidgetItem):
         if a is not None and b is not None:
             return a < b
         return self.text().lower() < other.text().lower()
+
+
+def _strip(paths: list[str]):
+    """Les vignettes des trois derniers médias, côte à côte, en une icône."""
+    from PySide6.QtGui import QColor, QPainter
+    pixes = [QPixmap(p) for p in paths[:3]]
+    pixes = [p for p in pixes if not p.isNull()]
+    if not pixes:
+        return None
+    w, h, gap = 92, 52, 4
+    out = QPixmap(3 * w + 2 * gap, h)
+    out.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(out)
+    for i, pix in enumerate(pixes):
+        scaled = pix.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x0 = (scaled.width() - w) // 2
+        y0 = (scaled.height() - h) // 2
+        painter.drawPixmap(i * (w + gap), 0, scaled, x0, y0, w, h)
+    painter.end()
+    return QIcon(out)
 
 
 def _table(parent, headers: list[str], stretch: int) -> QTableWidget:
@@ -946,26 +1097,39 @@ class TelegramDialog(QDialog):
         self.only_followed = QCheckBox("Seulement ceux que je suis", page)
         self.only_followed.toggled.connect(lambda _on: self._fill_groups())
         bar.addWidget(self.only_followed)
+        self.only_media = QCheckBox("Seulement avec des médias", page)
+        self.only_media.toggled.connect(lambda _on: self._fill_groups())
+        bar.addWidget(self.only_media)
         reload_ = QPushButton("Actualiser la liste", page)
         reload_.setToolTip("Relire dans Telegram les groupes et chaînes du compte.")
         reload_.clicked.connect(self.load_groups)
         bar.addWidget(reload_)
         check = QPushButton("Vérifier maintenant", page)
         check.setObjectName("tgPrimary")
-        check.setToolTip("Compter les nouveaux médias des groupes en alerte, "
-                         "et télécharger ceux des groupes en « Auto ».")
+        check.setToolTip("Recompter les médias non vus des groupes en Alerte, "
+                         "et télécharger ceux arrivés dans les groupes en Auto.")
         check.clicked.connect(self.check_now)
         bar.addWidget(check)
         lay.addLayout(bar)
+        lead = QLabel(
+            "<b>Médias</b> : les photos et vidéos du groupe. <b>Non vus</b> : celles arrivées "
+            "depuis ta dernière lecture dans Telegram (ou « Marquer comme vus »). "
+            "<b>Messages non lus</b> : tous les messages, texte compris, comme dans Telegram.<br>"
+            "<b>Alerte</b> : Prisme te prévient quand il arrive des photos ou vidéos. "
+            "<b>Auto</b> : il les télécharge aussi, dès qu'elles arrivent (les anciennes : "
+            "« Tout télécharger »). Clic sur un titre de colonne : trier.", page)
+        lead.setObjectName("tgLead")
+        lead.setWordWrap(True)
+        lay.addWidget(lead)
         self.total = QLabel("", page)
         self.total.setObjectName("tgTotal")
         lay.addWidget(self.total)
-        self.groups = _table(page, ["Alerte", "Auto", "Nom", "Type", "Membres",
-                                    "Nouveaux", "Non lus", "Activité", "Vérifié"], 2)
-        for col, tip in ((5, "Nouveaux médias comptés par les alertes, pas encore vus"),
-                         (6, "Messages non lus dans Telegram"),
-                         (7, "Dernier message du groupe"),
-                         (8, "Dernière vérification par Prisme")):
+        self.groups = _table(page, ["Alerte", "Auto", "Nom", "Type", "Membres", "Médias",
+                                    "Non vus", "Messages non lus", "Activité"], 2)
+        for col, tip in ((5, "Photos et vidéos du groupe, en tout"),
+                         (6, "Photos et vidéos arrivées depuis ta dernière lecture"),
+                         (7, "Messages non lus dans Telegram, texte compris"),
+                         (8, "Dernier message du groupe")):
             self.groups.horizontalHeaderItem(col).setToolTip(tip)
         for col in (0, 1):
             self.groups.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
@@ -988,6 +1152,8 @@ class TelegramDialog(QDialog):
         export.clicked.connect(self.export_group)
         row.addWidget(export)
         seen = QPushButton("Marquer comme vus", page)
+        seen.setToolTip("Les groupes choisis (ou tous, si aucun) : leurs médias non vus "
+                        "repartent de zéro. Rien ne change dans Telegram.")
         seen.clicked.connect(self.mark_seen)
         row.addWidget(seen)
         row.addStretch(1)
@@ -1014,13 +1180,14 @@ class TelegramDialog(QDialog):
         self.query.setPlaceholderText("Mot-clé…")
         self.query.returnPressed.connect(self.search_groups)
         row.addWidget(self.query, 1)
-        groups = QPushButton("Groupes publics", page)
+        groups = QPushButton("Chercher des groupes", page)
         groups.setObjectName("tgPrimary")
-        groups.setToolTip("Les groupes et chaînes publics dont le nom ou les messages "
-                          "contiennent le mot, notés (abonnés, médias, activité).")
+        groups.setToolTip("Les groupes et chaînes dont le nom ou les messages contiennent "
+                          "le mot : ouverts, ou 🔒 sur demande. Avec le nombre de photos et "
+                          "vidéos et l'aperçu des trois dernières.")
         groups.clicked.connect(self.search_groups)
         row.addWidget(groups)
-        messages = QPushButton("Messages publics", page)
+        messages = QPushButton("Dans les messages", page)
         messages.setToolTip("Les messages publics qui contiennent le mot, avec leur "
                             "groupe et leur lien.")
         messages.clicked.connect(self.search_messages)
@@ -1060,10 +1227,11 @@ class TelegramDialog(QDialog):
         self.min_subs.setSingleStep(100)
         self.min_subs.setPrefix("abonnés ≥ ")
         self.min_medias = QSpinBox(page)
-        self.min_medias.setRange(0, 40)
+        self.min_medias.setRange(0, 1_000_000)
+        self.min_medias.setSingleStep(10)
         self.min_medias.setValue(0)
-        self.min_medias.setPrefix("médias récents ≥ ")
-        self.min_medias.setToolTip("Sur les 40 derniers messages du groupe.")
+        self.min_medias.setPrefix("médias ≥ ")
+        self.min_medias.setToolTip("Photos et vidéos du groupe, en tout.")
         for widget in (self.f_free, self.f_ask, self.f_hide_protected, self.f_alive):
             widget.toggled.connect(self._apply_filter)
             filt.addWidget(widget)
@@ -1074,9 +1242,16 @@ class TelegramDialog(QDialog):
         lay.addWidget(self.filters)
         self.table = _table(page, [], 1)
         self.table.setSortingEnabled(True)
+        self.table.setIconSize(QSize(3 * 92 + 8, 52))
         self.table.itemDoubleClicked.connect(lambda _i: self._result_open())
         lay.addWidget(self.table, 1)
         row2 = QHBoxLayout()
+        self.r_join = QPushButton("Rejoindre / demander", page)
+        self.r_join.setToolTip("Entrer dans les groupes choisis ; pour un groupe 🔒 sur "
+                               "demande, la demande part, et il apparaîtra dans « Mes groupes » "
+                               "une fois acceptée.")
+        self.r_join.clicked.connect(self.join_selected)
+        row2.addWidget(self.r_join)
         self.r_follow = QPushButton("Ajouter à mes alertes", page)
         self.r_follow.clicked.connect(self.save_selected)
         row2.addWidget(self.r_follow)
@@ -1220,6 +1395,8 @@ class TelegramDialog(QDialog):
             setattr(worker, name, value)
         worker.search_done.connect(self._show_search)
         worker.joined_done.connect(self._show_joined)
+        worker.joined_progress.connect(self._joined_progress)
+        worker.join_done.connect(self._joined_result)
         worker.checked.connect(lambda report: hub().checked.emit(report))
         worker.bank_done.connect(self._open_bank)
         worker.file_ready.connect(self._play)
@@ -1254,7 +1431,14 @@ class TelegramDialog(QDialog):
     def _show_joined(self, rows: list) -> None:
         self.state = load_state()
         self._fill_groups()
-        self.status.setText(f"{len(rows)} groupes et chaînes sur ton compte.")
+        with_media = sum(1 for r in rows if r.get("medias"))
+        self.status.setText(f"{len(rows)} groupes et chaînes sur ton compte, "
+                            f"dont {with_media} avec des photos ou vidéos.")
+
+    def _joined_progress(self, rows: list) -> None:
+        """La liste arrive tout de suite, ses comptes de médias ensuite."""
+        self.state["joined"] = rows
+        self._fill_groups()
 
     def _group_rows(self) -> list[dict]:
         """Les groupes du compte, plus les chaînes publiques suivies sans y
@@ -1274,35 +1458,36 @@ class TelegramDialog(QDialog):
                          "username": key if not key[1:].isdigit() else "",
                          "kind": entry.get("kind") or "chaîne publique", "membres": 0,
                          "non_lus": 0, "activite": 0, "alert": bool(entry.get("alert")),
+                         "medias": (self.state.get("medias") or {}).get(key),
                          "auto": bool(entry.get("auto")), "mine": False})
         return rows
 
     def _fill_groups(self) -> None:
         needle = self.group_filter.text().strip().lower() if hasattr(self, "group_filter") else ""
         only = hasattr(self, "only_followed") and self.only_followed.isChecked()
-        rows = [r for r in self._group_rows()
+        media_only = hasattr(self, "only_media") and self.only_media.isChecked()
+        all_rows = self._group_rows()
+        rows = [r for r in all_rows
                 if (not needle or needle in r["title"].lower())
-                and (not only or r["alert"] or r["auto"])]
+                and (not only or r["alert"] or r["auto"])
+                and (not media_only or r.get("medias"))]
         rows.sort(key=lambda r: (not (r["alert"] or r["auto"]), r["title"].lower()))
         self.group_list = rows
         table = self.groups
         table.blockSignals(True)
         table.setSortingEnabled(False)
         table.setRowCount(len(rows))
-        unread = self.state.get("unread") or {}
-        checked = self.state.get("checked") or {}
+        unseen = self.state.get("unseen") or {}
         for i, row in enumerate(rows):
             for col, flag in ((0, "alert"), (1, "auto")):
                 box = QTableWidgetItem()
                 box.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
                 box.setCheckState(Qt.Checked if row[flag] else Qt.Unchecked)
                 box.setData(Qt.UserRole, row["key"])
-                box.setToolTip("Compter ses nouveaux médias" if flag == "alert"
-                               else "Télécharger ses nouveaux médias dès qu'ils arrivent")
+                box.setToolTip("Te prévenir quand il arrive des photos ou vidéos" if flag == "alert"
+                               else "Les télécharger dès qu'elles arrivent")
                 table.setItem(i, col, box)
-            name = _cell(("🔒 " if row.get("protege") else "") + row["title"],
-                         tip="Protégé : Telegram interdit d'en télécharger les médias."
-                         if row.get("protege") else "")
+            name = _cell(row["title"])
             name.setData(Qt.UserRole, row["key"])
             table.setItem(i, 2, name)
             kind = row.get("kind") or ""
@@ -1310,24 +1495,37 @@ class TelegramDialog(QDialog):
                 kind = "publique, pas membre"
             elif not row.get("public"):
                 kind += " privée" if kind == "chaîne" else " privé"
-            table.setItem(i, 3, _cell(kind))
+            if row.get("protege"):
+                kind += " · protégé"
+            table.setItem(i, 3, _cell(kind, tip="Protégé : le groupe interdit de transférer ses "
+                                      "médias ; Prisme les télécharge quand même."
+                                      if row.get("protege") else ""))
             members = int(row.get("membres") or 0)
             table.setItem(i, 4, _cell(f"{members:,}".replace(",", " ") if members else "", members))
-            fresh = int(unread.get(row["key"]) or 0)
-            table.setItem(i, 5, _cell(str(fresh) if (row["alert"] or row["auto"]) else "", fresh))
-            table.setItem(i, 6, _cell(str(row.get("non_lus") or "") or "", int(row.get("non_lus") or 0)))
+            medias = row.get("medias")
+            table.setItem(i, 5, _cell("…" if medias is None else f"{medias:,}".replace(",", " "),
+                                      -1 if medias is None else int(medias),
+                                      tip="Pas encore compté" if medias is None else ""))
+            fresh = unseen.get(row["key"])
+            table.setItem(i, 6, _cell("" if fresh is None else f"{int(fresh):,}".replace(",", " "),
+                                      int(fresh or 0)))
+            table.setItem(i, 7, _cell(str(row.get("non_lus") or ""), int(row.get("non_lus") or 0)))
             act = float(row.get("activite") or 0)
-            table.setItem(i, 7, _cell(human_when(act) if act else "", act))
-            seen_at = float(checked.get(row["key"]) or 0)
-            table.setItem(i, 8, _cell(human_when(seen_at) if (row["alert"] or row["auto"]) else "",
-                                      seen_at))
+            table.setItem(i, 8, _cell(human_when(act) if act else "", act))
         table.setSortingEnabled(True)
         table.blockSignals(False)
-        followed = sum(1 for r in self._group_rows() if r["alert"] or r["auto"])
-        auto = sum(1 for r in self._group_rows() if r["auto"])
-        waiting = sum(int(v or 0) for v in unread.values())
-        self.total.setText(f"{followed} suivi(s), dont {auto} en téléchargement auto — "
-                           f"{waiting} nouveau(x) média(s) non vu(s).")
+        followed = sum(1 for r in all_rows if r["alert"] or r["auto"])
+        auto = sum(1 for r in all_rows if r["auto"])
+        with_media = sum(1 for r in all_rows if r.get("medias"))
+        counted = sum(1 for r in all_rows if r.get("medias") is not None)
+        waiting = sum(int(unseen.get(r["key"]) or 0) for r in all_rows if r["alert"] or r["auto"])
+        text = f"{len(all_rows)} groupes"
+        if counted:
+            text += f", dont {with_media} avec des photos ou vidéos"
+        text += f" — {followed} suivi(s), {auto} en Auto"
+        if followed:
+            text += f" — {waiting} média(s) non vu(s) dans ceux que tu suis"
+        self.total.setText(text + ".")
 
     def _group_flag(self, item: QTableWidgetItem) -> None:
         if item.column() not in (0, 1):
@@ -1342,6 +1540,9 @@ class TelegramDialog(QDialog):
 
         def change(s: dict) -> None:
             entry = next((c for c in s["channels"] if c["key"] == key), None)
+            if not auto:
+                # Recocher Auto plus tard repartira de ce moment-là.
+                s["auto_from"].pop(key, None)
             if alert or auto:
                 if entry is None:
                     entry = {"key": key, "title": row["title"], "kind": row.get("kind") or ""}
@@ -1351,7 +1552,6 @@ class TelegramDialog(QDialog):
                 if row["mine"]:
                     # Un groupe du compte : il reste dans la liste, sans suivi.
                     s["channels"].remove(entry)
-                    s["unread"].pop(key, None)
                 else:
                     # Une chaine ajoutee a la main reste affichee (decochee)
                     # jusqu'a « Retirer ».
@@ -1359,12 +1559,15 @@ class TelegramDialog(QDialog):
         self.state = update_state(change)
         QTimer.singleShot(0, self._fill_groups)
         if auto and item.column() == 1:
-            self.status.setText(f"« {row['title']} » : ses nouveaux médias arriveront dans "
-                                f"{channel_folder(self.state, row['title'], key)}. Le premier "
-                                "passage arme le compteur ; les suivants téléchargent.")
+            self.status.setText(f"Auto sur « {row['title']} » : à partir de maintenant, chaque "
+                                "photo ou vidéo qui y arrive est téléchargée dans "
+                                f"{channel_folder(self.state, row['title'], key)}. "
+                                "Pour celles déjà là : « Tout télécharger ».")
+            self._start("check", only=[key])
         elif alert and not row["alert"]:
-            self.status.setText(f"Alerte sur « {row['title']} ». Le premier passage arme le "
-                                "compteur ; « Vérifier maintenant » pour le faire tout de suite.")
+            self.status.setText(f"Alerte sur « {row['title']} » : Prisme te prévient quand il y "
+                                "arrive des photos ou vidéos.")
+            self._start("check", only=[key])
 
     def _current_group(self) -> dict | None:
         row = self.groups.currentRow()
@@ -1412,12 +1615,22 @@ class TelegramDialog(QDialog):
         return row["title"] if row else key
 
     def mark_seen(self) -> None:
+        """Les groupes choisis (tous, si aucun) : vus jusqu'à leur dernier
+        message. Rien ne change dans Telegram."""
+        picked = {self.groups.item(r, 2).data(Qt.UserRole)
+                  for r in {i.row() for i in self.groups.selectedIndexes()}}
+        keys = picked or {r["key"] for r in self._group_rows()}
+        tops = {r["key"]: int(r.get("top") or 0) for r in self.state.get("joined") or []}
+
         def change(s: dict) -> None:
-            for k in list(s["unread"]):
-                s["unread"][k] = 0
+            for k in keys:
+                top = int(s["top"].get(k) or tops.get(k) or 0)
+                if top:
+                    s["seen_from"][k] = top
+                    s["unseen"][k] = 0
         self.state = update_state(change)
         self._fill_groups()
-        self.status.setText("Tout est marqué comme vu.")
+        self.status.setText(f"{len(keys)} groupe(s) marqué(s) comme vus.")
 
     def add_channel(self) -> None:
         name = username_of(self.add_url.text())
@@ -1443,15 +1656,15 @@ class TelegramDialog(QDialog):
         key = row["key"]
         self.state = update_state(lambda s: (
             s.__setitem__("channels", [c for c in s["channels"] if c["key"] != key]),
-            s["unread"].pop(key, None)))
+            s["unseen"].pop(key, None)))
         self._fill_groups()
 
     # == recherche ===============================================================
     def _set_mode(self, mode: str) -> None:
         self.mode = mode
         heads = {
-            "groupe": ["Score", "Nom", "Accès", "Type", "Abonnés", "Médias récents",
-                       "Activité", "Protégé", "Lien"],
+            "groupe": ["Aperçu", "Nom", "Accès", "Type", "Membres", "Médias",
+                       "Dernier message", "Lien"],
             "message": ["Date", "Groupe", "Message", "Média", "Abonnés", "Lien"],
             "web": ["Lien", "Type", "Accès"],
         }[mode]
@@ -1461,6 +1674,7 @@ class TelegramDialog(QDialog):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setSectionResizeMode({"groupe": 1, "message": 2, "web": 0}[mode], QHeaderView.Stretch)
+        self.table.verticalHeader().setDefaultSectionSize(60 if mode == "groupe" else 30)
         self.filters.setVisible(mode == "groupe")
         self.r_analyse.setVisible(mode == "web")
         self.r_export.setVisible(mode != "web")
@@ -1495,7 +1709,8 @@ class TelegramDialog(QDialog):
             row["mode"] = "web"
         self._show_search(rows)
         self.status.setText(f"{len(rows)} liens trouvés sur des sites. Ce sont des pistes : "
-                            "sélectionne-les puis « Analyser la sélection » pour les lire dans Telegram.")
+                            "sélectionne-les, puis « Analyser la sélection » pour voir leurs "
+                            "médias, ou « Rejoindre / demander ».")
 
     def analyse_selected(self) -> None:
         links = [r["url"] for r in self._selected_rows() if "t.me/" in r.get("url", "")
@@ -1560,22 +1775,34 @@ class TelegramDialog(QDialog):
                     continue
             rows.append(row)
         self.rows = rows
+        mine = {(r.get("username") or "").lower() for r in self.state.get("joined") or []
+                if r.get("username")}
         table = self.table
         table.setSortingEnabled(False)
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             subs = int(row.get("abonnes") or 0)
             if self.mode == "groupe":
+                medias = int(row.get("medias") or 0)
+                member = (row.get("username") or "").lower() in mine
+                access = ("déjà membre" if member else
+                          "🔒 sur demande" if row.get("demande") else "entrée libre")
+                if row.get("protege"):
+                    access += " · protégé"
+                preview = _cell("", medias)
+                strip = _strip(row.get("apercus") or [])
+                if strip is not None:
+                    preview.setIcon(strip)
                 cells = [
-                    _cell(row.get("score") or 0, int(row.get("score") or 0)),
-                    _cell(row.get("title") or ""),
-                    _cell(row.get("acces") or ""),
+                    preview,
+                    _cell(("🔒 " if row.get("demande") and not member else "") + (row.get("title") or "")),
+                    _cell(access, tip="Protégé : Telegram interdit d'en télécharger les médias."
+                          if row.get("protege") else ""),
                     _cell(row.get("kind") or ""),
                     _cell(f"{subs:,}".replace(",", " "), subs),
-                    _cell(row.get("medias") or 0, int(row.get("medias") or 0)),
-                    _cell(f"{row.get('vivant') or '?'} · {row.get('dernier') or ''}",
-                          -(row.get("jours") if row.get("jours") is not None else 9999)),
-                    _cell("oui" if row.get("protege") else ""),
+                    _cell(f"{medias:,}".replace(",", " "), medias),
+                    _cell(row.get("dernier") or "",
+                          -(row.get("jours") if row.get("jours") is not None else 99999)),
                     _cell(row.get("url") or ""),
                 ]
             elif self.mode == "message":
@@ -1594,6 +1821,8 @@ class TelegramDialog(QDialog):
             for col, cell in enumerate(cells):
                 table.setItem(i, col, cell)
         table.setSortingEnabled(True)
+        if self.mode == "groupe":
+            table.sortItems(4, Qt.DescendingOrder)     # les plus suivis d'abord
         what = {"groupe": "groupes", "message": "messages", "web": "liens"}[self.mode]
         hidden = len(self.found) - len(rows)
         self.status.setText(f"{len(rows)} {what} affichés" +
@@ -1615,6 +1844,23 @@ class TelegramDialog(QDialog):
             self.status.setText("Choisis une ligne dans le tableau.")
             return None
         return rows[0]
+
+    def join_selected(self) -> None:
+        rows = self._selected_rows()
+        targets = [r.get("url") or r.get("username") for r in rows
+                   if (r.get("url") or "").startswith("https://t.me/") or r.get("username")]
+        if not targets:
+            self.status.setText("Choisis un ou plusieurs groupes Telegram dans le tableau.")
+            return
+        self.status.setText(f"Demande d'entrée dans {len(targets)} groupe(s)…")
+        self._start("join", targets=targets)
+
+    def _joined_result(self, results: list) -> None:
+        done = [r for r in results if r[1] in ("rejoint", "demande envoyée", "déjà membre")]
+        text = " ; ".join(f"{u.replace('https://t.me/', '')} : {what}" for u, what in results[:6])
+        self.status.setText(text or "Rien n'a été fait.")
+        if any(r[1] == "rejoint" for r in done):
+            self.load_groups()      # ils arrivent dans « Mes groupes »
 
     def _result_open(self) -> None:
         row = self._selected_one()
@@ -1712,25 +1958,29 @@ class TelegramDialog(QDialog):
         os.startfile(str(folder))
 
     # == medias ==================================================================
-    def _export(self, key: str, title: str) -> None:
-        self.status.setText(f"Téléchargement de tous les médias de « {title} »… "
+    def _export(self, key: str, title: str, kind: str = "all") -> None:
+        what = {"video": "toutes les vidéos", "photo": "toutes les photos"}.get(
+            kind, "toutes les photos et vidéos")
+        self.status.setText(f"Téléchargement de {what} de « {title} »… "
                             f"(dossier : {channel_folder(self.state, title, key)})")
-        self._start("export", channel=key, title=title, skip_known=True)
+        self._start("export", channel=key, title=title, skip_known=False, kind=kind)
 
-    def open_bank(self, key: str, title: str = "", before_id: int = 0) -> None:
+    def open_bank(self, key: str, title: str = "", before_id: int = 0, kind: str = "all") -> None:
         if not key:
             self.status.setText("Ce groupe n'a pas de lien lisible.")
             return
         self._bank_key = key
         self._bank_title = title or key
+        self._bank_kind = kind
         self.status.setText(f"Lecture des médias de « {self._bank_title} »…")
-        self._start("bank", channel=key, title=self._bank_title, before_id=before_id)
+        self._start("bank", channel=key, title=self._bank_title, before_id=before_id, kind=kind)
 
     def _open_bank(self, items: list) -> None:
         window = getattr(self, "_bank_window", None)
         same = window is not None and window.isVisible() and window.key == self._bank_key
         if not items and not same:
-            self.status.setText("Aucun média lisible ici (privé, protégé, ou vide).")
+            self.status.setText(f"« {self._bank_title} » ne contient aucune photo ni vidéo "
+                                "(ou Telegram n'en montre pas à ton compte).")
             return
         if not same:
             window = MediaBank(self, self._bank_key, self._bank_title)
@@ -1785,10 +2035,21 @@ class MediaBank(QDialog):
         head = QLabel(title, self)
         head.setObjectName("tgHead")
         box.addWidget(head)
+        top = QHBoxLayout()
         lead = QLabel("Double-clic : télécharger et lire dans Prisme. La case, en haut à gauche "
                       "(au survol) : choisir pour « Télécharger les cochés ».", self)
         lead.setObjectName("tgLead")
-        box.addWidget(lead)
+        top.addWidget(lead, 1)
+        self.kind = "all"
+        self.kind_buttons = {}
+        for kind, text in (("all", "Tout"), ("video", "Vidéos"), ("photo", "Photos")):
+            button = QPushButton(text, self)
+            button.setCheckable(True)
+            button.setChecked(kind == "all")
+            button.clicked.connect(lambda _c=False, k=kind: self.set_kind(k))
+            top.addWidget(button)
+            self.kind_buttons[kind] = button
+        box.addLayout(top)
         self.grid = QListWidget(self)
         use_cards(self.grid, 236)
         self.grid.itemDoubleClicked.connect(self._open)
@@ -1799,6 +2060,12 @@ class MediaBank(QDialog):
         play.setObjectName("tgPrimary")
         play.clicked.connect(lambda: self._open(self.grid.currentItem()))
         row.addWidget(play)
+        everything = QPushButton("Tout télécharger", self)
+        everything.setToolTip("Toutes les photos et vidéos du groupe (ou seulement les vidéos, "
+                              "ou les photos, selon le choix en haut), pas seulement celles "
+                              "affichées. Ce qui est déjà dans le dossier est sauté.")
+        everything.clicked.connect(lambda: owner._export(self.key, self.title, self.kind))
+        row.addWidget(everything)
         bulk = QPushButton("Télécharger les cochés", self)
         bulk.clicked.connect(self._download_checked)
         row.addWidget(bulk)
@@ -1850,6 +2117,17 @@ class MediaBank(QDialog):
             self.grid.addItem(cell)
         self.setWindowTitle(f"Médias — {self.title} ({len(self.items)})")
 
+    def set_kind(self, kind: str) -> None:
+        """Tout, les vidéos seules, ou les photos seules : Telegram les trie."""
+        for k, button in self.kind_buttons.items():
+            button.setChecked(k == kind)
+        if kind == self.kind:
+            return
+        self.kind = kind
+        self.items = []
+        self.grid.clear()
+        self.owner.open_bank(self.key, self.title, 0, kind)
+
     def _near_end(self, value: int) -> None:
         bar = self.grid.verticalScrollBar()
         if value >= bar.maximum() - 40 and bar.maximum() > 0 and not self._asked_more:
@@ -1860,7 +2138,7 @@ class MediaBank(QDialog):
             return
         self._asked_more = True
         oldest = min(item["id"] for item in self.items)
-        self.owner.open_bank(self.key, self.title, before_id=oldest)
+        self.owner.open_bank(self.key, self.title, before_id=oldest, kind=self.kind)
 
     def _open(self, cell) -> None:
         if cell is None:
