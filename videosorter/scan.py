@@ -199,6 +199,23 @@ def short_side(info: dict) -> int:
     return min(width, height) if width and height else height
 
 
+def typical_duration(item) -> float:
+    """La duree habituelle d'une video du dossier : la mediane de celles
+    qu'on connait (0 si aucune). Un dossier de clips de 3 minutes reste un
+    dossier « 0–5 min », qu'il en compte dix ou mille."""
+    probes = _index().probes.get
+    durations = []
+    for video in item.videos:
+        found = probes(str(video))
+        info = found[1] if found is not None else None
+        if info and info.get("duration"):
+            durations.append(float(info["duration"]))
+    if not durations:
+        return 0.0
+    durations.sort()
+    return durations[len(durations) // 2]
+
+
 def known_media(item) -> tuple:
     """(durée totale connue, résolution de la plupart des vidéos) d'après le
     cache de sondage.

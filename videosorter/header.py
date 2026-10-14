@@ -230,22 +230,23 @@ MB = 1024 * 1024
 # Les filtres en un clic, par critere : (cle, texte, depuis, jusqu'a). Une
 # pastille garde ce qui tombe dans sa tranche ; plusieurs pastilles d'un meme
 # critere s'additionnent (« 1080p ou 4K »), deux criteres se cumulent
-# (« 4K » et « 20 min + »). Les tranches d'un dossier portent sur le dossier
-# entier (duree totale, poids total), d'ou des paliers plus larges.
+# (« 4K » et « 20 min + »). Un dossier se juge sur ses videos : la duree
+# habituelle d'une de ses videos (sa duree totale ne disait rien), la
+# resolution de la plupart ; seul son poids est celui du dossier entier.
+DURATIONS = (("d5", "0–5 min", 1, 300), ("d10", "5–10 min", 300, 600),
+             ("d20", "10–20 min", 600, 1200), ("d20p", "20 min +", 1200, None))
 RESOLUTIONS = (("r4k", "4K", 2000, None), ("r1440", "1440p", 1300, 2000),
                ("r1080", "1080p", 1000, 1300), ("r720", "720p", 700, 1000),
                ("rsd", "SD", 1, 700))
 QUICK = {
     "videos": {
-        "duration": (("d1", "< 1 min", 0, 60), ("d5", "1–5 min", 60, 300),
-                     ("d20", "5–20 min", 300, 1200), ("d20p", "20 min +", 1200, None)),
+        "duration": DURATIONS,
         "size": (("s100", "< 100 Mo", 0, 100 * MB), ("s1g", "100 Mo–1 Go", 100 * MB, 1024 * MB),
                  ("s1gp", "> 1 Go", 1024 * MB, None)),
         "resolution": RESOLUTIONS,
     },
     "folders": {
-        "duration": (("f10", "< 10 min", 0, 600), ("f60", "10 min–1 h", 600, 3600),
-                     ("f3h", "1–3 h", 3600, 10800), ("f3hp", "3 h +", 10800, None)),
+        "duration": DURATIONS,
         "size": (("g1", "< 1 Go", 0, 1024 * MB), ("g10", "1–10 Go", 1024 * MB, 10240 * MB),
                  ("g10p", "> 10 Go", 10240 * MB, None)),
         "resolution": RESOLUTIONS,
@@ -366,11 +367,14 @@ class QuickFilters(QWidget):
             title.setObjectName("counter")
             self.row.addWidget(title)
             chosen = picks.get(shown) or []
-            where = ("du dossier entier" if self.view == "folders" else "de la vidéo")
+            where = ("de la vidéo" if self.view != "folders" else
+                     "poids du dossier entier" if shown == "size" else
+                     "durée habituelle de ses vidéos" if shown == "duration" else
+                     "celle de la plupart de ses vidéos")
             for key, text, _low, _high in QUICK[self.view][shown]:
                 self.row.addWidget(self._chip(
                     text, key in chosen,
-                    f"Ne garder que ce qui tombe ici ({QUICK_NAMES[shown].lower()} {where}).\n"
+                    f"Ne garder que ce qui tombe ici ({where}).\n"
                     "Reclic : retirer. Ce qui n'est pas encore analysé n'apparaît pas.",
                     lambda _c=False, c=shown, k=key: self._flip(c, k)))
         for crit, keys in picks.items():

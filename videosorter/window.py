@@ -86,6 +86,7 @@ from .scan import (
     MODE_FILES, MODE_FLAT, MODE_FOLDERS, PARENT_PREFIX, Item, RefreshThread,
     RootUnreadable, cached_items, canon_root, fast_path, human_duration,
     human_resolution, human_size, known_media, list_entries, short_side,
+    typical_duration,
 )
 from .index import INDEX
 from .transfer import Transfer, TransferQueue
@@ -12643,12 +12644,10 @@ class MainWindow(QMainWindow):
                         return False
                     if by_size and not in_ranges(item.size, by_size):
                         return False
-                    if by_duration or by_res:
-                        total, height = known_media(item)
-                        if by_duration and not in_ranges(total, by_duration):
-                            return False
-                        if by_res and not in_ranges(height, by_res):
-                            return False
+                    if by_duration and not in_ranges(typical_duration(item), by_duration):
+                        return False
+                    if by_res and not in_ranges(known_media(item)[1], by_res):
+                        return False
                 return True
             if by_size and not in_ranges(item.size, by_size):
                 return False
