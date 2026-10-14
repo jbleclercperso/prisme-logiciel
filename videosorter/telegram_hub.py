@@ -178,66 +178,175 @@ def already_in_library(name: str, size: int, keys: set[tuple[str, int]]) -> bool
     return (name.lower(), int(size)) in keys
 
 
-def public_links(query: str) -> tuple[list[dict], str]:
-    """Liens t.me et discord.gg déjà publiés sur des sites (annuaires,
-    forums), trouvés par Bing et DuckDuckGo. Des pistes, pas encore lues
-    dans Telegram : « Analyser » les note. Renvoie aussi pourquoi c'est vide."""
-    import urllib.parse, urllib.request
+INVITE_RE = re.compile(r"(?:https?://)?(?:t|telegram)\.me/(?:\+|joinchat/)([A-Za-z0-9_-]{10,})")
+PUBLIC_RE = re.compile(r"(?:https?://)?(?:t|telegram)\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{4,31})\b")
+RESERVED = {"joinchat", "share", "addstickers", "addemoji", "telegram", "iv", "proxy", "socks",
+            "setlanguage", "addtheme", "login", "contact", "confirmphone", "addlist", "boost",
+            "giftcode", "invoice", "telegramtips", "durov"}
+SKIP_HOSTS = ("bing.", "microsoft.", "duckduckgo.", "t.me", "telegram.me", "telegram.org",
+              "google.", "youtube.", "facebook.", "instagram.", "twitter.", "x.com", "wikipedia.",
+              "msn.", "live.com", "apple.com", "play.google")
+# Les fiches d'un annuaire de groupes : c'est la que le lien t.me se trouve.
+DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?(?:listing|groupe-telegram|groupes?|group|canal|canaux|"
+                       r"channels?|chat|join|go)s?/[^/\"#?]{3,}", re.I)
+# Des annuaires de groupes, interroges directement par le mot-cle : ils
+# repondent meme quand les moteurs bloquent, et donnent des invitations
+# privees (telegram-board surtout). {q} : le mot, tel quel.
+DIRECTORIES = ("https://telegram-board.com/fr/tags/{q}", "https://telegram-board.com/tags/{q}",
+               "https://taligram.org/fr/groupes-telegram/{q}",
+               "https://taligram.org/fr/meilleurs-groupes-telegram/{q}")
+WEB_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                             "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+               "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"}
+
+
+def _fetch(url: str, timeout: int = 12) -> str:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=WEB_HEADERS),
+                                    timeout=timeout) as resp:
+            return resp.read(2_000_000).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 — un site muet n'arrete pas les autres
+        return ""
+
+
+def _harvest(html: str, found: dict, source: str) -> None:
+    """Les liens t.me d'une page : invitations privees et noms publics."""
+    import urllib.parse
+    html = urllib.parse.unquote(html.replace("&amp;", "&"))
+    for code in INVITE_RE.findall(html):
+        found.setdefault(("invite", code), source)
+    for name in PUBLIC_RE.findall(html):
+        low = name.lower()
+        if low in RESERVED or low.endswith("bot"):
+            continue
+        found.setdefault(("public", name), source)
+
+
+def _engine_results(html: str, engine: str) -> list[str]:
+    """Les adresses des resultats d'une page de moteur, en clair."""
+    import base64
+    import urllib.parse
+    out = []
+    if engine == "ddg":
+        for href in re.findall(r'href="([^"]+)"[^>]*class=.result-link', html):
+            target = urllib.parse.parse_qs(urllib.parse.urlparse(
+                href.replace("&amp;", "&")).query).get("uddg", [""])[0]
+            if target:
+                out.append(target)
+    else:
+        for href in re.findall(r'<h2[^>]*><a[^>]+href="(https?://[^"]+)"', html):
+            href = href.replace("&amp;", "&")
+            coded = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("u", [""])[0]
+            if coded.startswith("a1"):
+                try:
+                    raw = coded[2:] + "=" * (-len(coded[2:]) % 4)
+                    out.append(base64.urlsafe_b64decode(raw).decode("utf-8", "replace"))
+                except ValueError:
+                    pass
+            elif "bing.com" not in href:
+                out.append(href)
+    return out
+
+
+def public_links(query: str, say=lambda _t: None) -> tuple[list[dict], str]:
+    """Des liens de groupes Telegram sur un theme, cherches sur le web : les
+    moteurs (DuckDuckGo, Bing), puis les pages qu'ils donnent (annuaires,
+    forums) et les fiches de ces annuaires, ou le lien t.me se trouve. Les
+    invitations privees (t.me/+…) sont rares sur le web : Telegram en
+    trouve davantage (« Chercher des groupes »). Renvoie aussi pourquoi
+    c'est vide."""
+    import urllib.parse
+    from concurrent.futures import ThreadPoolExecutor
     query = query.strip()
     if not query:
         return [], "Tape d'abord un mot-clé."
+    import time as _time
+    found: dict = {}
+    notes: list[str] = []
+    say("Recherche sur le web…")
+    bing = [("bing", "https://www.bing.com/search?" + urllib.parse.urlencode({"q": q}))
+            for q in (f"{query} telegram", f"{query} groupe telegram lien", f'"t.me/+" {query}')]
+    with ThreadPoolExecutor(3) as pool:
+        pages = list(pool.map(lambda e: (e[0], _fetch(e[1])), bing))
+    # DuckDuckGo, une question apres l'autre : en rafale, il prend Prisme pour
+    # un robot et demande une verification -- qu'on ne contourne pas.
+    for q in (f"{query} telegram", f'{query} "t.me/+"', f"{query} groupe telegram"):
+        html = _fetch("https://lite.duckduckgo.com/lite/?" + urllib.parse.urlencode({"q": q}))
+        if "bots use DuckDuckGo" in html or "anomaly" in html.lower():
+            notes.append("DuckDuckGo demande une vérification anti-robot (trop de recherches "
+                         "rapprochées) : résultats partiels, réessaie dans quelques minutes")
+            break
+        pages.append(("ddg", html))
+        _time.sleep(1.2)
+    results: list[str] = []
+    for engine, html in pages:
+        _harvest(html, found, engine)
+        for url in _engine_results(html, engine):
+            _harvest(url, found, urllib.parse.urlparse(url).netloc or engine)
+            host = urllib.parse.urlparse(url).netloc.lower()
+            if host and not any(h in host for h in SKIP_HOSTS) and url not in results:
+                results.append(url)
+    results = results[:14]
+    slug = urllib.parse.quote(query.lower().replace(" ", "-"))
+    directories = [d.format(q=slug) for d in DIRECTORIES]
+    results = directories + [u for u in results if u not in directories]
+    say(f"Lecture de {len(results)} sites et annuaires…")
+    with ThreadPoolExecutor(8) as pool:
+        texts = list(pool.map(_fetch, results))
+    details: list[tuple[str, str]] = []
+    for url, html in zip(results, texts):
+        host = urllib.parse.urlparse(url).netloc
+        _harvest(html, found, host)
+        taken = 0
+        limit = 20 if url in directories else 8
+        for href in re.findall(r'href="([^"#]+)"', html):
+            full = urllib.parse.urljoin(url, href.replace("&amp;", "&"))
+            parsed = urllib.parse.urlparse(full)
+            if (parsed.netloc == host and DETAIL_RE.search(parsed.path) and full != url
+                    and all(full != d for d, _h in details)):
+                details.append((full, host))
+                taken += 1
+                if taken >= limit:
+                    break
+    if details:
+        say(f"Lecture de {len(details)} fiches d'annuaires…")
+        with ThreadPoolExecutor(8) as pool:
+            for (url, host), html in zip(details, pool.map(lambda d: _fetch(d[0]), details)):
+                _harvest(html, found, host)
     rows = []
-    seen = set()
-    notes = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                             "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
-
-    def harvest(html: str) -> None:
-        html = urllib.parse.unquote(html)
-        for kind, pattern in (
-            ("telegram", r"https?://t\.me/(?:s/)?([A-Za-z0-9_]{5,})"),
-            ("invite", r"https?://t\.me/\+([A-Za-z0-9_-]{8,})"),
-            ("discord", r"https?://discord\.gg/([A-Za-z0-9-]{4,})"),
-        ):
-            for name in re.findall(pattern, html):
-                if name.lower() in {"joinchat", "share", "addstickers", "telegram"} or name in seen:
-                    continue
-                seen.add(name)
-                if kind == "invite":
-                    rows.append({"title": "invitation privée", "username": name,
-                                 "url": f"https://t.me/+{name}", "kind": "privé",
-                                 "acces": "invitation", "demande": True})
-                elif kind == "telegram":
-                    rows.append({"title": name, "username": name, "url": f"https://t.me/{name}",
-                                 "kind": "public", "acces": "à analyser", "demande": False})
-                else:
-                    rows.append({"title": name, "username": name,
-                                 "url": f"https://discord.gg/{name}", "kind": "discord",
-                                 "acces": "invitation", "demande": True})
-
-    searches = [
-        ("Bing", "https://www.bing.com/search?" + urllib.parse.urlencode({"q": f"site:t.me {query}"})),
-        ("Bing invitations", "https://www.bing.com/search?" + urllib.parse.urlencode({"q": f"t.me/+ {query}"})),
-        ("DuckDuckGo", "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": f"t.me/+ {query}"})),
-    ]
-    for name, url in searches:
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                html = resp.read().decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001
-            notes.append(f"{name} injoignable")
-            continue
-        if "anomaly" in html.lower() or "captcha" in html.lower():
-            notes.append(f"{name} a bloqué la recherche")
-            continue
-        before = len(rows)
-        harvest(html)
-        if len(rows) == before:
-            notes.append(f"{name} : aucun lien")
+    for (kind, code), source in found.items():
+        if kind == "invite":
+            rows.append({"mode": "web", "title": "invitation privée", "username": "",
+                         "url": f"https://t.me/+{code}", "kind": "privé", "acces": "invitation",
+                         "demande": True, "source": source})
+        else:
+            rows.append({"mode": "web", "title": code, "username": code,
+                         "url": f"https://t.me/{code}", "kind": "public", "acces": "à analyser",
+                         "demande": False, "source": source})
+    rows.sort(key=lambda r: r["kind"] != "privé")
     if not rows:
-        return [], "Aucun lien. " + " ; ".join(notes) + ". Colle des liens depuis tgstat.com."
-    return rows, ""
+        return [], ("Aucun lien trouvé sur le web pour ce mot. " + (notes[0] + ". " if notes else "")
+                    + "Essaie « Chercher des groupes » : Telegram en trouve davantage.")
+    return rows, (notes[0] + "." if notes else "")
+
+
+class WebLinks(QThread):
+    """La recherche de liens sur le web, hors du fil de l'interface (elle
+    lit une vingtaine de pages : plusieurs secondes)."""
+    done = Signal(list, str)
+    status = Signal(str)
+
+    def __init__(self, query: str):
+        super().__init__()
+        self.query = query
+
+    def run(self) -> None:
+        try:
+            rows, why = public_links(self.query, self.status.emit)
+        except Exception as exc:  # noqa: BLE001
+            rows, why = [], f"Recherche sur le web impossible : {exc}"
+        self.done.emit(rows, why)
 
 
 def username_of(text: str) -> str:
@@ -361,6 +470,7 @@ class TelegramWorker(QThread):
         self.message_ids: list[int] = []
         self.only: list[str] = []
         self.targets: list[str] = []
+        self.invites: dict[str, None] = {}
         self.kind = "all"           # banque, export : "all", "video", "photo"
         self.skip_known = True
         self.known: set[tuple[str, int]] = set()
@@ -595,6 +705,14 @@ class TelegramWorker(QThread):
                 for chat in page.chats:
                     if isinstance(chat, Channel) and getattr(chat, "username", None):
                         seen[str(chat.id)] = chat
+                # Les chaines publiques annoncent des groupes prives : leurs
+                # liens d'invitation, dans le texte ou sous un mot.
+                for msg in page.messages:
+                    text = getattr(msg, "message", "") or ""
+                    for entity in getattr(msg, "entities", None) or []:
+                        text += " " + (getattr(entity, "url", "") or "")
+                    for code in INVITE_RE.findall(text):
+                        self.invites.setdefault(code, None)
                 if not page.messages:
                     break
                 last = page.messages[-1]
@@ -608,9 +726,14 @@ class TelegramWorker(QThread):
         from telethon.errors import FloodWaitError
         from telethon.tl.types import Channel
         seen: dict[str, object] = {}
+        self.invites = {}
         if self.query.strip():
             await self._collect(client, seen)
         for raw in self.pasted:
+            code = INVITE_RE.search(raw)
+            if code:
+                self.invites.setdefault(code.group(1), None)
+                continue
             name = username_of(raw)
             if not name:
                 continue
@@ -638,7 +761,51 @@ class TelegramWorker(QThread):
             row["acces"] = "à demander" if row["demande"] else "entrée libre"
             rows.append(row)
             self.status.emit(f"{len(rows)} groupes lus…")
+        rows += await self._read_invites(client, FloodWaitError)
         rows.sort(key=lambda r: r.get("abonnes") or 0, reverse=True)
+        return rows
+
+    async def _read_invites(self, client, flood) -> list:
+        """Chaque lien d'invitation lu sans y entrer : Telegram donne le nom,
+        le nombre de membres, et s'il faut une approbation."""
+        from telethon.tl.functions.messages import CheckChatInviteRequest
+        from telethon.tl.types import ChatInvite
+        rows = []
+        codes = list(self.invites)[:40]
+        for at, code in enumerate(codes, 1):
+            self.status.emit(f"Lecture des invitations privées : {at}/{len(codes)}")
+            url = f"https://t.me/+{code}"
+            try:
+                info = await client(CheckChatInviteRequest(code))
+            except flood as exc:
+                self.status.emit(f"Telegram demande d'attendre {exc.seconds} s : "
+                                 "invitations suivantes laissées de côté.")
+                break
+            except Exception:  # noqa: BLE001 — lien expire ou invalide
+                continue
+            if isinstance(info, ChatInvite):
+                rows.append({
+                    "mode": "groupe", "title": info.title, "username": "", "url": url,
+                    "kind": "chaîne" if info.broadcast else "groupe",
+                    "abonnes": int(info.participants_count or 0), "protege": False,
+                    "restreint": False, "demande": bool(info.request_needed), "prive": True,
+                    "medias": None, "jours": None, "dernier": "", "apercus": [],
+                    "acces": "à demander" if info.request_needed else "invitation",
+                })
+            else:
+                # Deja membre (ou apercu ouvert) : on peut lire le groupe.
+                chat = getattr(info, "chat", None)
+                if chat is not None:
+                    row = await self._inspect(client, chat, flood)
+                    row.update(mode="groupe", url=url, prive=not row.get("username"),
+                               acces="déjà membre")
+                    if not row.get("username"):
+                        try:
+                            row["medias"] = await self._count(client, chat)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    rows.append(row)
+            await asyncio.sleep(0.6)
         return rows
 
     # -- compter les medias -----------------------------------------------------
@@ -1183,8 +1350,9 @@ class TelegramDialog(QDialog):
         groups = QPushButton("Chercher des groupes", page)
         groups.setObjectName("tgPrimary")
         groups.setToolTip("Les groupes et chaînes dont le nom ou les messages contiennent "
-                          "le mot : ouverts, ou 🔒 sur demande. Avec le nombre de photos et "
-                          "vidéos et l'aperçu des trois dernières.")
+                          "le mot : ouverts, ou 🔒 sur demande ; plus les groupes privés dont "
+                          "les messages trouvés donnent l'invitation (t.me/+…). Avec le nombre "
+                          "de photos et vidéos et l'aperçu des trois dernières.")
         groups.clicked.connect(self.search_groups)
         row.addWidget(groups)
         messages = QPushButton("Dans les messages", page)
@@ -1193,9 +1361,9 @@ class TelegramDialog(QDialog):
         messages.clicked.connect(self.search_messages)
         row.addWidget(messages)
         web = QPushButton("Liens sur le web", page)
-        web.setToolTip("Cherche sur Bing et DuckDuckGo des liens t.me déjà publiés sur "
-                       "des sites (annuaires, forums).\nCe sont des pistes non vérifiées : "
-                       "sélectionne-les puis « Analyser » pour les lire dans Telegram.")
+        web.setToolTip("Cherche sur le web (DuckDuckGo, Bing, annuaires, forums) des liens "
+                       "de groupes sur ce thème, invitations privées t.me/+… comprises,\npuis "
+                       "les lit dans Telegram : nom, membres, approbation. Sans y entrer.")
         web.clicked.connect(self.search_web)
         row.addWidget(web)
         lay.addLayout(row)
@@ -1666,7 +1834,7 @@ class TelegramDialog(QDialog):
             "groupe": ["Aperçu", "Nom", "Accès", "Type", "Membres", "Médias",
                        "Dernier message", "Lien"],
             "message": ["Date", "Groupe", "Message", "Média", "Abonnés", "Lien"],
-            "web": ["Lien", "Type", "Accès"],
+            "web": ["Lien", "Type", "Accès", "Trouvé sur"],
         }[mode]
         self.table.clear()
         self.table.setColumnCount(len(heads))
@@ -1700,24 +1868,38 @@ class TelegramDialog(QDialog):
         self._start("content", query=self.query.text())
 
     def search_web(self) -> None:
-        self.status.setText("Recherche de liens publiés sur le web…")
-        rows, why = public_links(self.query.text())
+        if not self.query.text().strip():
+            self.status.setText("Tape d'abord un mot-clé.")
+            return
+        if getattr(self, "_web", None) is not None and self._web.isRunning():
+            self.status.setText("La recherche sur le web est déjà en cours.")
+            return
+        self._web = WebLinks(self.query.text())
+        self._web.status.connect(self.status.setText)
+        self._web.done.connect(self._web_done)
+        self._web.start()
+
+    def _web_done(self, rows: list, why: str) -> None:
         if not rows:
             self.status.setText(why)
             return
-        for row in rows:
-            row["mode"] = "web"
         self._show_search(rows)
-        self.status.setText(f"{len(rows)} liens trouvés sur des sites. Ce sont des pistes : "
-                            "sélectionne-les, puis « Analyser la sélection » pour voir leurs "
-                            "médias, ou « Rejoindre / demander ».")
+        private = sum(1 for r in rows if r["kind"] == "privé")
+        text = (f"{len(rows)} liens trouvés sur le web, dont {private} invitation(s) privée(s). "
+                + (why + " " if why else ""))
+        if SESSION_PATH.with_suffix(".session").exists():
+            # Lus dans Telegram tout de suite : nom, membres, approbation.
+            links = [r["url"] for r in rows if r["kind"] == "privé"][:40] + \
+                    [r["url"] for r in rows if r["kind"] != "privé"][:30]
+            self.status.setText(text + "Lecture dans Telegram…")
+            self._start("search", query="", pasted=links)
+        else:
+            self.status.setText(text + "Connecte ton compte (onglet Compte) pour les lire.")
 
     def analyse_selected(self) -> None:
-        links = [r["url"] for r in self._selected_rows() if "t.me/" in r.get("url", "")
-                 and "/+" not in r.get("url", "")]
+        links = [r["url"] for r in self._selected_rows() if "t.me/" in r.get("url", "")]
         if not links:
-            self.status.setText("Sélectionne des liens t.me publics (les invitations privées "
-                                "ne se lisent pas sans y entrer).")
+            self.status.setText("Sélectionne des liens t.me dans le tableau.")
             return
         self.status.setText(f"Analyse de {len(links)} lien(s)…")
         self._start("search", query="", pasted=links)
@@ -1771,7 +1953,7 @@ class TelegramDialog(QDialog):
                     continue
                 if (row.get("abonnes") or 0) < self.min_subs.value():
                     continue
-                if (row.get("medias") or 0) < self.min_medias.value():
+                if row.get("medias") is not None and row["medias"] < self.min_medias.value():
                     continue
             rows.append(row)
         self.rows = rows
@@ -1784,8 +1966,10 @@ class TelegramDialog(QDialog):
             subs = int(row.get("abonnes") or 0)
             if self.mode == "groupe":
                 medias = int(row.get("medias") or 0)
-                member = (row.get("username") or "").lower() in mine
+                member = (row.get("username") or "").lower() in mine or row.get("acces") == "déjà membre"
                 access = ("déjà membre" if member else
+                          "🔒 privé, sur demande" if row.get("prive") and row.get("demande") else
+                          "🔒 privé, par invitation" if row.get("prive") else
                           "🔒 sur demande" if row.get("demande") else "entrée libre")
                 if row.get("protege"):
                     access += " · protégé"
@@ -1795,12 +1979,15 @@ class TelegramDialog(QDialog):
                     preview.setIcon(strip)
                 cells = [
                     preview,
-                    _cell(("🔒 " if row.get("demande") and not member else "") + (row.get("title") or "")),
+                    _cell(("🔒 " if (row.get("demande") or row.get("prive")) and not member else "")
+                          + (row.get("title") or "")),
                     _cell(access, tip="Protégé : Telegram interdit d'en télécharger les médias."
                           if row.get("protege") else ""),
                     _cell(row.get("kind") or ""),
                     _cell(f"{subs:,}".replace(",", " "), subs),
-                    _cell(f"{medias:,}".replace(",", " "), medias),
+                    _cell("?" if row.get("medias") is None else f"{medias:,}".replace(",", " "),
+                          medias, tip="Visible une fois entré dans le groupe"
+                          if row.get("medias") is None else ""),
                     _cell(row.get("dernier") or "",
                           -(row.get("jours") if row.get("jours") is not None else 99999)),
                     _cell(row.get("url") or ""),
@@ -1816,7 +2003,7 @@ class TelegramDialog(QDialog):
                 ]
             else:
                 cells = [_cell(row.get("url") or ""), _cell(row.get("kind") or ""),
-                         _cell(row.get("acces") or "")]
+                         _cell(row.get("acces") or ""), _cell(row.get("source") or "")]
             cells[0].setData(Qt.UserRole, i)
             for col, cell in enumerate(cells):
                 table.setItem(i, col, cell)
