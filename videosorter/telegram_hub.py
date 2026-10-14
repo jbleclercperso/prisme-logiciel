@@ -453,11 +453,16 @@ def human_when(stamp: float) -> str:
 
 
 # -- trois files, un client chacune ---------------------------------------------
-# « ui » : ce que l'on vient de cliquer (médias, lecture, recherche, connexion),
-# sur la session du disque. « fond » : recomptage des groupes et vérifications.
-# « dl » : les gros téléchargements. Un clic n'attend plus derrière un
-# recomptage de cent groupes ni derrière « Tout télécharger ».
-JOB_LANE = {"dialogs": "fond", "check": "fond", "export": "dl", "download_many": "dl"}
+# « ui » : les clics courts (médias, lecture, rejoindre, connexion), sur la
+# session du disque. « recherche » : une recherche, qui peut durer.
+# « fond » : recomptage des groupes et vérifications. « dl » : les gros
+# téléchargements. Un clic n'attend plus derrière un recomptage de cent
+# groupes, une recherche ou « Tout télécharger ».
+JOB_LANE = {"dialogs": "fond", "check": "fond", "export": "dl", "download_many": "dl",
+            "search": "recherche", "content": "recherche", "download": "lecture"}
+LANE_NAMES = {"ui": "l'action précédente", "recherche": "la recherche précédente",
+              "fond": "la vérification", "dl": "le téléchargement",
+              "lecture": "le média précédent"}
 
 
 class _Queue(QObject):
@@ -718,6 +723,8 @@ class TelegramWorker(QThread):
         seen = set()
         offset_rate, offset_peer, offset_id = 0, InputPeerEmpty(), 0
         for _page in range(6):
+            if self.stop:
+                break
             try:
                 page = await client(SearchGlobalRequest(
                     q=query, filter=InputMessagesFilterEmpty(),
@@ -770,6 +777,8 @@ class TelegramWorker(QThread):
         query = self.query.strip()
         words = [query] + [w for w in query.split() if len(w) > 2 and w != query]
         for word in words[:4]:
+            if self.stop:
+                return
             self.status.emit(f"Recherche : {word}")
             try:
                 found = await client(SearchRequest(q=word, limit=100))
@@ -780,6 +789,8 @@ class TelegramWorker(QThread):
                 await asyncio.sleep(min(exc.seconds, 25))
             offset_rate, offset_peer, offset_id = 0, InputPeerEmpty(), 0
             for _page in range(4):
+                if self.stop:
+                    return
                 try:
                     page = await client(SearchGlobalRequest(
                         q=word, filter=InputMessagesFilterEmpty(),
@@ -835,6 +846,8 @@ class TelegramWorker(QThread):
                 seen[name] = {"title": name, "username": name, "error": str(exc)}
         rows = []
         for chat in seen.values():
+            if self.stop:
+                return rows
             if isinstance(chat, dict):
                 rows.append({
                     "mode": "groupe", "title": chat["title"], "username": chat["username"],
@@ -863,6 +876,8 @@ class TelegramWorker(QThread):
         rows = []
         codes = list(self.invites)[:40]
         for at, code in enumerate(codes, 1):
+            if self.stop:
+                break
             self.status.emit(f"Lecture des invitations privées : {at}/{len(codes)}")
             url = f"https://t.me/+{code}"
             try:
@@ -1780,6 +1795,9 @@ class TelegramDialog(QDialog):
         return worker
 
     def _on_status(self, text: str) -> None:
+        worker = self.sender()
+        if isinstance(worker, TelegramWorker) and worker.stop:
+            return          # une recherche remplacée ne parle plus
         self.status.setText(text)
         window = self._bank_window
         if window is not None and window.isVisible():
@@ -1801,6 +1819,7 @@ class TelegramDialog(QDialog):
             window.note.setText(text)
 
     def _start(self, job: str, **settings) -> TelegramWorker:
+        before = self.status.text()
         worker = self._worker(job)
         for name, value in settings.items():
             setattr(worker, name, value)
@@ -1823,10 +1842,25 @@ class TelegramDialog(QDialog):
             if lane.busy():
                 self._on_progress({"title": worker.title, "kind": worker.kind, "state": "wait"},
                                   worker)
-        elif lane.busy():
-            self.status.setText("Un instant : le travail précédent se termine, celui-ci suit.")
+        elif worker.lane == "recherche" and lane.busy():
+            # Une nouvelle recherche remplace l'ancienne : pas de file.
+            for old in lane.waiting:
+                old.stop = True
+            lane.waiting.clear()
+            if lane.current is not None:
+                lane.current.stop = True
+        if worker.lane in ("ui", "recherche", "lecture") and lane.busy():
+            worker.start_text = before
+            worker.started.connect(self._job_started)
+            self.status.setText(f"⏳ {before.rstrip('…. ')} — en attente : "
+                                f"{LANE_NAMES[worker.lane]} se termine, ça suit tout seul.")
         lane.launch(worker)
         return worker
+
+    def _job_started(self) -> None:
+        worker = self.sender()
+        if isinstance(worker, TelegramWorker) and getattr(worker, "start_text", ""):
+            self.status.setText(worker.start_text)
 
     def _ask_code(self) -> None:
         from PySide6.QtWidgets import QInputDialog
@@ -2271,6 +2305,9 @@ class TelegramDialog(QDialog):
             self._show_search(rows)
 
     def _show_search(self, rows: list) -> None:
+        worker = self.sender()
+        if isinstance(worker, TelegramWorker) and worker.stop:
+            return          # remplacée par une recherche plus récente
         mode = (rows[0].get("mode") if rows else None) or self.mode
         self._set_mode(mode)
         self.found = rows
