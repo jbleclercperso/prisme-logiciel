@@ -278,6 +278,10 @@ DEFAULTS = {
     "thumb_width": 480,
     # Les couvertures des dossiers changent toutes les ~N secondes (0 : jamais).
     "cover_period_s": 40,
+    # Un nouveau dossier au nom d'un dossier deja connu : son contenu rejoint
+    # le premier (merge.py). `folder_refs` : la reference retenue par nom.
+    "merge_same_name": True,
+    "folder_refs": {},
     "delete_mode": "recycle",    # recycle | permanent | local_trash
     "ffmpeg": "",                # vide => recherche automatique
     "ffprobe": "",

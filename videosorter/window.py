@@ -2635,6 +2635,7 @@ class MainWindow(QMainWindow):
         self.scanning = True
         self._scan_started = time.monotonic()
         self._scan_done, self._scan_total, self._scan_name = 0, 0, ""
+        self._new_folders: list = []        # dossiers apparus pendant ce passage
         self._refresh_scan_button()
         old = self.scan_thread
         if old is not None and shiboken6.isValid(old) and not old.isRunning():
@@ -4514,6 +4515,10 @@ class MainWindow(QMainWindow):
         mark(f"on_patch +{len(added)} ~{len(replaced)} -{len(removed)}")
         if not (added or replaced or removed):
             return
+        if added and self._scan_top and self.mode == MODE_FOLDERS:
+            # Candidats a la fusion avec un dossier deja connu du meme nom.
+            self._new_folders = getattr(self, "_new_folders", []) + [
+                item.path for item in added if item.kind == MODE_FOLDERS]
         if self._transient and not self._scan_top:
             # Une liste de passage (doublons) : la relecture d'un sous-dossier
             # n'a rien a y ajouter.
@@ -4586,6 +4591,65 @@ class MainWindow(QMainWindow):
                                len(self.board.items))
         else:
             self._show_counts()
+
+    def _merge_new_folders(self, thread) -> None:
+        """Un nouveau dossier au nom d'un dossier deja connu : son contenu
+        est coupe-colle dans le premier (merge.py), hors du fil de
+        l'interface, puis on le dit et l'on relit."""
+        fresh, self._new_folders = getattr(self, "_new_folders", []), []
+        if not (fresh and self.cfg["merge_same_name"]):
+            return
+        if not (thread is not None and shiboken6.isValid(thread)
+                and getattr(thread, "reused", 0)):
+            return      # premier inventaire d'une racine : tout y est nouveau
+        from . import merge
+        from .tunnel import Chore
+        known = [item.path for item in self._plain_items if item.kind == MODE_FOLDERS]
+        refs = dict(self.cfg["folder_refs"] or {})
+        pairs = merge.find_merges(fresh, known, refs)
+        if not pairs:
+            return
+        for _src, ref in pairs:
+            refs[merge.key_of(ref.name)] = str(ref)
+        self.cfg["folder_refs"] = refs
+        self.cfg.save_soon()
+
+        def work():
+            done = []
+            for src, ref in pairs:
+                try:
+                    done.append((src, ref, merge.merge_into(src, ref)))
+                except OSError as exc:
+                    done.append((src, ref, {"moved": 0, "kept": 0, "renamed": 0,
+                                            "error": str(exc)}))
+            return done
+        Chore(work, self, fallback=[], then=self._merged_folders).start()
+
+    def _merged_folders(self, done: list) -> None:
+        moved = sum(r.get("moved", 0) for _s, _r, r in done)
+        kept = sum(r.get("kept", 0) for _s, _r, r in done)
+        failed = [(s, r) for s, _ref, r in done if r.get("error")]
+        if not (moved or kept or failed):
+            return
+        if len(done) == 1:
+            src, ref, _r = done[0]
+            text = (f"📁 « {ref.name} » existait déjà : {moved} fichier(s) du nouveau "
+                    f"dossier ({src.parent.name}) rangé(s) dans {ref.parent.name} › {ref.name}")
+        else:
+            names = ", ".join(ref.name for _s, ref, _r in done[:3])
+            if len(done) > 3:
+                names += f" et {len(done) - 3} autre(s)"
+            text = (f"📁 {len(done)} dossiers revenus sous un nom connu : {moved} fichier(s) "
+                    f"rangé(s) dans les dossiers d'origine ({names})")
+        if kept:
+            text += f" — {kept} déjà présent(s), laissé(s) à part"
+        if failed:
+            text += f" — {len(failed)} fusion(s) impossible(s) : {failed[0][1]['error'][:60]}"
+        first = done[0][1]
+        self.show_banner(text + ". Clic : ouvrir le dossier.", "error" if failed else "done",
+                         action=lambda: os.startfile(str(first)), seconds=20, keep=True)
+        if moved and not self.scanning:
+            self._launch_scan()         # la collection suit les fichiers deplaces
 
     def _drop_items(self, removed: list) -> None:
         """Retire les éléments que le disque ne porte plus."""
@@ -4932,6 +4996,8 @@ class MainWindow(QMainWindow):
                 # total est la premiere reponse a « combien de videos ? ».
                 counted = sum(i.video_count for i in self._plain_items)
                 self._note_state(videos=counted, scanned_at=self._stamp())
+            # Un dossier revenu sous un nom deja connu rejoint le premier.
+            self._merge_new_folders(thread)
             # Les videos seules dans leur dossier : proposees au regroupement.
             QTimer.singleShot(1500, self._propose_solos)
             if thread is not None and shiboken6.isValid(thread) and getattr(
