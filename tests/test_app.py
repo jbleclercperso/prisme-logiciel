@@ -839,7 +839,7 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
           "le favori d'un élément se voit sur sa carte")
     check(not hasattr(window, "on_board_rate") and not hasattr(window, "discard_at"),
           "plus de note ni de ✕ branchés sur la planche : ces gestes n'existent plus")
-    window.ratings.set(window.items[0].path, 0)
+    window.ratings.set(real_path, 0)
     # La carte ne porte plus d'etoiles : elles doublaient la hauteur du texte
     # sous chaque vignette. La note se relit sur la fiche.
     check(not hasattr(window.board.cards[0], "stars"),
@@ -5550,7 +5550,7 @@ def check_fluidity(app, window, base, root) -> None:
         # Un groupe tel que les recherches le rendent (DupeGroup), plus
         # l'ancien couple (taille, chemins) que la revue ne sait plus lire.
         from videosorter.dupes import DupeGroup
-        window.on_dupes_found([DupeGroup(pair, [1000, 1000])])
+        window.on_dupes_found([DupeGroup(pair)])     # tailles lues sur le disque
         check(window.all_items is listed and window._pending_dupes is not None,
               "le résultat des doublons n'arrache plus à ce qu'on regarde")
         check(window.dupes_result_action.isVisible()
@@ -5593,6 +5593,10 @@ def check_fluidity(app, window, base, root) -> None:
         window.cfg["share_port"] = 0
         window.cfg["share_salt"], window.cfg["share_digest"] = \
             _web.hash_password("un mot de passe convenable")
+        # Le partage s'ouvre de lui-meme a la fin de chaque analyse : on part
+        # d'un partage ferme pour mesurer l'ouverture.
+        window.stop_share()
+        wait_for(app, lambda: window.share_server is None and not window._share_opening, 10)
         depart = time.perf_counter()
         opened = window.start_share()
         lance = time.perf_counter() - depart
@@ -5725,7 +5729,8 @@ def check_navigation(app, window, base) -> None:
     pump(app, 0.3)
     window.set_tab(TAB_FOLDERS)
     pump(app, 0.3)
-    names = [item.sort_name for item in window.items]
+    # Les dossiers : un mot-cle epingle passe en tete, hors classement.
+    names = [item.sort_name for item in window.items if not item.is_tag]
     check(window.sort_mode == "" and names == sorted(names),
           "et son classement : « Vidéos » ne l'impose plus à tout le reste")
 
@@ -5859,7 +5864,9 @@ def check_navigation(app, window, base) -> None:
         check(not window.scanning, "Ctrl+R à la racine demande d'abord")
         _QMB.question = staticmethod(lambda *a, **k: _QMB.Yes)
         window.refresh_root()
-        check(window.scanning and len(window.board.items) == 4,
+        # Les quatre dossiers (un mot-cle epingle peut s'y ajouter en tete).
+        check(window.scanning
+              and len([i for i in window.board.items if not i.is_tag]) == 4,
               "puis relit tout, vignettes gardées à l'écran")
         wait_for(app, lambda: not window.scanning, 30)
     finally:
@@ -6111,9 +6118,10 @@ def check_quiet_and_header(app, window, base, root) -> None:
           "la rafale en marche se voit (elle n'a plus d'entrée dans le menu)")
     window.toggle_burst()
     window.tunnel_address = "https://essai.exemple.net"
-    check(not window.share_badge.isHidden()
-          and "essai.exemple.net" in window.share_badge.toolTip(),
-          "une adresse publique ouverte a son témoin permanent")
+    # Le temoin de l'adresse publique a ete retire : l'oeil des spectateurs
+    # dit ce qui compte, et le partage vit sur le NAS (`_show_share_badge`).
+    check(window.share_badge.isHidden(),
+          "une adresse publique ouverte n'a plus de témoin à part : l'œil suffit")
     window.tunnel_address = ""
     check(window.share_badge.isHidden(), "qui s'efface avec elle")
     window._progress_text("41 230 / 106 903 · 2 h 10 min")
@@ -6147,7 +6155,8 @@ def check_quiet_and_header(app, window, base, root) -> None:
     window.start_root(root, MODE_FOLDERS, new_origin=True)
     wait_for(app, lambda: not window.scanning, 30)
     recents = list(window.cfg["recent_roots"])
-    inner = next((i for i in window.items if i.kind == MODE_FOLDERS), None)
+    # Un vrai dossier : un mot-cle epingle en tete n'a pas de chemin.
+    inner = next((i for i in window.items if i.kind == MODE_FOLDERS and not i.is_tag), None)
     if inner is not None:
         window.start_root(inner.path, MODE_FOLDERS, reset_levels=False)
         wait_for(app, lambda: not window.scanning, 30)
@@ -7234,6 +7243,13 @@ def main() -> int:
     ])
     from PySide6.QtWidgets import QMessageBox as _QMB
     _QMB.question = staticmethod(lambda *a, **k: _QMB.Yes)
+    # Un avertissement inattendu attendait un clic jusqu'a la limite des
+    # quinze minutes : il s'ecrit, et le test continue.
+
+    def _warned(*args, **_kw):
+        print(f"  [avertissement] {args[2] if len(args) > 2 else ''}")
+        return _QMB.Ok
+    _QMB.warning = staticmethod(_warned)
     # Un tri retenu d'une seance a l'autre s'affichait sans s'appliquer.
     cfg["sort_mode"] = "duration_desc"
     window = MainWindow(cfg)
