@@ -7085,9 +7085,18 @@ class MainWindow(QMainWindow):
         du partage du PC, et ceux du NAS (le fichier qu'il tient a jour)."""
         if self._viewers_busy or self._closing:
             return
+        server = self.share_server
+        if server is None and not self.viewers:
+            # Ni partage du PC ni visiteur : le fichier du NAS se relit toutes
+            # les 30 s au lieu de 5 -- six lectures du partage sur sept en
+            # moins, quand personne ne regarde.
+            self._viewers_quiet = getattr(self, "_viewers_quiet", 0) + 1
+            if self._viewers_quiet % 6:
+                return
+        else:
+            self._viewers_quiet = 0
         from .nas_publish import FOLDER, share_root
         from .tunnel import Chore
-        server = self.share_server
         root = share_root(self.top_root() or "") if self.root is not None else None
 
         def work():

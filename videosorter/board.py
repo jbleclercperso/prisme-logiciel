@@ -1277,7 +1277,13 @@ class BoardView(QWidget):
         return -1
 
     def _poll_hover(self) -> None:
-        if not self.isVisible() or not self.window().isActiveWindow():
+        active = self.isVisible() and self.window().isActiveWindow()
+        # Prisme en arriere-plan : un sondage par quart de seconde suffit
+        # (trente-trois par seconde le tenaient eveille pour rien).
+        wanted = HOVER_POLL_MS if active else 250
+        if self.hover_timer.interval() != wanted:
+            self.hover_timer.setInterval(wanted)
+        if not active:
             # Prisme n'a plus la main (la recherche web par-dessus, une autre
             # application) : la coche et l'etoile flottantes s'en vont. Ce sont
             # de petites fenetres posees au-dessus de tout : laissees la, elles
