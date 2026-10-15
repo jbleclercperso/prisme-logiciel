@@ -6250,6 +6250,11 @@ def check_chosen_features(app, window, base, tri) -> None:
     window.toggle_advance_after_star()
 
     print("\n[100] Renommer sur place (F2)")
+    # Le champ renonce quand il perd le clavier (un clic ailleurs) : la
+    # fenetre doit etre celle qui l'a, pas une fenetre laissee par un test.
+    window.activateWindow()
+    window.raise_()
+    pump(app, 0.2)
     item = window.current
     old = Path(item.path)
     QTest.keyClick(window, Qt.Key_F2)
@@ -7070,7 +7075,12 @@ def check_reported_fixes(app, window, base, tri) -> None:
     pump(app, 0.3)
     album = window.current
     inside = shelf / "Album" / "Album_0.mp4"
+    # Remettre la meme note l'efface : une etape precedente a pu laisser ce
+    # meme chemin en favori. On part de zero.
+    window.ratings.set(inside, 0)
     window.ratings.set(inside, 1)
+    window.activateWindow()
+    pump(app, 0.1)
     QTest.keyClick(window, Qt.Key_F2)
     if window._rename_field is not None:
         window._rename_field.setText("Album bis")
