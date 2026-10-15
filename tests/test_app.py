@@ -413,9 +413,12 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
 
     window.apply_filter("", "melange")
     pump(app, 0.3)
-    kept = [i.name for i in window.items]
+    # Les dossiers seuls : un mot-cle epingle en tete (« Noms sans aucun mot »)
+    # n'est pas un dossier de la racine.
+    kept = [i.name for i in window.items if not i.is_tag]
     check("Melange" not in kept, f"« exclure » retire la correspondance ({kept})")
-    check(len(kept) == total - 1, "et ne retire rien d'autre")
+    check(len(kept) == len([i for i in window.all_items if not i.is_tag]) - 1,
+          "et ne retire rien d'autre")
 
     # Un prefixe quelconque que l'on veut ecarter. « + » ne sert plus d'exemple :
     # il est devenu structurel, ces dossiers etant traverses et non listes.
@@ -435,9 +438,10 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     # « Tout », c'est tout ce qui se trie : un dossier sans la moindre vidéo
     # n'en fait pas partie, il n'y a rien à y décider.
     sortable = [i for i in window.all_items
-                if i.is_tag or i.kind != MODE_FOLDERS or i.video_count]
-    check(len(window.items) == len(sortable),
-          f"effacer le filtre rend tout ({len(window.items)} sur {len(sortable)})")
+                if not i.is_tag and (i.kind != MODE_FOLDERS or i.video_count)]
+    shown = [i for i in window.items if not i.is_tag]
+    check(len(shown) == len(sortable),
+          f"effacer le filtre rend tout ({len(shown)} sur {len(sortable)})")
     check(all(i.video_count or i.is_tag or i.kind != MODE_FOLDERS
               for i in window.items),
           "et aucun dossier vide ne s'y trouve")
@@ -751,12 +755,14 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
         dialog.tree.clear()
 
     print("\n[27] Sélection multiple de dossiers")
-    from videosorter.widgets import pick_folders
+    from videosorter.widgets import FolderPicker, pick_folders
     import inspect
-    source = inspect.getsource(pick_folders)
-    check("DontUseNativeDialog" in source,
-          "le sélecteur Qt remplace celui de Windows, qui ne sait pas sélectionner plusieurs dossiers")
-    check("ExtendedSelection" in source, "les vues internes acceptent la sélection multiple")
+    # Le selecteur de Prisme (FolderPicker) a remplace celui de Windows, qui
+    # ne sait pas selectionner plusieurs dossiers.
+    check("FolderPicker" in inspect.getsource(pick_folders),
+          "le sélecteur de Prisme remplace celui de Windows, qui ne sait pas sélectionner plusieurs dossiers")
+    check("ExtendedSelection" in inspect.getsource(FolderPicker),
+          "sa vue accepte la sélection multiple")
 
     print("\n[28] Notation de 0 à 5 étoiles")
     window.start_root(root, MODE_FOLDERS)
@@ -821,11 +827,15 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
 
     # Le favori d'un element se reporte sur sa carte. Les notes de 1 a 5 et
     # leur chaine de signaux (rateRequested, on_board_rate) ont disparu.
-    window.ratings.set(window.items[0].path, 0)
-    window.ratings.set(window.items[0].path, 1)
+    # Le premier vrai dossier : un mot-cle epingle (« Noms sans aucun mot »)
+    # peut passer en tete, et un mot-cle ne se note pas.
+    real = next(at for at, it in enumerate(window.board.items) if not it.is_tag)
+    real_path = window.board.items[real].path
+    window.ratings.set(real_path, 0)
+    window.ratings.set(real_path, 1)
     pump(app, 0.1)
-    check(window.ratings.get(window.items[0].path) == 1
-          and window.board.cards[0].stars_value > 0,
+    check(window.ratings.get(real_path) == 1
+          and window.board.cards[real].stars_value > 0,
           "le favori d'un élément se voit sur sa carte")
     check(not hasattr(window, "on_board_rate") and not hasattr(window, "discard_at"),
           "plus de note ni de ✕ branchés sur la planche : ces gestes n'existent plus")
@@ -1789,6 +1799,9 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     bar = board.scroll.verticalScrollBar()
     bar.setRange(0, 100)
     board._at_end = False
+    # Seul un defilement de l'utilisateur tourne la page (une image arrivee
+    # ne le fait plus) : on en simule un.
+    board._user_scroll_at = time.monotonic()
     board._maybe_next_page(100)
     pump(app, 0.3)
     check(board.page == 1,
@@ -1842,7 +1855,8 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     window.toggle_board(True)
     pump(app, 0.4)
     before = window.stats["deleted"]
-    position = 0
+    # Le premier vrai dossier : un mot-cle epingle peut passer en tete.
+    position = next(at for at, it in enumerate(window.items) if not it.is_tag)
     target = window.items[position].name
     # Le ✕ des cartes n'existe plus : on coche, puis « Supprimer ».
     window.board.picked_ids.add(window.items[position].item_id)
@@ -1879,7 +1893,9 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     check(matches_text("n importe quoi.mp4", ""), "une recherche vide laisse tout")
 
     groups, excluded = parse("plage or mer -hiver")
-    check(groups == [["plage", "mer"]] and excluded == ["hiver"],
+    # La recherche est bilingue : un groupe porte aussi les traductions.
+    check(len(groups) == 1 and {"plage", "mer"} <= set(groups[0])
+          and excluded == ["hiver"],
           f"l'analyse rend groupes et exclusions ({groups}, {excluded})")
     check("sans" in describe("plage -hiver"), "et se résume en clair")
 
@@ -2823,15 +2839,25 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     window.tree.hide()
     window.aside.hide()
     pump(app, 0.2)
+    # On la retrecit comme on le ferait : la rangee du haut se replie alors
+    # (le reste passe dans ⋯), et c'est ce minimum-la qui compte.
+    for _ in range(3):
+        window.resize(960, 540)
+        pump(app, 0.3)
     need = window.layout().minimumSize()
     gros = sorted(
         ((getattr(window, n).minimumSizeHint().width(), n)
          for n in ("top_bar", "crumbs", "controls", "picked_bar", "item_card",
                    "viewer", "nav_row", "commands", "tree", "aside")
          if getattr(window, n, None) is not None), reverse=True)[:3]
-    # Les polices de l'affichage hors ecran sont bien plus larges que celles
-    # de Windows (les onglets : 460 points contre 287) ; la limite suit.
-    ratio = max(1.0, window.tabs.minimumSizeHint().width() / 290.0)
+    # Hors ecran, les polices sont plus larges que celles de Windows (sous
+    # Windows, la fenetre descend a 868 x 388 une fois repliee) : un dixieme de
+    # marge sur la largeur, au plus. La hauteur, elle, ne depend pas des
+    # polices -- l'ecran de repli, cache, l'imposait a 654 points.
+    from PySide6.QtGui import QFontMetrics
+    wide = QFontMetrics(window.font()).horizontalAdvance(
+        "Dossiers Vidéos Mots-clés Mur Favoris Aléatoire Destinations")
+    ratio = min(1.1, max(1.0, wide / 319.0))
     check(need.width() <= 980 * ratio and need.height() <= 540,
           f"la fenêtre descend à {need.width()} x {need.height()} — elle tient "
           f"(les plus larges : {gros})")
@@ -3459,8 +3485,10 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     check("BIN" in noms, f"le dossier masqué réapparaît ({noms})")
     revu = _web_voile.Library(cellier, window.cfg["expand_parents"],
                               window.cfg["thumb_width"])
-    check(any("secret" in str(chemin) for chemin in revu.videos.values()),
-          "et le partage le montre aussi")
+    # L'interrupteur vaut pour l'ecran du PC, jamais pour le partage
+    # (« Partage : les dossiers masques ne partent plus vers les telephones »).
+    check(not any("secret" in str(chemin) for chemin in revu.videos.values()),
+          "mais le partage, lui, continue de le cacher")
 
     window.toggle_veiled()
     check(window.cfg["show_veiled"] is False, "puis se rabaisse")
@@ -3532,12 +3560,13 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
           "le bandeau du lecteur de côté flotte au-dessus de l'image")
     check(window.aside_bar.parent() is window or window.aside_bar.isWindow(),
           "c'est une fenêtre à part — la seule chose qui passe devant la vidéo")
-    check(window.aside_bar.buttons.count() == 7,
-          f"☆, « rester dans ce dossier », ◂ ⏯ ▸ ⛶ ✕ "
+    check(window.aside_bar.buttons.count() == 8,
+          f"☆, « rester dans ce dossier », « similaires », ◂ ⏯ ▸ ⛶ ✕ "
           f"({window.aside_bar.buttons.count()})")
-    check(window.single_bar.buttons.count() == 9,
+    check(window.single_bar.buttons.count() == 11,
           "le bandeau de la fiche aussi : ☆, la durée du diaporama, « rester "
-          "dans ce dossier », ◂ ⏯ ▸ ⌸ ⧉ ⛶")
+          "dans ce dossier », l'ultra tri, « similaires », ◂ ⏯ ▸ ⌸ ⧉ ⛶ "
+          f"({window.single_bar.buttons.count()})")
     gestes = window.aside_bar.skin.findChildren(QPushButton)
     check(gestes and all(b.width() >= 28 and b.height() >= 22 for b in gestes),
           "dont les signes ont la place de se voir")
@@ -3686,13 +3715,16 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     # La note, en chiffre d'or, sur la carte.
     window.toggle_board(True)
     pump(app, 0.3)
-    first_card = window.board.cards[0]
-    window.ratings.set(window.items[0].path, 0)
-    window.ratings.set(window.items[0].path, 1)
+    # Le premier vrai dossier, pas un mot-cle epingle en tete.
+    real = next(at for at, it in enumerate(window.board.items) if not it.is_tag)
+    real_path = window.board.items[real].path
+    first_card = window.board.cards[real]
+    window.ratings.set(real_path, 0)
+    window.ratings.set(real_path, 1)
     pump(app, 0.2)
     check(first_card.rating.text() == "★" and not first_card.rating.isHidden(),
           f"une carte notée montre sa note ({first_card.rating.text()!r})")
-    window.ratings.set(window.items[0].path, 0)
+    window.ratings.set(real_path, 0)
 
     # Chaque onglet, depuis chaque endroit, mène à sa liste.
     def tab_click(tab):
@@ -3782,9 +3814,11 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
         check(window.tab != TAB_SPLIT and not window.browsing
               and str(window.current.path) == target,
               "« sa fiche » depuis le mur : la fiche de toujours, au niveau fichier")
-        check(window.stars.isHidden() and hasattr(window.single_bar, "star_button")
+        # L'etoile est aussi a cote de l'epingle, sur la fiche d'une video :
+        # on la cherchait la (window.py, la regle de `self.stars`).
+        check(not window.stars.isHidden() and hasattr(window.single_bar, "star_button")
               and not window.bottom_bar.isHidden(),
-              "avec son ☆ dans le bandeau survolé, et ses commandes")
+              "avec son ☆ dans le bandeau survolé, à côté de l'épingle, et ses commandes")
     tab_click(TAB_FOLDERS)
 
     print("\n[80] La sélection en mur ou en playlist, un menu rangé")
@@ -3923,7 +3957,8 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
                 window.controls.isHidden(),
                 window.viewer.currentWidget() is window.single)
 
-    expected = (True, True, True, True, True, True, True)
+    # (..., l'etoile cachee ?) : non, elle est aussi sur la fiche d'une video.
+    expected = (True, True, True, True, False, True, True)
     seen = {}
     tab_click(TAB_VIDEOS)
     if window.items:
@@ -5099,7 +5134,9 @@ def check_keys_and_batches(app, window, base) -> None:
     shutil.rmtree(touches, ignore_errors=True)
     for name in ("t1", "t2", "t3", "t4"):
         (touches / name).mkdir(parents=True, exist_ok=True)
-        shutil.copy2(sources[0], touches / name / f"{name}.mp4")
+        # Un vrai mot dans le nom : « t1.mp4 » seul ferait epingler en tete le
+        # mot-cle « Noms sans aucun mot », que le test prendrait pour un dossier.
+        shutil.copy2(sources[0], touches / name / f"essai {name}.mp4")
     dest = base / "tri" / "touches"
     window.cfg.set_destinations([{"key": "6", "label": "Touches", "path": str(dest)}])
     window.set_tab(TAB_FOLDERS)
@@ -5510,7 +5547,10 @@ def check_fluidity(app, window, base, root) -> None:
         window._dupes_stopped = False
         window._dupes_from_sigs = False
         window._dupes_by_image = False
-        window.on_dupes_found([(1000, pair)])
+        # Un groupe tel que les recherches le rendent (DupeGroup), plus
+        # l'ancien couple (taille, chemins) que la revue ne sait plus lire.
+        from videosorter.dupes import DupeGroup
+        window.on_dupes_found([DupeGroup(pair, [1000, 1000])])
         check(window.all_items is listed and window._pending_dupes is not None,
               "le résultat des doublons n'arrache plus à ce qu'on regarde")
         check(window.dupes_result_action.isVisible()
@@ -7312,7 +7352,9 @@ def main() -> int:
 
     print("\n[8] Collision de noms")
     (tri / "2019" / first_name).mkdir(parents=True, exist_ok=True)
-    window.show_item(0)
+    # Le meme dossier, retrouve par son nom : l'element 0 peut etre un
+    # mot-cle epingle en tete.
+    window.show_item([i.name for i in window.items].index(first_name))
     QTest.keyClick(window, Qt.Key_6)
     settle(app, window)
     check((tri / "2019" / f"{first_name} (2)").exists(),

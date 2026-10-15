@@ -25,7 +25,7 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QProgressBar, QPushButton, QStackedLayout, QStyle, QTableWidget,
+    QProgressBar, QPushButton, QSizePolicy, QStackedLayout, QStyle, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -754,6 +754,10 @@ class QuietPage(QWidget):
 
     def __init__(self, parent=None, cover: str = "update"):
         super().__init__(parent)
+        # Page cachee la plupart du temps : elle n'impose pas sa taille a la
+        # fenetre (888 x 654 points empechaient Prisme de tenir sur un ecran
+        # agrandi a 200 %). Affichee, elle prend la place qu'on lui donne.
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.setObjectName("quietPage")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet("QWidget#quietPage { background: #f3f3f3; }")
