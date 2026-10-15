@@ -220,8 +220,7 @@ PUBLIC_RE = re.compile(r"(?:https?://)?(?:t|telegram)\.me/(?:s/)?([A-Za-z][A-Za-
 RESERVED = {"joinchat", "share", "addstickers", "addemoji", "telegram", "iv", "proxy", "socks",
             "setlanguage", "addtheme", "login", "contact", "confirmphone", "addlist", "boost",
             "giftcode", "invoice", "telegramtips", "durov"}
-SKIP_HOSTS = ("bing.", "microsoft.", "duckduckgo.", "startpage.", "brave.", "mojeek.",
-              "yahoo.", "yandex.", "qwant.", "ecosia.", "t.me", "telegram.me", "telegram.org",
+SKIP_HOSTS = ("bing.", "microsoft.", "duckduckgo.", "mojeek.", "gstatic.", "t.me", "telegram.me", "telegram.org",
               "google.", "youtube.", "facebook.", "instagram.", "twitter.", "x.com", "wikipedia.",
               "msn.", "live.com", "apple.com", "play.google")
 # Les fiches d'un annuaire de groupes : c'est la que le lien t.me se trouve.
@@ -302,23 +301,37 @@ def _any_results(html: str) -> list[str]:
     return out
 
 
-# Moteurs en plus de DuckDuckGo et Bing. Google repond en HTML simple a un
-# navigateur texte ; Startpage donne aussi les resultats de Google.
+# Moteurs lus comme du texte, en plus de DuckDuckGo et Bing.
 EXTRA_ENGINES = (
-    ("google", "https://www.google.com/search?{}", "q", {"num": "50", "hl": "fr", "gbv": "1"}),
-    ("startpage", "https://www.startpage.com/do/search?{}", "q", {}),
-    ("yahoo", "https://search.yahoo.com/search?{}", "p", {}),
-    ("brave", "https://search.brave.com/search?{}", "q", {}),
     ("mojeek", "https://www.mojeek.com/search?{}", "q", {}),
 )
-TEXT_BROWSER = {"User-Agent": "Lynx/2.9.0dev.12 libwww-FM/2.14 SSL-MM/1.4.1 OpenSSL/3.0.8",
-                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"}
 
 
-def public_links(query: str, say=lambda _t: None) -> tuple[list[dict], str]:
+def _google_pages(query: str, renderer, notes: list) -> list[tuple[str, str]]:
+    """Google, ouvert dans le navigateur invisible (webpage.PageReader) : il
+    ne repond qu'a un vrai navigateur. Les liens t.me sont dans ses extraits.
+    Une verification anti-robot ou une page de consentement : on s'arrete."""
+    import urllib.parse
+    # Une question apres l'autre : en rafale, Google prend Prisme pour un robot.
+    pages = []
+    for at, q in enumerate((f"{query} telegram", f'"t.me/+" {query}', f"site:t.me {query}")):
+        if at:
+            time.sleep(2.5)
+        html, final, _why = renderer.render(
+            "https://www.google.com/search?" + urllib.parse.urlencode({"q": q, "hl": "fr"}), 25.0)
+        if "/sorry/" in (final or "") or "consent." in (final or ""):
+            notes.append("Google demande une vérification (anti-robot ou consentement) : "
+                         "résultats Google partiels, réessaie plus tard")
+            break
+        if html:
+            pages.append(("google", html))
+    return pages
+
+
+def public_links(query: str, say=lambda _t: None, renderer=None) -> tuple[list[dict], str]:
     """Des liens de groupes Telegram sur un theme, cherches sur le web : les
-    moteurs (DuckDuckGo, Bing, Google, Startpage, Yahoo,
-    Brave, Mojeek), puis les pages qu'ils donnent (annuaires,
+    moteurs (DuckDuckGo, Bing, Mojeek, et Google dans le navigateur
+    invisible), puis les pages qu'ils donnent (annuaires,
     forums) et les fiches de ces annuaires, ou le lien t.me se trouve. Les
     invitations privees (t.me/+…) sont rares sur le web : Telegram en
     trouve davantage (« Chercher des groupes »). Renvoie aussi pourquoi
@@ -337,10 +350,12 @@ def public_links(query: str, say=lambda _t: None) -> tuple[list[dict], str]:
     extra = [(name, url.format(urllib.parse.urlencode({param: q, **more})))
              for name, url, param, more in EXTRA_ENGINES
              for q in (f"{query} telegram t.me", f'"t.me/+" {query}')]
-    with ThreadPoolExecutor(12) as pool:
-        pages = list(pool.map(lambda e: (e[0], _fetch(e[1])), bing))
-        pages += list(pool.map(lambda e: (e[0], _fetch(
-            e[1], headers=TEXT_BROWSER if e[0] == "google" else None)), extra))
+    with ThreadPoolExecutor(8) as pool:
+        google = pool.submit(_google_pages, query, renderer, notes) if renderer else None
+        pages = list(pool.map(lambda e: (e[0], _fetch(e[1])), bing + extra))
+        if google is not None:
+            say("Recherche sur Google…")
+            pages += google.result()
     # DuckDuckGo, une question apres l'autre : en rafale, il prend Prisme pour
     # un robot et demande une verification -- qu'on ne contourne pas.
     for q in (f"{query} telegram", f'{query} "t.me/+"', f"{query} groupe telegram"):
@@ -410,13 +425,14 @@ class WebLinks(QThread):
     done = Signal(list, str)
     status = Signal(str)
 
-    def __init__(self, query: str):
+    def __init__(self, query: str, renderer=None):
         super().__init__()
         self.query = query
+        self.renderer = renderer
 
     def run(self) -> None:
         try:
-            rows, why = public_links(self.query, self.status.emit)
+            rows, why = public_links(self.query, self.status.emit, self.renderer)
         except Exception as exc:  # noqa: BLE001
             rows, why = [], f"Recherche sur le web impossible : {exc}"
         self.done.emit(rows, why)
@@ -1853,7 +1869,7 @@ class TelegramDialog(QDialog):
         messages.clicked.connect(self.search_messages)
         row.addWidget(messages)
         web = QPushButton("Liens sur le web", page)
-        web.setToolTip("Cherche sur le web (DuckDuckGo, Bing, Google, Startpage, Yahoo, Brave, Mojeek, annuaires, forums) des liens "
+        web.setToolTip("Cherche sur le web (DuckDuckGo, Bing, Google, Mojeek, annuaires, forums) des liens "
                        "de groupes sur ce thème, invitations privées t.me/+… comprises,\npuis "
                        "les lit dans Telegram : nom, membres, approbation. Sans y entrer.")
         web.clicked.connect(self.search_web)
@@ -2551,10 +2567,29 @@ class TelegramDialog(QDialog):
         if getattr(self, "_web", None) is not None and self._web.isRunning():
             self.status.setText("La recherche sur le web est déjà en cours.")
             return
-        self._web = WebLinks(self.query.text())
+        self._web = WebLinks(self.query.text(), self._page_reader())
         self._web.status.connect(self.status.setText)
         self._web.done.connect(self._web_done)
         self._web.start()
+
+    def _page_reader(self):
+        """Le navigateur invisible (pour Google), cree au premier besoin sur le
+        fil de l'interface ; ferme avec la fenetre."""
+        reader = getattr(self, "_reader", None)
+        if reader is None:
+            try:
+                from .webpage import PageReader
+                from .websearch import USER_AGENT
+                reader = PageReader(USER_AGENT, self)
+            except Exception:  # noqa: BLE001 — sans moteur de navigateur : sans Google
+                return None
+            self._reader = reader
+
+            def close(_result=0) -> None:
+                reader.close()
+                self._reader = None
+            self.finished.connect(close)
+        return reader
 
     def _web_done(self, rows: list, why: str) -> None:
         if not rows:
