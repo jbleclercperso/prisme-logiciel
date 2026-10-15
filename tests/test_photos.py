@@ -118,8 +118,9 @@ def main() -> int:
     check(Path(INDEX.path).name == "index-photos.db"
           and window.ratings.path.name == "ratings-photos.json",
           "avec leur propre index et leurs propres notes")
-    print("     (diagnostic onglets :", window.tabs.buttons[TAB_VIDEOS].text(),
-          window.tabs.buttons[TAB_SPLIT].isHidden(), window.width(), ")")
+    # Les libelles des onglets suivent le changement de genre au tour
+    # suivant de la boucle : sous charge, la lecture immediate tombait avant.
+    wait_for(app, lambda: window.tabs.buttons[TAB_VIDEOS].text() == "Photos", 3)
     check(window.tabs.buttons[TAB_VIDEOS].text() == "Photos"
           and not window.tabs.buttons[TAB_SPLIT].isHidden(),
           "l'onglet s'appelle « Photos », et le Mur reste")
