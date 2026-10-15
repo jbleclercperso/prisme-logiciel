@@ -245,20 +245,21 @@ def main() -> int:
           "« Ajouter au mot-clé » verse les cochées dans le mot choisi")
     check(lab._checked(lab.results) == [], "et les décoche")
 
-    # La case, en haut a droite de la vignette : un clic dessus coche.
+    # La case, en haut a gauche de la vignette (les vignettes communes de
+    # cartes.py, comme la planche et Telegram) : un clic dessus coche.
     from PySide6.QtCore import QEvent as _QE, QPointF as _QPF
     from PySide6.QtGui import QMouseEvent as _QME
     from PySide6.QtWidgets import QStyleOptionViewItem as _Opt
-    from videosorter.labo import _CheckCorner
+    from videosorter.cartes import CardDelegate
     delegate = lab.results.itemDelegate()
-    check(isinstance(delegate, _CheckCorner), "la case est posée sur la vignette")
+    check(isinstance(delegate, CardDelegate), "la case est posée sur la vignette")
     index = lab.results.model().index(0, 0)
     option = _Opt()
     option.rect = lab.results.visualRect(index)
     option.widget = lab.results
-    box = delegate._box(option, index)
-    check(box.right() > option.rect.center().x() and box.top() < option.rect.center().y(),
-          f"en haut à droite ({box.x()},{box.y()} dans {option.rect.width()}×{option.rect.height()})")
+    box = delegate._pick(option.rect)
+    check(box.left() < option.rect.center().x() and box.top() < option.rect.center().y(),
+          f"en haut à gauche ({box.x()},{box.y()} dans {option.rect.width()}×{option.rect.height()})")
     spot = _QPF(box.center())
     delegate.editorEvent(_QME(_QE.MouseButtonRelease, spot, spot, Qt.LeftButton,
                               Qt.NoButton, Qt.NoModifier),
@@ -293,7 +294,9 @@ def main() -> int:
     wait_idle(lab)
     check(len(lab._liked) == 1 and not lab.feedback_state.isHidden(),
           "la même phrase, plus tard, repart de ses exemples (casse et espaces ignorés)")
-    check(lab.results.item(0).text().startswith("✓ exemple"),
+    from videosorter.cartes import ROLE_SUB
+    # La marque est sur la ligne du dessous de la vignette (cartes.py).
+    check(str(lab.results.item(0).data(ROLE_SUB) or "").startswith("✓ exemple"),
           "le bon exemple passe en tête, marqué ✓")
     last = lab.results.item(lab.results.count() - 1)
     gone = last.data(Qt.UserRole)

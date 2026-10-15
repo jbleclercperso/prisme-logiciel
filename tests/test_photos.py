@@ -118,6 +118,8 @@ def main() -> int:
     check(Path(INDEX.path).name == "index-photos.db"
           and window.ratings.path.name == "ratings-photos.json",
           "avec leur propre index et leurs propres notes")
+    print("     (diagnostic onglets :", window.tabs.buttons[TAB_VIDEOS].text(),
+          window.tabs.buttons[TAB_SPLIT].isHidden(), window.width(), ")")
     check(window.tabs.buttons[TAB_VIDEOS].text() == "Photos"
           and not window.tabs.buttons[TAB_SPLIT].isHidden(),
           "l'onglet s'appelle « Photos », et le Mur reste")
@@ -165,6 +167,8 @@ def main() -> int:
                         QPoint(0, 120), Qt.NoButton, Qt.NoModifier,
                         Qt.ScrollUpdate, False)
     single.wheelEvent(wheel)
+    # Le zoom glisse jusqu'a son facteur (140 ms) au lieu de sauter.
+    wait_for(app, lambda: single.zoom > 1.0, 2)
     check(single.zoom > 1.0, f"la molette zoome dans la photo (×{single.zoom:.2f})")
     window.slideshow_timer.setInterval(300)
     window.cfg["stay_in_folder"] = True
