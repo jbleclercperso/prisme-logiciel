@@ -147,8 +147,14 @@ class RenameMixin:
         """Entree dans le champ : verifie le nom, puis envoie le renommage."""
         item = self._renaming
         self._cancel_rename()
-        if item is None or item is not self.current or item.locked:
+        current = self.current
+        # Le meme element, par son identifiant : une relecture de fond peut
+        # avoir remplace l'objet par un neuf (meme chemin), et le renommage
+        # etait alors abandonne sans un mot.
+        if (item is None or current is None or current.item_id != item.item_id
+                or current.locked):
             return
+        item = current
         old = Path(item.path)
         name = text.strip()
         if not name or name.startswith("."):

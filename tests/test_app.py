@@ -6336,6 +6336,9 @@ def check_chosen_features(app, window, base, tri) -> None:
     window._dupes_stopped = False
     window._dupes_from_sigs = False
     window._dupes_by_image = False
+    # Les renommages de [100] relancent une relecture : la collection doit la
+    # finir, sinon un groupe pouvait paraitre hors de la collection et sortir.
+    wait_for(app, lambda: not window.scanning and not window.transfers.busy, 30)
     window.on_dupes_found(groups)
     window.show_found_dupes_board()
     # La planche se remplit au tour suivant : sous charge, on la lisait vide.
