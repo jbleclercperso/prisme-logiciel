@@ -57,8 +57,6 @@ STOP_WORDS = {
 MIN_WORD = 3
 MAX_WORD = 12
 
-# En deca, ce n'est pas une categorie mais une video isolee sous un titre.
-MIN_BUCKET = 2
 
 # Un nom de fichier separe ses mots de trois facons, souvent dans le meme nom :
 # par une ponctuation, par une majuscule (« BeachSunset »), ou par un chiffre

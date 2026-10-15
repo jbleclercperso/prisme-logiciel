@@ -23,10 +23,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QGridLayout, QComboBox, QFileDialog, QFormLayout, QFrame,
-    QGraphicsOpacityEffect, QTabWidget,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListView, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
+    QAbstractItemView, QCheckBox, QGridLayout, QComboBox, QFileDialog, QFrame,
+    QGraphicsOpacityEffect, QTabWidget, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListView,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
     QScrollArea, QSplitter, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 from .widgets import FlowLayout
@@ -2275,5 +2274,3 @@ class WebSearchWindow(QWidget):
         super().closeEvent(event)
 
 
-# L'ancien nom, pour ce qui l'appelait encore.
-WebSearchDialog = WebSearchWindow

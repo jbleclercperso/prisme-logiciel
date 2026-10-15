@@ -19,7 +19,6 @@ Les sondages vivent dans `sondages.json` (`sondages.py`), recopiés sur le NAS
 """
 from __future__ import annotations
 
-import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor

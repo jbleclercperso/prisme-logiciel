@@ -18,11 +18,10 @@ from PySide6.QtGui import (
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoFrame
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLayout,
-    QLineEdit, QListView, QListWidget, QListWidgetItem, QMessageBox,
-    QPlainTextEdit, QPushButton, QSizePolicy,
-    QTreeView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout,
+    QHeaderView, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPlainTextEdit, QPushButton, QSizePolicy, QTreeView, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from .actions import ActionError
@@ -4115,12 +4114,6 @@ class DestinationsDialog(QDialog):
                 f"{len(chosen) - added} dossier(s) figuraient déjà dans la liste.",
             )
 
-    def add_children_of(self) -> None:
-        parent = QFileDialog.getExistingDirectory(
-            self, "Dossier contenant les destinations", self.start
-        )
-        if parent:
-            self._add_children(parent)
 
     def _add_children(self, parent: str) -> int:
         """Ajoute chaque sous-dossier de `parent` ; rend le nombre ajoute."""

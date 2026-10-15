@@ -522,18 +522,6 @@ def _json_of(text: str):
     return found if isinstance(found, dict) else None
 
 
-def fixed_name() -> str:
-    """Le nom de cette machine dans le réseau Tailscale, ou rien.
-
-    C'est lui qui donne l'adresse : `nom.tailnet.ts.net`. Il ne change pas.
-    """
-    code, out, _err = _run(["status", "--json"], timeout=20)
-    told = _json_of(out)
-    if told is None:
-        return ""
-    return ((told.get("Self") or {}).get("DNSName") or "").strip(".")
-
-
 def _local_port(proxy: str) -> int:
     """Le port local vise par un relais Funnel : « http://127.0.0.1:8713 »."""
     proxy = proxy.strip()

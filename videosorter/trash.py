@@ -280,11 +280,6 @@ class SessionTrash(QObject):
         self.restored.emit(str(stored), str(target))
         return target
 
-    # -- vidage -------------------------------------------------------------
-    def has_network_entries(self) -> bool:
-        """Vrai si le vidage détruira quelque chose pour de bon (partage réseau)."""
-        from .media import is_network_path
-        return any(is_network_path(entry.stored) for entry in self.entries)
 
     def flush(self, mode: str = "recycle") -> tuple[int, str]:
         """Vide la corbeille de session. Retourne (nombre traité, dernière erreur).

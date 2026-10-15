@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from . import iapython, voice_model
 
-from .voice_model import MODEL, MODEL_SIZE, PATTERNS, RATE  # noqa: F401
+from .voice_model import MODEL, MODEL_SIZE, RATE  # noqa: F401
 
 # Le silence qui clot la phrase, et les bornes de l'ecoute (secondes).
 SILENCE_END = 1.3

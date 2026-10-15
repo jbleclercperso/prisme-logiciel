@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import random
 
-from PySide6.QtCore import QPoint, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget

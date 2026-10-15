@@ -8,7 +8,6 @@ l'intention, puisqu'un clic ouvre au lieu d'envoyer.
 from __future__ import annotations
 
 import math
-import random
 import time
 from collections import OrderedDict
 
@@ -1174,9 +1173,6 @@ class BoardView(QWidget):
         if card is not None and card.video:
             self.playRequested.emit(card.video, card.ts)
 
-    def random_index(self) -> int:
-        candidates = [i for i, item in enumerate(self.items) if not item.status]
-        return random.choice(candidates) if candidates else -1
 
     def scroll_to(self, position: int) -> None:
         if not 0 <= position < len(self.items):

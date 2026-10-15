@@ -5,8 +5,6 @@ import errno
 import os
 import shutil
 import stat
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -565,9 +563,3 @@ def undo(entry: HistoryEntry) -> Path:
     return target
 
 
-def open_recycle_bin() -> None:
-    if sys.platform == "win32":
-        subprocess.Popen(
-            ["explorer", "shell:RecycleBinFolder"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )

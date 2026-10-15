@@ -21,7 +21,6 @@ Sans Qt : la fenetre (labo.py) fournit les images (`frame_of`).
 """
 from __future__ import annotations
 
-import array
 import hashlib
 import importlib.util
 import json
@@ -778,10 +777,6 @@ class SceneIndex:
             self._fresh.append(list(vector))
         self.done.add(video)
 
-    def forget_missing(self, videos: set) -> None:
-        """Les videos parties de la collection quittent l'index."""
-        self._keep([i for i, (v, _t) in enumerate(self.rows) if v in videos])
-        self.done &= videos
 
     def rebase(self, videos) -> int:
         """Un index fait sur un autre PC : les memes videos, vues sous un autre

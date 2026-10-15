@@ -1271,15 +1271,6 @@ def signature(video, width: int, shots: int = SHOTS) -> list:
     return signature_report(video, width, shots)[0]
 
 
-def _near(left: list, right: list, close: int = CLOSE) -> int:
-    """Combien d'images de l'une trouvent une semblable dans l'autre."""
-    agreed = 0
-    for value in left:
-        if any(_bits(value ^ other) <= close for other in right):
-            agreed += 1
-    return agreed
-
-
 def group_by_signature(entries: list, close: int = CLOSE, agree: int = AGREE,
                        ignored=None, should_stop=None, report=None,
                        slack: float = SIG_SLACK) -> list:

@@ -25,22 +25,6 @@ if SANDBOX:
     APP_DIR = Path(SANDBOX)
 
 
-def _has_thumbs(folder: Path) -> bool:
-    """Vrai si ce dossier porte de vraies vignettes — le seul bien qui compte.
-
-    On ne se fie pas a l'existence du dossier : il se cree tout seul des
-    qu'un module s'ouvre, bien avant qu'on ait pu decider quoi que ce soit.
-    C'est precisement ce qui avait fait echouer la premiere reprise.
-    """
-    thumbs = folder / "thumbs"
-    if not thumbs.is_dir():
-        return False
-    for _dirpath, _dirs, files in os.walk(thumbs):
-        if files:
-            return True
-    return False
-
-
 def adopt_old_cache() -> str:
     """Reprend le cache de l'ancien nom, et **fusionne** avec celui-ci.
 
@@ -197,7 +181,6 @@ PHOTO_EXTS = frozenset({
     ".jpg", ".jpeg", ".jfif", ".png", ".webp", ".gif", ".bmp", ".tif",
     ".tiff", ".heic", ".heif",
 })
-ALL_MEDIA_EXTS = VIDEO_FILE_EXTS | PHOTO_EXTS
 
 # Ce que l'on trie en ce moment : des videos, ou des photos. Tout Prisme
 # demande « est-ce un media ? » a cet ensemble-ci ; choisir les photos sur
@@ -473,7 +456,6 @@ def wants_hardware(choice: str, legacy: bool, cores: int) -> bool:
     return (cores or 0) < AUTO_CPU_CORES
 
 
-
 class Config:
     """Petit wrapper JSON, tolerant aux fichiers absents ou corrompus.
 
@@ -650,13 +632,6 @@ class Config:
             if dest.get("key") == key:
                 return dest
         return None
-
-    def next_free_key(self) -> str:
-        used = {d.get("key") for d in self.destinations}
-        for key in KEY_ORDER:
-            if key not in used and key not in RESERVED_KEYS:
-                return key
-        return ""
 
 
 def _same_path_key(text: str) -> str:

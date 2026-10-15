@@ -1003,8 +1003,6 @@ class ControlBar(QWidget):
             field.setText(str(value) if value else "")
             field.blockSignals(False)
 
-    def set_folder_fields_visible(self, on: bool) -> None:
-        """Conserve : c'est `set_mode` qui decide desormais."""
 
     def criteria(self) -> dict:
         """Ce que les reglages affiches demandent, et rien d'autre.
@@ -1134,12 +1132,6 @@ class ControlBar(QWidget):
                              f"au plus, ce nombre de {noun}")
         self.random_here.setToolTip(f"Une {noun[:-1]} au hasard, parmi celles affichées")
 
-    def set_wall(self, on: bool) -> None:
-        """Conserve pour les appels existants : « wall » ou l'onglet courant."""
-        if on:
-            self.set_mode("wall")
-        elif getattr(self, "_mode", "") == "wall":
-            self.set_mode("videos")
 
     def set_filters(self, active: list) -> None:
         """Montre « ✕ filtres » si quelque chose est pose, et dit quoi."""

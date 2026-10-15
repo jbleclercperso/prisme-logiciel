@@ -5,7 +5,7 @@ import queue
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QPushButton,
     QRadioButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,

@@ -1043,17 +1043,6 @@ def _carry_images(before: str, after: str, stamp: str, info) -> int:
     return count
 
 
-def cache_size_bytes() -> int:
-    total = 0
-    for dirpath, _dirs, files in os.walk(THUMB_DIR):
-        for name in files:
-            try:
-                total += os.path.getsize(os.path.join(dirpath, name))
-            except OSError:
-                pass
-    return total
-
-
 def clear_cache() -> None:
     shutil.rmtree(THUMB_DIR, ignore_errors=True)
 
@@ -1063,8 +1052,6 @@ def page_count(videos: list, count: int, one_per_video: bool = True) -> int:
     if not one_per_video or not videos:
         return 1
     return max(1, -(-len(videos) // count))
-
-
 
 
 # Au-dessus de ce seuil, ffmpeg considere que l'image a franchement change.

@@ -19,7 +19,6 @@ import multiprocessing
 import os
 import queue
 import threading
-import time
 
 # -- le processus fils -------------------------------------------------------
 

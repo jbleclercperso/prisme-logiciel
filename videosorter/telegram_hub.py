@@ -32,10 +32,9 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QProgressBar, QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
-    QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
+    QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .cartes import ROLE_CHIP, ROLE_RES, ROLE_SUB, use_cards
@@ -473,16 +472,6 @@ def _score(row: dict) -> float:
     days = row.get("jours")
     freshness = 1.0 if days is None else 1.0 / (1 + days / 7)
     return subs * (1 + medias) * freshness
-
-
-def is_media(msg) -> bool:
-    """Une vidéo ou une photo (pas l'aperçu d'un lien, pas un autocollant)."""
-    if getattr(msg, "web_preview", None):
-        return False
-    if msg.video or msg.photo:
-        return True
-    mime = (msg.file.mime_type or "") if msg.file else ""
-    return bool(msg.document) and mime.startswith(("video", "image")) and not msg.sticker
 
 
 def human_when(stamp: float) -> str:
@@ -3358,4 +3347,3 @@ def start_watch(window) -> None:
     _watch_once(window)
 
 
-start_follow = start_watch   # ancien nom

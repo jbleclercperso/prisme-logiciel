@@ -50,11 +50,6 @@ def set_off(paths) -> None:
         _off.update(_norm(p) for p in paths if p)
 
 
-def is_on(path) -> bool:
-    with _lock:
-        return _norm(path) not in _off
-
-
 def chosen_on() -> list:
     """Les racines cochees, joignables ou non."""
     with _lock:
@@ -65,11 +60,6 @@ def set_reachable(paths) -> None:
     with _lock:
         _reachable.clear()
         _reachable.update(_norm(p) for p in paths)
-
-
-def reachable(path) -> bool:
-    with _lock:
-        return _norm(path) in _reachable
 
 
 def members(path) -> list:

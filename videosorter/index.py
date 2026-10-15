@@ -577,14 +577,6 @@ class Index:
             # tenait le verrou que l'interface attendait.
             self._touched()
 
-    def sig_fresh(self, path, stamp: str) -> bool:
-        """Vrai si l'empreinte connue vaut encore pour ce fichier.
-
-        C'est ce qui rend le second passage immediat : seules les videos
-        nouvelles, ou modifiees depuis, sont a sonder.
-        """
-        found = self._sig_index().get(str(path))
-        return found is not None and (not stamp or found == stamp)
 
     def sig_stamp(self, path) -> str | None:
         """La date retenue avec l'empreinte d'une video, None sans empreinte.

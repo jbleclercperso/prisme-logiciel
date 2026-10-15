@@ -25,7 +25,6 @@ import os
 import struct
 import subprocess
 import tempfile
-from pathlib import Path
 
 from .media import NO_WINDOW, Tools
 

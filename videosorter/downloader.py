@@ -121,8 +121,8 @@ def explain(error: str) -> str:
 # (sans Qt : la recherche s'en sert aussi, pour ne montrer que ce qui se
 # telecharge vraiment).
 from .mediafind import (  # noqa: E402,F401
-    MIN_UNKNOWN_S, Media, album_files, embedded_players, is_album_page, is_full,
-    media_candidates, page_title, resolve, safe_session,
+    MIN_UNKNOWN_S, Media, album_files, is_album_page, media_candidates, page_title, resolve,
+    safe_session,
 )
 
 

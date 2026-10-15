@@ -110,10 +110,6 @@ BENCH_TOP = 24
 # Videos dont on extrait les images a la fois, pendant l'indexation.
 WORKERS = 3
 
-# Exigence des tags : ce qu'on voit, et ce que ia.STRICTNESS en fait.
-STRICT_CHOICES = (("souple", "Souple — plus de vidéos"), ("normal", "Normale"),
-                  ("strict", "Stricte — moins de vidéos, plus sûres"))
-
 
 class _GroupDelegate(QStyledItemDelegate):
     """Une collection dans la liste : son nom, et dessous ses chiffres."""
@@ -1427,12 +1423,6 @@ class LaboWindow(QWidget):
             said += " Écarté : " + ", ".join(f"« {n} »" for n in negatives) + "."
         self.mail.put(("said", said))
 
-    @staticmethod
-    def _stack(parts: list):
-        if not parts:
-            return None
-        import numpy as np
-        return np.vstack(parts)
 
     def _learn(self, liked: bool) -> None:
         """« Plus comme ça » / « moins comme ça » : les cochees deviennent des

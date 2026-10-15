@@ -25,7 +25,7 @@ import sys
 from PySide6.QtCore import QPoint, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtMultimedia import QMediaPlayer
-from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from .icons import icon
 from .floatguard import GuardedLabel
@@ -528,6 +528,3 @@ def covered(widget, samples: int = 5) -> bool:
         return False
 
 
-def application_active() -> bool:
-    """Une fenetre de Prisme a-t-elle le clavier ?"""
-    return QApplication.activeWindow() is not None

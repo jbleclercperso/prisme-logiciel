@@ -21,11 +21,10 @@ from PySide6.QtCore import (
     QEvent, QEventLoop, QObject, QPoint, QRect, QSize, QThread, QTimer, QUrl, Qt, Signal,
 )
 from PySide6.QtWidgets import (
-    QSplitter,
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QSplitter, QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QProgressBar, QProgressDialog,
-    QPushButton, QLayout, QSizePolicy, QStackedWidget, QStyle, QToolButton, QToolTip,
-    QVBoxLayout, QWidget,
+    QPushButton, QLayout, QSizePolicy, QStackedWidget, QToolButton, QToolTip, QVBoxLayout,
+    QWidget,
 )
 
 from .floatguard import GuardedLabel
@@ -12634,8 +12633,6 @@ class MainWindow(QMainWindow):
         return not (item.kind == MODE_FOLDERS and not item.is_tag
                     and not item.video_count)
 
-    def _matches(self, item) -> bool:
-        return self._sortable(item) and self._matcher()(item)
 
     def _filtered(self, items=None) -> list:
         """Ce qui passe les filtres, parmi `items` (tout, par defaut)."""
