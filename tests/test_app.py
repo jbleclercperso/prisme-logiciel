@@ -771,7 +771,9 @@ def check_new_features(app, window, base, root, flat, tri) -> None:
     # ramener, elles ne visent plus que la vignette survolee.
     open_sheet(window, first_untouched(window))
     target = window.current
-    check(window.ratings.get(target.path) == 0, "un élément démarre hors des favoris")
+    check(window.ratings.get(target.path) == 0,
+          f"un élément démarre hors des favoris ({target.name}, "
+          f"{window.ratings.get(target.path)}, {sorted(window.ratings.data)[:6]})")
     window.rate_current(4)
     check(window.ratings.get(target.path) > 0, "il passe en favori")
     check(window.stars.value == 1, "et l'étoile, en bas à droite, se dore")
