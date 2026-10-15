@@ -6346,9 +6346,16 @@ def check_chosen_features(app, window, base, tri) -> None:
     pump(app, 0.3)
     notes = [getattr(i, "board_note", "") for i in window.items]
     note = (notes + [""] * 5).__getitem__     # une liste trop courte echoue, sans planter
+    from videosorter.dupes_memory import NOT_DUPES as _nd
+    _stages = (len(_nd.filtrer_groupes(list(groups))),
+               len(window._only_in_collection(list(groups))),
+               len(window._one_spelling(list(groups))),
+               len(window._still_here(list(groups))),
+               [Path(c).name for c in clips], [Path(c).exists() for c in clips])
     check(note(0) == "✓ à garder" and note(3) == "✓ à garder"
           and "de moins" in note(1),
-          f"le meilleur de chaque groupe est désigné, l'écart se lit ({notes})")
+          f"le meilleur de chaque groupe est désigné, l'écart se lit ({notes}) "
+          f"— étapes {_stages}")
     check(len(window.board.cards) > 1
           and window.board.cards[1].meta.full_text().startswith(note(1)),
           "sur la carte elle-même")
