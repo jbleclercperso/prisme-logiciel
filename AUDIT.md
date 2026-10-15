@@ -20,6 +20,15 @@ Le code est déjà soigné (WAL SQLite, écritures groupées, vignettes et aper�
 - **Vérification des mises à jour toutes les 15 min** alors que le commentaire dit six heures.
 - `telegram_hub` : « Ouvrir le dossier » utilise `/select,` sur un dossier.
 
+## Avancement (15/10/2026)
+
+Fait et vérifié (guard, smoke, tests ciblés, vraie fenêtre en bac à sable : vignettes posées, aperçu qui bouge) :
+- Lot 0 : `tests/guard.py` + référence `tests/guard_baseline.json` ; bancs d'essai en bac à sable ; journal des gels qui nomme la fonction en cours ; `--verifier` contrôle Telegram/cryptg, les petites bibliothèques et l'import de tous les modules.
+- Lot 1 : cryptg ; la vidéo qui joue fait attendre les travaux de fond ; ffmpeg sous la priorité normale ; modèle vocal préchargé seulement si le micro a servi dans la semaine ; Telegram pas démarré sans groupe suivi ; 8 réglages perdus gardés ; visiteurs du NAS relus toutes les 30 s quand personne ne regarde ; survol sondé au ralenti fenêtre inactive ; battement du détecteur de gels à 250 ms.
+- Lot 2 (en partie) : page de vignettes posée en une seule mise à l'écran ; doublons trouvés relus hors du fil de l'interface.
+
+Reste : réglage « Décodage vidéo » (à passer en Automatique par l'utilisateur), préchauffage du premier aperçu, sonde NAS avant les cartes connues, lots 3 à 5. Deux échecs de `tests/test_photos.py` existaient avant ce travail (onglet « Photos », zoom à la molette) : à regarder.
+
 ## Plan, par lots — du plus sûr au plus risqué
 
 Chaque lot : un commit, les vérifications indiquées, puis contrôle à l'écran réel pour tout ce qui touche à l'image.
