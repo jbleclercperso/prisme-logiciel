@@ -70,6 +70,11 @@ def undefined_attrs() -> dict[str, list[str]]:
     (ni dans la classe, ni dans ses bases Qt, ni par `self.x = …` dans le
     module)."""
     out = {}
+    window_assigned = {sub.attr for node in ast.walk(ast.parse(
+        (ROOT / "videosorter" / "window.py").read_text(encoding="utf-8")))
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        for sub in ast.walk(target) if isinstance(sub, ast.Attribute)}
     for name, module in loaded.items():
         source = (ROOT / "videosorter" / f"{name}.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -85,11 +90,17 @@ def undefined_attrs() -> dict[str, list[str]]:
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "setattr" \
                     and len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
                 assigned.add(str(node.args[1].value))
+        if name.startswith("win_"):
+            # Les morceaux de la fenetre principale : leurs `self.x` sont ceux
+            # de MainWindow (et de ce qu'elle ecrit dans window.py).
+            assigned |= window_assigned
         for cls_node in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
             cls = getattr(module, cls_node.name, None)
             if not isinstance(cls, type):
                 continue
             known = set(dir(cls)) | assigned
+            if name.startswith("win_"):
+                known |= set(dir(loaded["window"].MainWindow))
             missing = set()
             for sub in ast.walk(cls_node):
                 if (isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Load)
@@ -98,6 +109,34 @@ def undefined_attrs() -> dict[str, list[str]]:
                     missing.add(sub.attr)
             if missing:
                 out[f"{name}.{cls_node.name}"] = sorted(missing)
+    return out
+
+
+def undefined_globals() -> dict[str, list[str]]:
+    """Les noms lus dans une fonction sans etre definis nulle part (ni dans
+    la fonction, ni dans le module, ni parmi ceux de Python) : un import
+    oublie en deplacant du code."""
+    import builtins
+    import symtable
+    out = {}
+    for name in loaded:
+        source = (ROOT / "videosorter" / f"{name}.py").read_text(encoding="utf-8")
+        table = symtable.symtable(source, f"{name}.py", "exec")
+        module_names = {s.get_name() for s in table.get_symbols()
+                        if s.is_assigned() or s.is_imported() or s.is_namespace()}
+        known = module_names | set(dir(builtins)) | {"__file__", "__name__", "__doc__"}
+        missing = set()
+
+        def walk(scope):
+            for sym in scope.get_symbols():
+                if (sym.is_global() and sym.is_referenced()
+                        and sym.get_name() not in known):
+                    missing.add(sym.get_name())
+            for child in scope.get_children():
+                walk(child)
+        walk(table)
+        if missing:
+            out[name] = sorted(missing)
     return out
 
 
@@ -110,8 +149,14 @@ def api_surface() -> dict[str, list[str]]:
     from videosorter.index import Index
     from videosorter.widgets import SinglePlayer
     from videosorter.window import MainWindow
-    for cls in (MainWindow, BoardView, SinglePlayer, Index):
+    from PySide6.QtWidgets import QMainWindow
+    for cls in (BoardView, SinglePlayer, Index):
         surface[f"class {cls.__name__}"] = sorted(n for n in vars(cls) if not n.startswith("__"))
+    # La fenetre principale : ce qu'elle porte, heritage des morceaux compris
+    # (pas ce que Qt lui donne).
+    qt = set(dir(QMainWindow))
+    surface["class MainWindow"] = sorted(n for n in dir(MainWindow)
+                                         if not n.startswith("__") and n not in qt)
     return surface
 
 
@@ -162,6 +207,9 @@ def pump(app, seconds):
 
 print("[2] Attributs lus jamais définis")
 undefined = undefined_attrs()
+print("[2b] Noms lus jamais définis (imports oubliés)")
+for module_name, names in undefined_globals().items():
+    check(False, f"{module_name} : {names}")
 print("[3] Noms des modules et des grandes classes")
 surface = api_surface()
 print("[4] Menus")

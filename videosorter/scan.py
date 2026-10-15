@@ -74,6 +74,12 @@ def fast_path(text: str) -> Path:
     return Path(text)
 
 
+def as_path(video) -> Path:
+    """Le chemin tel quel s'il en est deja un : `Path(Path)` refait l'objet,
+    et cent mille fois de suite, cela se sent."""
+    return video if isinstance(video, Path) else fast_path(str(video))
+
+
 # L'index, retenu une fois : `from .index import INDEX` a chaque appel passait
 # par le crochet d'import de PySide6, et `known_media` est appele cent mille
 # fois par tri.
