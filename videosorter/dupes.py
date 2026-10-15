@@ -1387,10 +1387,13 @@ class SignatureScan(QThread):
     done = Signal(int, int)          # sondees, dans la base
 
     def __init__(self, root: Path, width: int, skip_hidden: bool = True,
-                 parent=None):
+                 parent=None, places=None):
         super().__init__(parent)
         from .media import _Owner
         self.root = Path(root)
+        # Le guetteur : seulement les dossiers que la relecture vient de
+        # trouver changes, au lieu de reparcourir tout le partage.
+        self.places = [Path(p) for p in places] if places else []
         self.width = width
         self.skip_hidden = skip_hidden
         self.failed_count = 0
@@ -1443,9 +1446,10 @@ class SignatureScan(QThread):
         from .stamps import remember
         todo = []
         known = 0
-        for path, size, mtime in walk_stamped(self.root, self.skip_hidden,
-                                              should_stop=lambda: self._stop,
-                                              on_count=self.walking.emit):
+        walks = (walk_stamped(top, self.skip_hidden, should_stop=lambda: self._stop,
+                              on_count=self.walking.emit)
+                 for top in (self.places or [self.root]))
+        for path, size, mtime in (entry for walk in walks for entry in walk):
             if self._stop:
                 break
             remember(str(path), size, mtime)

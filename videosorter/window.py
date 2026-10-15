@@ -2345,6 +2345,7 @@ class MainWindow(
         self._scan_started = time.monotonic()
         self._scan_done, self._scan_total, self._scan_name = 0, 0, ""
         self._new_folders: list = []        # dossiers apparus pendant ce passage
+        self._touched_folders: list = []    # dossiers ajoutes ou changes (guetteur)
         self._refresh_scan_button()
         old = self.scan_thread
         if old is not None and shiboken6.isValid(old) and not old.isRunning():
@@ -3624,6 +3625,10 @@ class MainWindow(
             # Candidats a la fusion avec un dossier deja connu du meme nom.
             self._new_folders = getattr(self, "_new_folders", []) + [
                 item.path for item in added if item.kind == MODE_FOLDERS]
+        if (added or replaced) and self._scan_top and self.mode == MODE_FOLDERS:
+            self._touched_folders = getattr(self, "_touched_folders", []) + [
+                item.path for item in list(added) + list(replaced)
+                if item.kind == MODE_FOLDERS]
         if self._transient and not self._scan_top:
             # Une liste de passage (doublons) : la relecture d'un sous-dossier
             # n'a rien a y ajouter.

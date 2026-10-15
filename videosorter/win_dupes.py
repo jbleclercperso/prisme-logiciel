@@ -695,8 +695,11 @@ class DupesMixin:
         missing = self._sigs_missing()
         if not known or not missing or missing > self.WATCH_MAX:
             return
+        places = list(getattr(self, "_touched_folders", None) or [])
+        if not places:
+            return
         scan = SignatureScan(self.top_root(), self.cfg["thumb_width"],
-                             self.cfg["skip_hidden"], self)
+                             self.cfg["skip_hidden"], self, places=places)
         scan.watch = True
         self.sig_scan = scan
         self._own_thread(scan, "sig_scan")
