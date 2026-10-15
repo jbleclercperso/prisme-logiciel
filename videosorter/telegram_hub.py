@@ -33,7 +33,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QProgressBar, QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QTextEdit, QVBoxLayout, QWidget,
 )
@@ -220,7 +220,8 @@ PUBLIC_RE = re.compile(r"(?:https?://)?(?:t|telegram)\.me/(?:s/)?([A-Za-z][A-Za-
 RESERVED = {"joinchat", "share", "addstickers", "addemoji", "telegram", "iv", "proxy", "socks",
             "setlanguage", "addtheme", "login", "contact", "confirmphone", "addlist", "boost",
             "giftcode", "invoice", "telegramtips", "durov"}
-SKIP_HOSTS = ("bing.", "microsoft.", "duckduckgo.", "t.me", "telegram.me", "telegram.org",
+SKIP_HOSTS = ("bing.", "microsoft.", "duckduckgo.", "startpage.", "brave.", "mojeek.",
+              "yahoo.", "yandex.", "qwant.", "ecosia.", "t.me", "telegram.me", "telegram.org",
               "google.", "youtube.", "facebook.", "instagram.", "twitter.", "x.com", "wikipedia.",
               "msn.", "live.com", "apple.com", "play.google")
 # Les fiches d'un annuaire de groupes : c'est la que le lien t.me se trouve.
@@ -237,10 +238,10 @@ WEB_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWeb
                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"}
 
 
-def _fetch(url: str, timeout: int = 12) -> str:
+def _fetch(url: str, timeout: int = 12, headers: dict | None = None) -> str:
     import urllib.request
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=WEB_HEADERS),
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers or WEB_HEADERS),
                                     timeout=timeout) as resp:
             return resp.read(2_000_000).decode("utf-8", "replace")
     except Exception:  # noqa: BLE001 — un site muet n'arrete pas les autres
@@ -286,9 +287,38 @@ def _engine_results(html: str, engine: str) -> list[str]:
     return out
 
 
+def _any_results(html: str) -> list[str]:
+    """Les liens sortants d'une page de moteur quelconque (Google, Yahoo,
+    Startpage, Brave, Mojeek…), redirections decodees."""
+    import urllib.parse
+    out = []
+    for href in re.findall(r'href="([^"]+)"', html.replace("&amp;", "&")):
+        if "/url?" in href:
+            href = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("q", [""])[0]
+        elif "/RU=" in href:
+            href = urllib.parse.unquote(href.split("/RU=", 1)[1].split("/R", 1)[0])
+        if href.startswith("http") and href not in out:
+            out.append(href)
+    return out
+
+
+# Moteurs en plus de DuckDuckGo et Bing. Google repond en HTML simple a un
+# navigateur texte ; Startpage donne aussi les resultats de Google.
+EXTRA_ENGINES = (
+    ("google", "https://www.google.com/search?{}", "q", {"num": "50", "hl": "fr", "gbv": "1"}),
+    ("startpage", "https://www.startpage.com/do/search?{}", "q", {}),
+    ("yahoo", "https://search.yahoo.com/search?{}", "p", {}),
+    ("brave", "https://search.brave.com/search?{}", "q", {}),
+    ("mojeek", "https://www.mojeek.com/search?{}", "q", {}),
+)
+TEXT_BROWSER = {"User-Agent": "Lynx/2.9.0dev.12 libwww-FM/2.14 SSL-MM/1.4.1 OpenSSL/3.0.8",
+                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"}
+
+
 def public_links(query: str, say=lambda _t: None) -> tuple[list[dict], str]:
     """Des liens de groupes Telegram sur un theme, cherches sur le web : les
-    moteurs (DuckDuckGo, Bing), puis les pages qu'ils donnent (annuaires,
+    moteurs (DuckDuckGo, Bing, Google, Startpage, Yahoo,
+    Brave, Mojeek), puis les pages qu'ils donnent (annuaires,
     forums) et les fiches de ces annuaires, ou le lien t.me se trouve. Les
     invitations privees (t.me/+…) sont rares sur le web : Telegram en
     trouve davantage (« Chercher des groupes »). Renvoie aussi pourquoi
@@ -304,8 +334,13 @@ def public_links(query: str, say=lambda _t: None) -> tuple[list[dict], str]:
     say("Recherche sur le web…")
     bing = [("bing", "https://www.bing.com/search?" + urllib.parse.urlencode({"q": q}))
             for q in (f"{query} telegram", f"{query} groupe telegram lien", f'"t.me/+" {query}')]
-    with ThreadPoolExecutor(3) as pool:
+    extra = [(name, url.format(urllib.parse.urlencode({param: q, **more})))
+             for name, url, param, more in EXTRA_ENGINES
+             for q in (f"{query} telegram t.me", f'"t.me/+" {query}')]
+    with ThreadPoolExecutor(12) as pool:
         pages = list(pool.map(lambda e: (e[0], _fetch(e[1])), bing))
+        pages += list(pool.map(lambda e: (e[0], _fetch(
+            e[1], headers=TEXT_BROWSER if e[0] == "google" else None)), extra))
     # DuckDuckGo, une question apres l'autre : en rafale, il prend Prisme pour
     # un robot et demande une verification -- qu'on ne contourne pas.
     for q in (f"{query} telegram", f'{query} "t.me/+"', f"{query} groupe telegram"):
@@ -319,12 +354,13 @@ def public_links(query: str, say=lambda _t: None) -> tuple[list[dict], str]:
     results: list[str] = []
     for engine, html in pages:
         _harvest(html, found, engine)
-        for url in _engine_results(html, engine):
+        for url in (_engine_results(html, engine) if engine in ("ddg", "bing")
+                    else _any_results(html)):
             _harvest(url, found, urllib.parse.urlparse(url).netloc or engine)
             host = urllib.parse.urlparse(url).netloc.lower()
             if host and not any(h in host for h in SKIP_HOSTS) and url not in results:
                 results.append(url)
-    results = results[:14]
+    results = results[:30]
     slug = urllib.parse.quote(query.lower().replace(" ", "-"))
     directories = [d.format(q=slug) for d in DIRECTORIES]
     results = directories + [u for u in results if u not in directories]
@@ -472,6 +508,7 @@ class _Queue(QObject):
 class _Hub(QObject):
     """Ce qu'une vérification a trouvé, pour la fenêtre si elle est ouverte."""
     checked = Signal(dict)
+    cleaned = Signal(list)
 
 
 _QUEUES: dict[str, _Queue] = {}
@@ -581,6 +618,13 @@ def link() -> _Link:
     return _LINK
 
 
+def _is_closed(ent) -> bool:
+    """Un groupe qui n'existe plus pour le compte : fermé, supprimé, banni,
+    quitté ou migré."""
+    return (type(ent).__name__ in ("ChannelForbidden", "ChatForbidden")
+            or bool(getattr(ent, "deactivated", False)) or bool(getattr(ent, "left", False)))
+
+
 class TelegramWorker(QObject):
     """Un travail Telegram, sur la connexion partagée (`link`). Se lance et
     se suit comme un fil : start, isRunning, started, finished."""
@@ -601,6 +645,7 @@ class TelegramWorker(QObject):
     file_ready = Signal(str)
     batch_done = Signal(int)
     progress = Signal(dict)
+    cleaned = Signal(list)
     failed = Signal(str)
 
     def __init__(self, state: dict, job: str = "login"):
@@ -745,6 +790,8 @@ class TelegramWorker(QObject):
             self.batch_done.emit(await self._download_many(client))
         elif self.job == "export":
             self.batch_done.emit(await self._export(client))
+        elif self.job == "clean":
+            self.cleaned.emit(await self._clean(client))
 
     # -- retrouver un groupe a partir de sa cle --------------------------------
     async def _resolve(self, client, key: str):
@@ -1067,6 +1114,7 @@ class TelegramWorker(QObject):
             before = known.get(key) or {}
             rows.append({
                 "key": key,
+                "ferme": _is_closed(ent),
                 "title": dialog.name or username or str(ent.id),
                 "username": username,
                 "kind": kind,
@@ -1082,6 +1130,14 @@ class TelegramWorker(QObject):
             })
             entities[key] = ent
         rows.sort(key=lambda r: r["title"].lower())
+        if state.get("auto_clean"):
+            dead = [r for r in rows if r.get("ferme")]
+            if dead:
+                gone = await self._leave(client, [(r, entities[r["key"]]) for r in dead])
+                keys = {g["key"] for g in gone}
+                rows = [r for r in rows if r["key"] not in keys]
+                if gone:
+                    self.cleaned.emit(gone)
         update_state(lambda s: (s.__setitem__("joined", rows),
                                 s.__setitem__("joined_at", time.time())))
         self.joined_progress.emit(rows)
@@ -1089,6 +1145,8 @@ class TelegramWorker(QObject):
         for at, row in enumerate(rows, 1):
             key = row["key"]
             before = known.get(key) or {}
+            if row.get("ferme"):
+                continue            # groupe fermé : plus rien à compter
             # Rien de neuf dans le groupe depuis le dernier comptage (même
             # dernier message, même lecture) : ses comptes n'ont pas bougé.
             # Deux requêtes de moins par groupe, et Telegram moins sollicité.
@@ -1123,6 +1181,56 @@ class TelegramWorker(QObject):
                 s["top"][row["key"]] = row["top"]
         update_state(keep)
         return rows
+
+    async def _clean(self, client) -> list:
+        """Quitter et effacer de Telegram les groupes choisis (self.targets :
+        leurs clés) ; « closed » dans targets : tous les groupes fermés."""
+        wanted = set(self.targets)
+        found = []
+        async for dialog in client.iter_dialogs():
+            if not (dialog.is_group or dialog.is_channel):
+                continue
+            ent = dialog.entity
+            username = getattr(ent, "username", None) or ""
+            key = username or (f"c{ent.id}" if dialog.is_channel else f"g{ent.id}")
+            if key in wanted or ("closed" in wanted and _is_closed(ent)):
+                found.append(({"key": key, "title": dialog.name or username or str(ent.id)}, ent))
+        gone = await self._leave(client, found)
+        keys = {g["key"] for g in gone}
+
+        def change(s: dict) -> None:
+            s["joined"] = [r for r in s.get("joined") or [] if r["key"] not in keys]
+            s["channels"] = [c for c in s["channels"] if c["key"] not in keys]
+            for k in keys:
+                s["unseen"].pop(k, None)
+        update_state(change)
+        return gone
+
+    async def _leave(self, client, items: list) -> list:
+        """Quitte chaque groupe et efface sa conversation ; rend ceux partis."""
+        from telethon.errors import FloodWaitError
+        from telethon.tl.functions.messages import DeleteHistoryRequest
+        gone = []
+        for at, (row, ent) in enumerate(items, 1):
+            if self.stop:
+                break
+            self.status.emit(f"Nettoyage {at}/{len(items)} : {row['title']}")
+            try:
+                await client.delete_dialog(ent)
+                gone.append(row)
+            except FloodWaitError as exc:
+                if exc.seconds > 60:
+                    link().pause(exc.seconds)
+                    break
+                await asyncio.sleep(exc.seconds + 1)
+            except Exception:  # noqa: BLE001 — groupe fermé : effacer juste la conversation
+                try:
+                    await client(DeleteHistoryRequest(peer=ent, max_id=0, just_clear=False))
+                    gone.append(row)
+                except Exception:  # noqa: BLE001
+                    pass
+            await asyncio.sleep(0.6)
+        return gone
 
     async def _join(self, client) -> list:
         """Rejoindre, ou demander à rejoindre : un nom public, ou un lien
@@ -1593,6 +1701,7 @@ class TelegramDialog(QDialog):
         self._fill_groups()
         self._fill_journal()
         hub().checked.connect(self._on_checked)
+        hub().cleaned.connect(self._on_cleaned)
         if not (self.state.get("api_id") and self.state.get("api_hash")):
             self.tabs.setCurrentIndex(3)
             self.status.setText("Renseigne d'abord le compte (api_id, api_hash, téléphone), puis « Connecter ».")
@@ -1635,6 +1744,20 @@ class TelegramDialog(QDialog):
                          "et télécharger ceux arrivés dans les groupes en Auto.")
         check.clicked.connect(self.check_now)
         bar.addWidget(check)
+        clean = QPushButton("Nettoyer ▾", page)
+        clean.setToolTip("Quitter et effacer de Telegram les groupes fermés, sans médias, "
+                         "ou ceux sélectionnés.")
+        menu = QMenu(clean)
+        menu.addAction("Supprimer les groupes fermés", lambda: self.clean_groups("closed"))
+        menu.addAction("Supprimer les groupes sans médias", lambda: self.clean_groups("empty"))
+        menu.addAction("Supprimer les groupes sélectionnés", lambda: self.clean_groups("selected"))
+        menu.addSeparator()
+        self.auto_clean = menu.addAction("Nettoyer automatiquement les groupes fermés")
+        self.auto_clean.setCheckable(True)
+        self.auto_clean.setChecked(bool(self.state.get("auto_clean")))
+        self.auto_clean.toggled.connect(self._set_auto_clean)
+        clean.setMenu(menu)
+        bar.addWidget(clean)
         lay.addLayout(bar)
         lead = QLabel(
             "<b>Médias</b> : les photos et vidéos du groupe. <b>Non vus</b> : celles arrivées "
@@ -1730,7 +1853,7 @@ class TelegramDialog(QDialog):
         messages.clicked.connect(self.search_messages)
         row.addWidget(messages)
         web = QPushButton("Liens sur le web", page)
-        web.setToolTip("Cherche sur le web (DuckDuckGo, Bing, annuaires, forums) des liens "
+        web.setToolTip("Cherche sur le web (DuckDuckGo, Bing, Google, Startpage, Yahoo, Brave, Mojeek, annuaires, forums) des liens "
                        "de groupes sur ce thème, invitations privées t.me/+… comprises,\npuis "
                        "les lit dans Telegram : nom, membres, approbation. Sans y entrer.")
         web.clicked.connect(self.search_web)
@@ -1962,6 +2085,7 @@ class TelegramDialog(QDialog):
         worker.file_ready.connect(self._play)
         worker.batch_done.connect(self._batch_done)
         worker.progress.connect(self._on_progress)
+        worker.cleaned.connect(lambda gone: hub().cleaned.emit(gone))
         lane = queue(worker.lane)
         if worker.lane == "fond":
             worker.finished.connect(self._fond_finished)
@@ -2126,6 +2250,8 @@ class TelegramDialog(QDialog):
                 kind = "publique, pas membre"
             elif not row.get("public"):
                 kind += " privée" if kind == "chaîne" else " privé"
+            if row.get("ferme"):
+                kind += " · fermé"
             if row.get("protege"):
                 kind += " · protégé"
             table.setItem(i, 3, _cell(kind, tip="Protégé : le groupe interdit de transférer ses "
@@ -2313,6 +2439,57 @@ class TelegramDialog(QDialog):
         self.add_url.clear()
         self._fill_groups()
         self.status.setText(f"« {name} » ajoutée, en alerte.")
+
+    def _set_auto_clean(self, on: bool) -> None:
+        self.state = update_state(lambda s: s.__setitem__("auto_clean", bool(on)))
+        if on:
+            self.clean_groups("closed", ask=False)
+
+    def clean_groups(self, mode: str, ask: bool = True) -> None:
+        """Quitter et effacer de Telegram : les groupes fermés, ceux sans
+        médias (comptés à 0), ou ceux sélectionnés dans la liste."""
+        mine = [r for r in self._group_rows() if r.get("mine")]
+        if mode == "closed":
+            rows = [r for r in mine if r.get("ferme")]
+            what = "fermé(s)"
+        elif mode == "empty":
+            rows = [r for r in mine if r.get("medias") == 0 and not (r["alert"] or r["auto"])]
+            what = "sans médias (les groupes suivis sont gardés)"
+        else:
+            picked = {self.groups.item(i.row(), 2).data(Qt.UserRole)
+                      for i in self.groups.selectionModel().selectedRows()}
+            rows = [r for r in mine if r["key"] in picked]
+            what = "sélectionné(s)"
+        if not rows and mode != "closed":
+            self.status.setText("Aucun groupe à supprimer.")
+            return
+        if ask:
+            names = "\n".join("• " + r["title"] for r in rows[:25])
+            more = f"\n… et {len(rows) - 25} autres" if len(rows) > 25 else ""
+            text = (f"Quitter et effacer de Telegram {len(rows)} groupe(s) {what} ?\n\n"
+                    f"{names}{more}" if rows else
+                    "Aucun groupe fermé dans la liste actuelle. Chercher dans Telegram quand même ?")
+            if QMessageBox.question(self, "Nettoyer", text) != QMessageBox.Yes:
+                return
+        targets = [r["key"] for r in rows] + (["closed"] if mode == "closed" else [])
+        self.status.setText("Nettoyage des groupes…")
+        self._start("clean", targets=targets)
+
+    def _on_cleaned(self, gone: list) -> None:
+        self.state = load_state()
+        self._fill_groups()
+        if not gone:
+            self.status.setText("Nettoyage : aucun groupe supprimé.")
+            return
+        text = f"Telegram : {len(gone)} groupe(s) supprimé(s) — " + ", ".join(
+            g["title"] for g in gone[:5]) + ("…" if len(gone) > 5 else "")
+        self.status.setText(text)
+        show = getattr(self.parent(), "show_banner", None)
+        if show is not None:
+            try:
+                show(text, "done", seconds=10)
+            except Exception:  # noqa: BLE001
+                pass
 
     def remove_channel(self) -> None:
         row = self._current_group()
