@@ -1,12 +1,16 @@
 """Fabrique une arborescence de test avec de vraies vidéos (ffmpeg testsrc)."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Bac a sable avant tout import de Prisme : sans lui, ce script ouvrait
+# (et videait) l'index reel. Un dossier temporaire a part, par defaut.
+os.environ.setdefault("PRISME_SANDBOX", str(Path(os.environ.get("TEMP", ".")) / "vs-bench-appdata"))
 from videosorter.media import NO_WINDOW, Tools  # noqa: E402
 
 

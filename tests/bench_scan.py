@@ -15,6 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# Bac a sable avant tout import de Prisme : sans lui, ce script ouvrait
+# (et videait) l'index reel. Un dossier temporaire a part, par defaut.
+os.environ.setdefault("PRISME_SANDBOX", str(Path(os.environ.get("TEMP", ".")) / "vs-bench-appdata"))
 
 from videosorter import scan as vs_scan  # noqa: E402
 
