@@ -6267,7 +6267,10 @@ def check_chosen_features(app, window, base, tri) -> None:
     reopened = window._rename_field
     check(old.exists() and reopened is not None and reopened.text() == "a|b",
           "un caractère interdit sous Windows est refusé, le champ reste "
-          f"({old.exists()}, {reopened.text() if reopened is not None else None!r})")
+          f"({old.exists()}, {reopened.text() if reopened is not None else None!r}, "
+          f"navigue={window.browsing}, cinema={window.cinema}, onglet={window.tab}, "
+          f"courant={getattr(window.current, 'name', None)!r}, "
+          f"bandeau={window.banner.text()[:80]!r})")
     if window._rename_field is not None:
         QTest.keyClick(window._rename_field, Qt.Key_Escape)
     check(window._rename_field is None and old.exists(), "Échap renonce")
@@ -7067,7 +7070,9 @@ def check_reported_fixes(app, window, base, tri) -> None:
              all(Path(v).parent == moved for v in album.videos),
              window.ratings.get(moved / "Album_0.mp4") == 1)
     check(all(parts),
-          f"F2 sur un dossier : renommé, ses vidéos et leur favori suivent {parts}")
+          f"F2 sur un dossier : renommé, ses vidéos et leur favori suivent {parts} "
+          f"(genre={getattr(window, 'kind', '?')}, notes={window.ratings.path.name}, "
+          f"cles={[k for k in window.ratings.data if 'Album' in k]})")
     QTest.keyClick(window, Qt.Key_Z, Qt.ControlModifier)
     settle(app, window)
     check((shelf / "Album").is_dir() and not moved.exists()
