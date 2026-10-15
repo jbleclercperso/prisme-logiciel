@@ -197,8 +197,23 @@ VIDEO_EXT = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv"}
 
 
 def library_keys() -> set[tuple[str, int]]:
-    """Nom + taille des vidéos déjà dans les racines Prisme."""
+    """Nom + taille des vidéos déjà dans les racines Prisme.
+
+    Lus dans l'index (l'empreinte « date|taille » de chaque vidéo sondée) :
+    parcourir le NAS fichier par fichier prenait des minutes et bloquait la
+    connexion Telegram pendant ce temps. Le parcours ne sert plus que si
+    l'index ne connaît encore rien."""
     keys: set[tuple[str, int]] = set()
+    try:
+        from .index import INDEX
+        for path, found in list(INDEX.probes.items()):
+            size = (found[0] or "").rpartition("|")[2] if found else ""
+            if size.isdigit():
+                keys.add((os.path.basename(path).lower(), int(size)))
+    except Exception:  # noqa: BLE001 — l'index indisponible : le parcours
+        keys = set()
+    if keys:
+        return keys
     try:
         cfg = json.loads((APP_DIR / "config.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

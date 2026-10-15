@@ -15,6 +15,8 @@ fait basculer le casque en mode appel, et le son des videos s'arrete.
 """
 from __future__ import annotations
 
+import time
+
 import shiboken6
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtMultimedia import QMediaDevices
@@ -97,6 +99,7 @@ class _Follower(QObject):
         super().__init__()
         self.outputs: list = []
         self.current = b""
+        self._adopt_cache = None
         self.devices = QMediaDevices(self)
         self.devices.audioOutputsChanged.connect(self.check)
         # Windows ne previent pas toujours d'un changement de sortie par
@@ -107,7 +110,12 @@ class _Follower(QObject):
         self.timer.start()
 
     def adopt(self, output) -> None:
-        device = best_output()
+        # Six lecteurs se creent au lancement, coup sur coup : la liste des
+        # peripheriques de Windows n'est lue qu'une fois pour eux tous.
+        now = time.monotonic()
+        if self._adopt_cache is None or now - self._adopt_cache[0] > 1.0:
+            self._adopt_cache = (now, best_output())
+        device = self._adopt_cache[1]
         if not device.isNull():
             output.setDevice(device)
             self.current = bytes(device.id())
