@@ -73,6 +73,8 @@ class _Tile:
         self.audio = QAudioOutput(owner)
         self.audio.setMuted(True)
         self.player = QMediaPlayer(owner)
+        from .media import track_player
+        track_player(self.player)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video)
         self.player.setLoops(QMediaPlayer.Infinite)

@@ -281,6 +281,20 @@ DEFAULTS = {
     # Un nouveau dossier au nom d'un dossier deja connu : son contenu rejoint
     # le premier (merge.py). `folder_refs` : la reference retenue par nom.
     "merge_same_name": True,
+    # Le dernier usage du micro : la reconnaissance ne se precharge que pour
+    # qui s'en sert.
+    "voice_used_at": 0,
+    # Recherche web et Labo : ecrits par leurs fenetres, mais absents d'ici ils
+    # n'etaient jamais relus au lancement suivant (Config.load ne garde que
+    # les cles connues).
+    "web_download_dir": "",
+    "web_download_browser": "",
+    "web_search_title_match": False,
+    "web_search_card_w": 0,
+    "web_search_states_open": False,
+    "labo_examples": {},
+    "labo_grain": "fin",
+    "labo_bench": {},
     "folder_refs": {},
     "delete_mode": "recycle",    # recycle | permanent | local_trash
     "ffmpeg": "",                # vide => recherche automatique

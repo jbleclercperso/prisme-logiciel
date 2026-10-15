@@ -513,6 +513,8 @@ class PreviewGrid(QWidget):
         # pas. Sans sortie, Qt ne décode pas la piste son du tout — c'est
         # autant de travail et de bande passante réseau en moins par vignette.
         self.player = QMediaPlayer(self)
+        from .media import track_player
+        track_player(self.player)
         self.player.setVideoOutput(self.video)
         # « Charge » ne veut pas dire « affiche » : montrer le widget des la fin
         # du chargement devoilait la derniere image du media precedent, le temps
@@ -2008,6 +2010,8 @@ class _Deck:
         from .audiodev import follow
         follow(self.audio)
         self.player = QMediaPlayer(area)
+        from .media import track_player
+        track_player(self.player)
         self.player.setVideoOutput(self.video)
         self.player.setAudioOutput(self.audio)
         self.path = ""

@@ -7,3 +7,6 @@ segno>=1.6
 yt-dlp>=2025.1
 truststore>=0.10
 telethon>=1.36
+# Le chiffrement de Telegram en code natif : sans lui, Telethon dechiffre
+# en Python pur et fige l'interface pendant chaque echange.
+cryptg>=0.4

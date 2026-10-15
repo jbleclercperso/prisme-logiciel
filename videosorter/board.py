@@ -753,6 +753,8 @@ class BoardView(QWidget):
         # pas. Sans sortie, Qt ne décode pas la piste son du tout — c'est
         # autant de travail et de bande passante réseau en moins par vignette.
         self.player = QMediaPlayer(self)
+        from .media import track_player
+        track_player(self.player)
         self.player.setVideoOutput(self.video)
         # Le widget video garde a l'ecran la derniere image affichee. En passant
         # d'une carte a l'autre, on le deplacait puis on le montrait des que le

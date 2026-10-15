@@ -1487,8 +1487,10 @@ class MainWindow(QMainWindow):
         from . import voice
         self.voice = voice.attach(self.controls.include, self._spoken_search,
                                   lambda text: self.show_banner(text, "info", seconds=8))
-        # La reconnaissance se charge en coulisse, une demi-minute apres le
-        # lancement : sinon le premier clic sur le micro attendait une minute.
+        # La reconnaissance (pres d'un Go en memoire) se charge en coulisse,
+        # une demi-minute apres le lancement -- seulement pour qui s'est servi
+        # du micro cette semaine. Les autres ne la paient plus a chaque
+        # lancement ; le micro la charge de toute facon pendant qu'on parle.
         QTimer.singleShot(30000, self._warm_voice)
         self.controls.set_sort(self.cfg["sort_mode"] or "random")
         self.controls.set_columns(self.cfg["board_columns"])
@@ -5923,7 +5925,21 @@ class MainWindow(QMainWindow):
 
     def _telegram_follow(self) -> None:
         """Groupes suivis : verifies au lancement puis a intervalle regulier,
-        fenetre Telegram ouverte ou non ; un bandeau dit ce qui est arrive."""
+        fenetre Telegram ouverte ou non ; un bandeau dit ce qui est arrive.
+
+        Sans groupe suivi, rien ne demarre : ni le module (trois mille
+        lignes), ni sa minuterie. Ouvrir la fenetre Telegram la demarre."""
+        if getattr(self, "_telegram_watch", None) is not None:
+            return
+        from .config import APP_DIR
+        try:
+            state = json.loads((APP_DIR / "telegram.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        followed = any(c.get("alert") or c.get("auto") for c in state.get("channels") or []
+                       if isinstance(c, dict))
+        if not (state.get("api_id") and followed) and not getattr(self, "_telegram_dialog", None):
+            return
         try:
             from .telegram_hub import start_watch
             start_watch(self)
@@ -5938,6 +5954,8 @@ class MainWindow(QMainWindow):
         if dialog is None or not shiboken6.isValid(dialog):
             dialog = TelegramDialog(self)
             self._telegram_dialog = dialog
+        # Les alertes qu'on va cocher doivent tourner, fenetre fermee ensuite.
+        self._telegram_follow()
         if journal:
             dialog.show_journal()
         dialog.show()
@@ -15919,6 +15937,8 @@ class MainWindow(QMainWindow):
         from .tunnel import Chore
         if self._closing or not voice.available() or not voice.model_on_disk():
             return
+        if time.time() - float(self.cfg["voice_used_at"] or 0) > 7 * 86400:
+            return
 
         def work():
             try:
@@ -15929,6 +15949,8 @@ class MainWindow(QMainWindow):
 
     def _spoken_search(self, text: str) -> None:
         """Ce qu'on a dit au micro devient la recherche, comme tapee."""
+        self.cfg["voice_used_at"] = time.time()
+        self.cfg.save_soon()
         self.controls.include.setText(text)
         self.controls.include.setFocus()
 

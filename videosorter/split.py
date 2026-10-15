@@ -313,6 +313,8 @@ class SplitPane(QFrame):
         # par defaut -- aucune n'existe.
         self.audio = None
         self.player = QMediaPlayer(self)
+        from .media import track_player
+        track_player(self.player)
         self.player.setVideoOutput(self.video)
         # Les photos : une image fixe, et un diaporama a chaque panneau, qui
         # tourne des qu'il se remplit. ⏯ ou un clic l'arrete.

@@ -26,6 +26,7 @@ from .stamps import carry as carry_stamps, stamp_of
 
 # Évite une fenêtre console qui clignote à chaque appel ffmpeg sous Windows.
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 _WINGET_GLOB = "AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg*/*/bin"
 
@@ -265,9 +266,11 @@ def _spawn(cmd: list[str], timeout: float, binary: bool = False) -> tuple:
         return None, empty, empty, "tue"
     text = {} if binary else {"text": True, "encoding": "utf-8", "errors": "replace"}
     try:
+        # Sous la priorite normale : quand le processeur manque, l'interface
+        # et la video qui joue passent devant ; libre, ffmpeg va aussi vite.
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, creationflags=NO_WINDOW, **text,
+            stderr=subprocess.PIPE, creationflags=NO_WINDOW | BELOW_NORMAL, **text,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None, empty, empty, "echec"
@@ -353,6 +356,20 @@ class _Foreground:
         self._lock = threading.Lock()
         self._count = 0
         self._last = 0.0
+        self._playing = False
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    @playing.setter
+    def playing(self, on: bool) -> None:
+        """Une video joue (fiche, mur, apercu, flottant…) : les travaux de
+        fond attendent aussi -- ils tiraient sur le meme partage qu'elle."""
+        with self._lock:
+            if self._playing and not on:
+                self._last = time.monotonic()
+            self._playing = bool(on)
 
     def enter(self) -> None:
         with self._lock:
@@ -370,7 +387,7 @@ class _Foreground:
     def idle(self, grace: float | None = None) -> bool:
         grace = self.GRACE if grace is None else grace
         with self._lock:
-            return (self._count == 0
+            return (self._count == 0 and not self._playing
                     and time.monotonic() - self._last >= grace)
 
     def wait(self, stop=None, grace: float | None = None) -> None:
@@ -390,6 +407,24 @@ FOREGROUND = _Foreground()
 def wait_foreground(stop=None) -> None:
     """Pour les travaux de fond : cede la place a ce qu'on regarde."""
     FOREGROUND.wait(stop)
+
+
+_PLAYING: set = set()
+
+
+def _playing_now(key: int, on: bool) -> None:
+    (_PLAYING.add if on else _PLAYING.discard)(key)
+    FOREGROUND.playing = bool(_PLAYING)
+
+
+def track_player(player) -> None:
+    """Un lecteur de Prisme : tant qu'il joue, les travaux de fond (vignettes,
+    signatures, scenes, couvertures…) lui laissent le reseau et le processeur."""
+    from PySide6.QtMultimedia import QMediaPlayer
+    key = id(player)
+    player.playbackStateChanged.connect(
+        lambda state: _playing_now(key, state == QMediaPlayer.PlaybackState.PlayingState))
+    player.destroyed.connect(lambda *_a: _playing_now(key, False))
 
 
 class _Owner:

@@ -83,6 +83,36 @@ def run(argv: list) -> int:
         truststore.SSLContext
         return "ok"
 
+    @_check("Telegram (telethon + chiffrement natif)")
+    def _telegram():
+        import telethon
+        from telethon.crypto import aes
+        # Sans cryptg, tout echange avec Telegram se dechiffre en Python pur
+        # et fige l'interface : son absence est une panne, pas un detail.
+        assert aes.cryptg is not None, "cryptg absent : Telegram figerait Prisme"
+        return f"telethon {telethon.__version__}, cryptg présent"
+
+    @_check("bibliothèques (QR, recherche floue, corbeille)")
+    def _small_libs():
+        import rapidfuzz
+        import segno
+        import send2trash
+        segno.make("prisme").svg_inline()
+        send2trash.send2trash
+        return f"rapidfuzz {rapidfuzz.__version__}, segno, send2trash"
+
+    @_check("modules de Prisme")
+    def _modules():
+        # Ceux qu'on n'ouvre qu'au clic compris : une faute n'y paraitrait
+        # qu'en ouvrant la fenetre.
+        import importlib
+        import pkgutil
+        import videosorter
+        names = [m.name for m in pkgutil.iter_modules(videosorter.__path__)]
+        for name in names:
+            importlib.import_module(f"videosorter.{name}")
+        return f"{len(names)} modules importés"
+
     @_check("navigateur invisible (QtWebEngine)")
     def _webengine():
         from PySide6.QtWebEngineCore import QWebEnginePage
