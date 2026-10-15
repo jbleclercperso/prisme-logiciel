@@ -85,9 +85,12 @@ class Watchdog(QObject):
         """Hors du fil de l'interface : s'il tarde, on note ou il en est."""
         while True:
             time.sleep(0.1)
-            if not self.timer.isActive() or self._sample is not None:
+            # Rien de Qt ici (on n'est pas dans son fil) : seulement l'heure
+            # du dernier battement. Au-dela de 10 s de silence, la minuterie
+            # est arretee (Prisme reduit) : rien a relever.
+            if self._sample is not None:
                 continue
-            if time.monotonic() - self._beat - BEAT >= SAMPLE_AFTER:
+            if SAMPLE_AFTER <= time.monotonic() - self._beat - BEAT < 10:
                 frame = sys._current_frames().get(self._main)
                 if frame is not None:
                     try:
