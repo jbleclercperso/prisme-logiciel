@@ -5556,7 +5556,8 @@ def check_fluidity(app, window, base, root) -> None:
         check(window.dupes_result_action.isVisible()
               and window._banner_action is not None,
               "il attend un clic : sur le bandeau, ou dans « ⋯ › Doublons »")
-        window.show_found_dupes()
+        # La planche des doublons (« afficher » ouvre desormais la revue a part).
+        window.show_found_dupes_board()
         check(window._transient == "dupes" and len(window.items) == 2
               and window.dupes_result_action.isVisible(),
               "un clic l'affiche, et le résultat reste à portée")
@@ -6259,10 +6260,14 @@ def check_chosen_features(app, window, base, tri) -> None:
     if field is not None:
         field.setText("a|b")
         QTest.keyClick(field, Qt.Key_Return)
-        pump(app, 0.2)
-    check(old.exists() and window._rename_field is not None
-          and window._rename_field.text() == "a|b",
-          "un caractère interdit sous Windows est refusé, le champ reste")
+        # Le champ revient au tour suivant de la boucle (QTimer) : sous la
+        # charge de toute la suite, 0,2 s ne suffisait pas toujours.
+        wait_for(app, lambda: window._rename_field is not None
+                 and window._rename_field.text() == "a|b", 3)
+    reopened = window._rename_field
+    check(old.exists() and reopened is not None and reopened.text() == "a|b",
+          "un caractère interdit sous Windows est refusé, le champ reste "
+          f"({old.exists()}, {reopened.text() if reopened is not None else None!r})")
     if window._rename_field is not None:
         QTest.keyClick(window._rename_field, Qt.Key_Escape)
     check(window._rename_field is None and old.exists(), "Échap renonce")
@@ -6329,7 +6334,7 @@ def check_chosen_features(app, window, base, tri) -> None:
     window._dupes_from_sigs = False
     window._dupes_by_image = False
     window.on_dupes_found(groups)
-    window.show_found_dupes()
+    window.show_found_dupes_board()
     pump(app, 0.3)
     notes = [getattr(i, "board_note", "") for i in window.items]
     check(notes[0] == "✓ à garder" and notes[3] == "✓ à garder"
@@ -7128,7 +7133,7 @@ def check_reported_fixes(app, window, base, tri) -> None:
                          folder / "garde-corbeille_2.mp4"],
                         [5_000_000, 4_000_000], [6.0, 6.0])]
     window._pending_dupes = (groups, False)
-    window.show_found_dupes()
+    window.show_found_dupes_board()
     pump(app, 0.3)
     window.pick_all()
     window.set_tab(TAB_VIDEOS)
@@ -7139,7 +7144,7 @@ def check_reported_fixes(app, window, base, tri) -> None:
     window.set_tab(TAB_FOLDERS)
     pump(app, 0.2)
     window._pending_dupes = (groups, False)
-    window.show_found_dupes()
+    window.show_found_dupes_board()
     pump(app, 0.3)
     window.pick_all()
     stale = list(window.board.picked_items())
@@ -7160,7 +7165,7 @@ def check_reported_fixes(app, window, base, tri) -> None:
             shutil.copy2(sources[0], copy)
         many.append(DupeGroup(pair, [5_000_000, 4_000_000], [6.0, 6.0]))
     window._pending_dupes = (many, False)
-    window.show_found_dupes()
+    window.show_found_dupes_board()
     pump(app, 0.3)
     check(window.picked_count.isVisible()
           and window.picked_count.text().startswith("1–40 sur 60")
