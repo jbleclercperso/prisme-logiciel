@@ -39,10 +39,27 @@ from PySide6.QtWidgets import (
 )
 
 from .cartes import ROLE_CHIP, ROLE_RES, ROLE_SUB, use_cards
-from .config import APP_DIR
+from .config import APP_DIR, PRIVATE_DIR
 
 STATE_PATH = APP_DIR / "telegram.json"
-SESSION_PATH = APP_DIR / "telegram"
+# La session (la cle de connexion au compte) reste sur ce PC, jamais sur un
+# cache partage : deux PC qui s'en servent en meme temps, Telegram coupe la
+# session et il faut se reconnecter -- une nouvelle connexion a chaque fois.
+SESSION_PATH = PRIVATE_DIR / "telegram"
+
+
+def _keep_session() -> None:
+    """Une session laissee dans le cache partage par une version d'avant :
+    elle vient ici, sans nouvelle connexion."""
+    old = APP_DIR / "telegram.session"
+    new = SESSION_PATH.with_suffix(".session")
+    if old != new and old.is_file() and not new.exists():
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(old, new)
+        except OSError:
+            pass
 THUMBS = APP_DIR / "telegram-thumbs"
 DOWNLOADS = APP_DIR / "telegram-downloads"
 URL_RE = re.compile(r"(?:https?://)?t\.me/([A-Za-z0-9_]{4,})", re.I)
@@ -574,7 +591,14 @@ class _Link:
                 # Les petites pauses demandées par Telegram (quelques
                 # secondes) sont respectées sans rien dire ; les longues
                 # remontent, et tout s'arrête le temps qu'il faut.
+                _keep_session()
+                from . import __version__
+                # Toujours le meme nom d'appareil : dans Telegram, une seule
+                # ligne « Prisme », pas un nouvel appareil inconnu.
                 self._client = TelegramClient(str(SESSION_PATH), api_id, api_hash,
+                                              device_model="Prisme", system_version="Windows",
+                                              app_version=__version__, lang_code="fr",
+                                              system_lang_code="fr",
                                               flood_sleep_threshold=15,
                                               connection_retries=3, request_retries=3,
                                               auto_reconnect=True)
@@ -1077,15 +1101,23 @@ class TelegramWorker(QObject):
     async def _thumb(self, msg, path: Path) -> str:
         """La vignette d'un média : une taille moyenne pour une photo (pas
         la photo entière), la plus grande pour une vidéo (elle est petite)."""
-        if path.exists():
-            return str(path)
+        try:
+            if path.stat().st_size > 0:
+                return str(path)
+            path.unlink()               # un essai d'avant, reste vide
+        except OSError:
+            pass
         for which in ((2, -1) if msg.photo else (-1,)):
             try:
-                got = await msg.download_media(file=str(path), thumb=which)
-                if got:
-                    return str(path)
-            except Exception:  # noqa: BLE001
+                data = await asyncio.wait_for(msg.download_media(file=bytes, thumb=which), 20)
+            except Exception:  # noqa: BLE001 — trop long ou illisible : la suivante
                 continue
+            if data:
+                try:
+                    path.write_bytes(data)
+                    return str(path)
+                except OSError:
+                    return ""
         return ""
 
     async def _last_thumbs(self, client, target, key: str) -> list[str]:
@@ -1557,6 +1589,16 @@ class TelegramWorker(QObject):
         return await self._fetch_all(client, msgs, total)
 
 
+def _link_cell(text, tip: str = "Un clic : ouvrir dans Telegram", sort=None) -> QTableWidgetItem:
+    """Une case qui se lit comme un lien : bleue, soulignée, un clic l'ouvre."""
+    item = _cell(text, sort, tip)
+    item.setForeground(QColor("#6fb3ff"))
+    font = item.font()
+    font.setUnderline(True)
+    item.setFont(font)
+    return item
+
+
 def _cell(text, sort=None, tip: str = "") -> QTableWidgetItem:
     item = _SortItem(str(text))
     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -1798,16 +1840,13 @@ class TelegramDialog(QDialog):
         self.groups.itemChanged.connect(self._group_flag)
         self.groups.itemClicked.connect(self._group_clicked)
         self.groups.itemDoubleClicked.connect(
-            lambda item: item.column() not in (0, 1, 9) and self.open_group_bank())
+            lambda item: item.column() not in (0, 1, 2, 9) and self.open_group_bank())
         lay.addWidget(self.groups, 1)
         row = QHBoxLayout()
         bank = QPushButton("Voir les médias", page)
         bank.setObjectName("tgPrimary")
         bank.clicked.connect(self.open_group_bank)
         row.addWidget(bank)
-        tg = QPushButton("Ouvrir dans Telegram", page)
-        tg.clicked.connect(self.open_group_telegram)
-        row.addWidget(tg)
         folder = QPushButton("Ouvrir le dossier", page)
         folder.clicked.connect(self.open_group_folder)
         row.addWidget(folder)
@@ -1911,7 +1950,9 @@ class TelegramDialog(QDialog):
         self.table = _table(page, [], 1)
         self.table.setSortingEnabled(True)
         self.table.setIconSize(QSize(3 * 92 + 8, 52))
-        self.table.itemDoubleClicked.connect(lambda _i: self._result_open())
+        self.table.itemDoubleClicked.connect(
+            lambda item: item.column() not in self._link_columns() and self._result_open())
+        self.table.itemClicked.connect(self._result_clicked)
         lay.addWidget(self.table, 1)
         row2 = QHBoxLayout()
         self.r_join = QPushButton("Rejoindre / demander", page)
@@ -1934,9 +1975,6 @@ class TelegramDialog(QDialog):
         self.r_export = QPushButton("Tout télécharger", page)
         self.r_export.clicked.connect(self.export_selected)
         row2.addWidget(self.r_export)
-        link = QPushButton("Ouvrir dans Telegram", page)
-        link.clicked.connect(self.open_selected_link)
-        row2.addWidget(link)
         row2.addStretch(1)
         lay.addLayout(row2)
         self._set_mode("groupe")
@@ -2250,7 +2288,9 @@ class TelegramDialog(QDialog):
                 box.setToolTip("Te prévenir quand il arrive des photos ou vidéos" if flag == "alert"
                                else "Les télécharger dès qu'elles arrivent")
                 table.setItem(i, col, box)
-            name = _cell(row["title"])
+            can_open = bool(telegram_links(row["key"], row.get("username") or ""))
+            name = (_link_cell(row["title"], "Un clic : ouvrir le groupe dans Telegram")
+                    if can_open else _cell(row["title"]))
             name.setData(Qt.UserRole, row["key"])
             strip = _strip(row.get("apercus") or [])
             if strip is not None:
@@ -2349,7 +2389,7 @@ class TelegramDialog(QDialog):
             self.status.setText(f"✔ Alerte désactivée sur « {name} ».")
 
     def _group_clicked(self, item: QTableWidgetItem) -> None:
-        if item.column() == 9:
+        if item.column() in (2, 9):
             self.open_in_telegram(item.data(Qt.UserRole))
 
     def open_group_telegram(self) -> None:
@@ -2676,8 +2716,8 @@ class TelegramDialog(QDialog):
                     preview.setIcon(strip)
                 cells = [
                     preview,
-                    _cell(("🔒 " if (row.get("demande") or row.get("prive")) and not member else "")
-                          + (row.get("title") or "")),
+                    _link_cell(("🔒 " if (row.get("demande") or row.get("prive")) and not member
+                                else "") + (row.get("title") or "")),
                     _cell(access, tip="Protégé : Telegram interdit d'en télécharger les médias."
                           if row.get("protege") else ""),
                     _cell(row.get("kind") or ""),
@@ -2687,19 +2727,19 @@ class TelegramDialog(QDialog):
                           if row.get("medias") is None else ""),
                     _cell(row.get("dernier") or "",
                           -(row.get("jours") if row.get("jours") is not None else 99999)),
-                    _cell(row.get("url") or ""),
+                    _link_cell(row.get("url") or ""),
                 ]
             elif self.mode == "message":
                 cells = [
                     _cell(row.get("date") or ""),
-                    _cell(row.get("title") or ""),
+                    _link_cell(row.get("title") or "", "Un clic : ouvrir le message dans Telegram"),
                     _cell(row.get("texte") or "", tip=row.get("texte") or ""),
                     _cell(row.get("media") or ""),
                     _cell(f"{subs:,}".replace(",", " "), subs),
-                    _cell(row.get("url") or ""),
+                    _link_cell(row.get("url") or "", "Un clic : ouvrir le message dans Telegram"),
                 ]
             else:
-                cells = [_cell(row.get("url") or ""), _cell(row.get("kind") or ""),
+                cells = [_link_cell(row.get("url") or ""), _cell(row.get("kind") or ""),
                          _cell(row.get("acces") or ""), _cell(row.get("source") or "")]
             cells[0].setData(Qt.UserRole, i)
             for col, cell in enumerate(cells):
@@ -2785,6 +2825,19 @@ class TelegramDialog(QDialog):
         row = self._selected_one()
         if row is not None and row.get("username"):
             self._export(row["username"], row.get("title") or row["username"])
+
+    def _link_columns(self) -> tuple:
+        """Les colonnes cliquables (nom, lien) du tableau de recherche."""
+        return {"groupe": (1, 7), "message": (1, 5), "web": (0,)}[self.mode]
+
+    def _result_clicked(self, item: QTableWidgetItem) -> None:
+        if item.column() not in self._link_columns():
+            return
+        first = self.table.item(item.row(), 0)
+        at = first.data(Qt.UserRole) if first is not None else None
+        if at is not None and 0 <= at < len(self.rows) and self.rows[at].get("url"):
+            QDesktopServices.openUrl(QUrl(self.rows[at]["url"]))
+            self.status.setText("Ouverture dans Telegram…")
 
     def open_selected_link(self) -> None:
         row = self._selected_one()
