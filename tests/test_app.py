@@ -7285,6 +7285,10 @@ def main() -> int:
     # Un tri retenu d'une seance a l'autre s'affichait sans s'appliquer.
     cfg["sort_mode"] = "duration_desc"
     window = MainWindow(cfg)
+    # Les cartes epinglees en tete (« Noms sans aucun mot ») ont leur test dans
+    # tests/smoke.py. Ici elles s'intercalaient, selon le minutage, devant
+    # chaque etape qui prend « le premier element » : on les ecarte.
+    window._pin_here = lambda: False
     window.resize(1400, 900)
     window.show()
     pump(app, 0.2)
