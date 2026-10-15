@@ -6339,6 +6339,11 @@ def check_chosen_features(app, window, base, tri) -> None:
     # Les renommages de [100] relancent une relecture : la collection doit la
     # finir, sinon un groupe pouvait paraitre hors de la collection et sortir.
     wait_for(app, lambda: not window.scanning and not window.transfers.busy, 30)
+    # Une etape precedente a pu declarer « pas des doublons » des videos d'essai
+    # aux memes noms (choisies_3, choisies_4) : Prisme le respecte, a raison.
+    from videosorter.dupes_memory import NOT_DUPES as _not_dupes
+    for clip in clips:
+        _not_dupes.oublier(clip)
     window.on_dupes_found(groups)
     window.show_found_dupes_board()
     # La planche se remplit au tour suivant : sous charge, on la lisait vide.
@@ -6346,16 +6351,9 @@ def check_chosen_features(app, window, base, tri) -> None:
     pump(app, 0.3)
     notes = [getattr(i, "board_note", "") for i in window.items]
     note = (notes + [""] * 5).__getitem__     # une liste trop courte echoue, sans planter
-    from videosorter.dupes_memory import NOT_DUPES as _nd
-    _stages = (len(_nd.filtrer_groupes(list(groups))),
-               len(window._only_in_collection(list(groups))),
-               len(window._one_spelling(list(groups))),
-               len(window._still_here(list(groups))),
-               [Path(c).name for c in clips], [Path(c).exists() for c in clips])
     check(note(0) == "✓ à garder" and note(3) == "✓ à garder"
           and "de moins" in note(1),
-          f"le meilleur de chaque groupe est désigné, l'écart se lit ({notes}) "
-          f"— étapes {_stages}")
+          f"le meilleur de chaque groupe est désigné, l'écart se lit ({notes})")
     check(len(window.board.cards) > 1
           and window.board.cards[1].meta.full_text().startswith(note(1)),
           "sur la carte elle-même")
