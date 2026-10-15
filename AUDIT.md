@@ -29,6 +29,28 @@ Fait et vérifié (guard, smoke, tests ciblés, vraie fenêtre en bac à sable :
 
 Reste : réglage « Décodage vidéo » (à passer en Automatique par l'utilisateur), préchauffage du premier aperçu, sonde NAS avant les cartes connues, lots 3 à 5. Deux échecs de `tests/test_photos.py` existaient avant ce travail (onglet « Photos », zoom à la molette) : à regarder.
 
+## Bilan mesuré (15/10/2026, avant l'audit = commit 46c2e09, après = aujourd'hui)
+
+Mesures locales en bac à sable (mêmes vidéos d'essai, sans toucher au NAS) :
+
+| | Avant | Après |
+|---|---|---|
+| Réveils par seconde au repos (minuteries) | 79 | 18 (−78 %) |
+| Modèle vocal (~1 Go) chargé 30 s après le lancement | oui, à chaque fois | seulement si le micro a servi dans la semaine |
+| Telegram chargé au lancement sans groupe suivi | oui | non |
+| Déchiffrer 1 Mo venant de Telegram | 3,1 s (Python pur) | 2 ms (cryptg), ×1 470 |
+| « Déjà dans la bibliothèque » (Telegram) | parcours du NAS, minutes | index : 59 291 vidéos en 1 s |
+| Guetteur des doublons après une analyse | tout le partage | les dossiers changés seulement |
+| Lecture des visiteurs sur le NAS (personne ne regarde) | toutes les 5 s | toutes les 30 s |
+| Une vidéo joue pendant les travaux de fond | ~20 ffmpeg à priorité normale | ils attendent ; ffmpeg sous la priorité normale |
+| Import + fenêtre + premières cartes | 1,6 + 0,8 + 0,24 s | 1,45 + 0,8–1,0 + 0,2 s (égal, au bruit près) |
+| Lignes de code (videosorter/) | 75 970 | 76 266 (≈ égal : ~560 lignes mortes retirées, en-têtes des 13 nouveaux modules ajoutés) |
+| Fenêtre principale (window.py) | 16 143 lignes | 12 230 lignes, + 13 modules thématiques |
+
+Non-régression : `tests/test_app.py` complet donne les mêmes 21 échecs avant et après (982 vérifications réussies après, 976 avant) — ces échecs existaient avant l'audit (données de test périmées). Idem `test_labo` (import d'un nom disparu) et `test_photos` (zoom à la molette). guard, smoke et les tests ciblés passent.
+
+Pas fait (rapport risque/gain) : lecteurs créés à la demande, CSS/JS hors de web.py, regroupement des 14 écritures « .tmp puis remplacement ». Reste aussi le réglage « Décodage vidéo » (GPU) à passer en Automatique.
+
 ## Plan, par lots — du plus sûr au plus risqué
 
 Chaque lot : un commit, les vérifications indiquées, puis contrôle à l'écran réel pour tout ce qui touche à l'image.
