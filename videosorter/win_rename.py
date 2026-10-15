@@ -76,7 +76,17 @@ class RenameMixin:
         self._cancel_rename()
         piece = self._title_piece()
         if piece is None:
+            # Un nom refuse rouvre le champ au tour suivant : le titre n'est
+            # pas toujours deja revenu a l'ecran, et le champ ne revenait pas
+            # (on perdait ce qu'on avait tape). Quelques essais, puis rien.
+            tries = getattr(self, "_rename_tries", 0)
+            if text is not None and tries < 10:
+                self._rename_tries = tries + 1
+                QTimer.singleShot(50, lambda: self.start_rename(text))
+            else:
+                self._rename_tries = 0
             return
+        self._rename_tries = 0
         field = _RenameField(self.top_bar)
         field.setObjectName("renameField")
         # La police du titre qu'il remplace (14 points, gras), et avant de

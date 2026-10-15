@@ -6338,12 +6338,16 @@ def check_chosen_features(app, window, base, tri) -> None:
     window._dupes_by_image = False
     window.on_dupes_found(groups)
     window.show_found_dupes_board()
+    # La planche se remplit au tour suivant : sous charge, on la lisait vide.
+    wait_for(app, lambda: len(window.items) >= 5, 5)
     pump(app, 0.3)
     notes = [getattr(i, "board_note", "") for i in window.items]
-    check(notes[0] == "✓ à garder" and notes[3] == "✓ à garder"
-          and "de moins" in notes[1],
+    note = (notes + [""] * 5).__getitem__     # une liste trop courte echoue, sans planter
+    check(note(0) == "✓ à garder" and note(3) == "✓ à garder"
+          and "de moins" in note(1),
           f"le meilleur de chaque groupe est désigné, l'écart se lit ({notes})")
-    check(window.board.cards[1].meta.full_text().startswith(notes[1]),
+    check(len(window.board.cards) > 1
+          and window.board.cards[1].meta.full_text().startswith(note(1)),
           "sur la carte elle-même")
     check(len(window.board.picked_ids) == 3
           and window.items[0].item_id not in window.board.picked_ids,
