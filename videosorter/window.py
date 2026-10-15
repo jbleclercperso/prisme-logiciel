@@ -48,12 +48,21 @@ from .header import (
 )
 from . import media
 from .covers import COVERS
+from .winkit import PAGE_DONE, PAGE_LOCK, PAGE_QUIET, PAGE_SORT, PAGE_WELCOME
+# La fenetre principale en morceaux (win_*.py) : chacun porte un theme, et
+# MainWindow en herite. Le code n'a fait que changer de fichier.
+from .win_banner import BannerMixin
 from .win_dupes import DupesMixin
 from .win_phone import PhoneMixin
+from .win_rename import RenameMixin
+from .win_roots import RootsMixin
 from .win_share import ShareMixin
 from .win_solos import SolosMixin
+from .win_tags import TagsMixin, PINNED_LOOSE, PINNED_UNREAD
+from .win_trash import TrashMixin
+from .win_ultra import UltraMixin
 from .win_update import UpdateMixin
-from .win_banner import BannerMixin
+from .win_web import WebMixin, _weight
 from .media import PreviewManager, Tools, page_count
 from .ratings import Ratings
 from .tagging import TagsThread, iter_tag_items, unreadable_name
@@ -93,14 +102,7 @@ from .widgets import (
     FavoriteStar, PhoneHideDialog, PinButton, TagsDialog, TrashDialog, VeilDialog,
 )
 
-PAGE_WELCOME, PAGE_SORT, PAGE_DONE, PAGE_QUIET, PAGE_LOCK = 0, 1, 2, 3, 4
 
-# Les dossiers virtuels epingles en tete de la collection : ce qu'aucun
-# nom ne range, et ce qui n'est dans aucun sous-dossier. Leur nom dit ce
-# qu'ils contiennent : « À trier » et « Orphelins » ne s'expliquaient pas,
-# on ne se rappelait jamais lequel etait lequel.
-PINNED_UNREAD = "Noms sans aucun mot — partout"
-PINNED_LOOSE = "Noms sans aucun mot — en vrac"
 # Assez courts pour tenir sur une carte ; la phrase entiere est dans la bulle.
 PINNED_TIPS = {
     PINNED_UNREAD: "Les vidéos dont le nom ne dit rien (8f7e6d5c4b, IMG_2041…), "
@@ -110,32 +112,6 @@ PINNED_TIPS = {
 }
 
 
-class _RenameField(QLineEdit):
-    """Le nom en cours de renommage, pose sur le titre (F2).
-
-    Entree valide ; Echap renonce, et un clic ailleurs aussi : rien ne se
-    renomme sur le disque sans qu'on l'ait valide.
-    """
-
-    committed = Signal(str)
-    cancelled = Signal()
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
-            self.cancelled.emit()
-            return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            if not event.isAutoRepeat():
-                self.committed.emit(self.text())
-            return
-        super().keyPressEvent(event)
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        # Le menu du clic droit prend le clavier un instant : ce n'est pas
-        # partir ailleurs.
-        if event.reason() != Qt.PopupFocusReason:
-            self.cancelled.emit()
 
 # Ce qu'il advient de ce qu'on supprime, dit apres « Supprimer » (infobulle
 # de la touche). Une seule action, un seul mot : on ne lisait plus « Écarter »,
@@ -146,54 +122,6 @@ DELETE_LABELS = {
     "local_trash": "dossier de secours à la fermeture",
 }
 
-
-def _weight(size: int) -> str:
-    """Un poids lisible : « 850 Mo », « 1,4 Go »."""
-    if size >= 1e9:
-        return f"{size / 1e9:.1f} Go".replace(".", ",")
-    return f"{size / 1e6:.0f} Mo"
-
-
-def web_recap(activity: dict) -> tuple:
-    """(texte, avancement 0..1 ou None, infobulle) de ce que fait la recherche
-    web -- ou ("", None, "") s'il n'y a rien a dire."""
-    parts, tips = [], []
-    if activity.get("searching"):
-        parts.append(f"Recherche {activity['sites_done']}/{activity['sites_total']} sites"
-                     f" · {activity['results']} résultats")
-    elif activity.get("verifying"):
-        parts.append(f"Vérifiées {activity['checked']}/{activity['results']}"
-                     f" · {activity['good']} bonnes")
-    downloads = activity.get("downloads") or {}
-    fraction = None
-    active = downloads.get("active", 0)
-    if active:
-        done, total = downloads.get("done", 0), downloads.get("total", 0)
-        text = f"↓ {active}"
-        if total:
-            text += f" · {_weight(done)} / {_weight(total)}"
-            if downloads.get("unknown"):
-                text += " +"                    # des fichiers au poids encore inconnu
-            fraction = min(1.0, done / total)
-        elif done:
-            text += f" · {_weight(done)}"
-        parts.append(text)
-    else:
-        finished, failed = downloads.get("finished", 0), downloads.get("failed", 0)
-        if finished or failed:
-            text = f"✓ {finished} téléchargé{'s' if finished > 1 else ''}" if finished else ""
-            if failed:
-                text += (" · " if text else "") + f"{failed} échec{'s' if failed > 1 else ''}"
-            parts.append(text)
-    tips = list(activity.get("lines") or [])
-    if not parts:
-        return "", None, ""
-    tip = "Recherche vidéo sur le web — cliquez pour y revenir"
-    if tips:
-        tip += "\n\n" + "\n".join(tips[:12])
-        if len(tips) > 12:
-            tip += f"\n… et {len(tips) - 12} autre(s)"
-    return "  |  ".join(parts), fraction, tip
 
 
 class WelcomePage(QWidget):
@@ -289,10 +217,6 @@ class DonePage(QWidget):
 
 # La cle du tri par nom, calculee une fois par element et non a chaque tri.
 _BY_NAME = operator.attrgetter("sort_name")
-
-# Les delais des nouveaux essais quand la racine ne repond pas (NAS endormi,
-# coupure) : vite d'abord, puis une fois par minute tant qu'il se tait.
-RETRY_DELAYS_S = (5, 15, 60)
 
 
 @contextmanager
@@ -472,8 +396,10 @@ class _GlobalQuietKey(QObject):
 
 
 
-class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, BannerMixin,
-                 QMainWindow):
+class MainWindow(
+        TagsMixin, WebMixin, RenameMixin, RootsMixin, TrashMixin, UltraMixin, DupesMixin,
+        PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, BannerMixin,
+        QMainWindow):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
@@ -2039,125 +1965,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         COVERS.wait_quiet = media.FOREGROUND.wait
         self._cover_applied: dict = {}      # dossier -> couverture posee sur sa carte
 
-    # ------------------------------------------------------------------
-    # Racine et analyse
-    # ------------------------------------------------------------------
-    # -- plusieurs racines -------------------------------------------------------
-    def _init_roots(self) -> None:
-        """Les racines de la configuration ; la premiere fois, celle qu'on
-        avait deja. Puis on les sonde regulierement : un disque qu'on branche
-        ou debranche se voit dans les vingt secondes."""
-        from . import roots
-        chosen = [str(p) for p in (self.cfg["roots"] or []) if p]
-        current = self.cfg["root"]
-        if not chosen and current and not roots.is_union(current):
-            chosen = [str(canon_root(current))]
-            self.cfg["roots"] = chosen
-        roots.set_roots(chosen)
-        roots.set_off(self.cfg["roots_off"] or [])
-        self._reachable_roots = None
-        self._roots_timer = QTimer(self)
-        self._roots_timer.setInterval(20000)
-        self._roots_timer.timeout.connect(self._watch_roots)
-        self._roots_timer.start()
-        QTimer.singleShot(1500, self._watch_roots)
-
-    def _watch_roots(self) -> None:
-        """Sonde les racines hors du fil de l'interface."""
-        if getattr(self, "_roots_probing", False) or self._closing:
-            return
-        from . import roots
-        from .tunnel import Chore
-        self._roots_probing = True
-        Chore(lambda: frozenset(roots.check_all()), self, fallback=None,
-              then=self._roots_seen).start()
-
-    def _roots_seen(self, found) -> None:
-        from . import roots
-        self._roots_probing = False
-        if found is None:
-            return
-        before, self._reachable_roots = self._reachable_roots, found
-        self._show_root_button()
-        if before is None or before == found:
-            return
-        gone = [roots.label(p) for p in before - found]
-        back = [roots.label(p) for p in found - before]
-        if gone:
-            self.show_banner(f"{', '.join(gone)} : injoignable — ses vidéos sont masquées "
-                             "jusqu'à son retour.", "info")
-        if back:
-            self.show_banner(f"{', '.join(back)} : de retour — ses vidéos réapparaissent.",
-                             "done")
-        if roots.is_union(self.root) and not self.scanning:
-            # La reunion se recompose : les dossiers de la racine partie
-            # quittent l'ecran, ceux de la racine revenue y reviennent.
-            self._launch_scan()
-
-    def _show_root_button(self) -> None:
-        """« ⌂ 2/2 » : combien de racines on regarde, sur combien. Le nom de
-        la racine est deja dans le fil d'Ariane, juste a cote : le bouton le
-        repetait."""
-        from . import roots
-        top = self.top_root()
-        total = len(roots.roots())
-        if top is None or total < 2:
-            self.root_button.setText("⌂  Racines")
-            self.root_button.setToolTip("Les racines : en ajouter, choisir celles qu'on regarde")
-            return
-        shown = len(roots.members(top)) if roots.is_union(top) else 1
-        self.root_button.setText(f"⌂  {shown}/{total}")
-        self.root_button.setToolTip(
-            f"{shown} racine{'s' if shown > 1 else ''} affichée{'s' if shown > 1 else ''} "
-            f"sur {total} : cliquer pour cocher celles qu'on regarde")
-
-    def _root_ticks(self) -> set:
-        """Les racines cochees : celles qu'on regarde en ce moment."""
-        from . import roots
-        top = self.top_root()
-        if top is None:
-            return set()
-        if roots.is_union(top):
-            return {os.path.normcase(str(p)) for p in roots.chosen_on()}
-        return {os.path.normcase(str(p)) for p in roots.roots()
-                if os.path.normcase(str(p)) == os.path.normcase(str(top))}
-
-    def _fill_root_menu(self) -> None:
-        """Une case par racine : cochee, on la regarde. Le menu reste ouvert
-        le temps de cocher ; la vue suit a sa fermeture."""
-        from PySide6.QtWidgets import QCheckBox, QWidgetAction
-        from . import roots
-        menu = self.root_menu
-        menu.clear()
-        reach = self._reachable_roots
-        chosen = roots.roots()
-        ticks = self._root_ticks()
-        self._root_boxes = []
-        if chosen:
-            head = menu.addAction("Racines affichées")
-            head.setEnabled(False)
-        for root in chosen:
-            ok = reach is None or str(root) in reach
-            box = QCheckBox(roots.label(root) + ("" if ok else "  — injoignable"), menu)
-            box.setObjectName("rootTick")
-            box.setChecked(os.path.normcase(str(root)) in ticks)
-            box.setEnabled(ok)
-            box.setToolTip(str(root) if ok else
-                           f"{root}\nDébranchée ou éteinte : elle revient d'elle-même.")
-            box.toggled.connect(lambda _on, b=box: self._keep_one_tick(b))
-            holder = QWidgetAction(menu)
-            holder.setDefaultWidget(box)
-            menu.addAction(holder)
-            self._root_boxes.append((root, box))
-        if chosen:
-            menu.addSeparator()
-        menu.addAction("Ajouter des racines…", self.add_root).setToolTip(
-            "Un ou plusieurs dossiers d'un coup (Ctrl ou Maj pour en choisir plusieurs)")
-        if chosen:
-            drop = menu.addMenu("Retirer une racine")
-            for root in chosen:
-                drop.addAction(roots.label(root),
-                               lambda r=root: self.remove_root(r)).setToolTip(str(root))
 
     def _keep_one_tick(self, box) -> None:
         """Au moins une racine reste cochee : sinon il n'y aurait rien a voir."""
@@ -2167,68 +1974,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
             box.setChecked(True)
             box.blockSignals(False)
 
-    def _root_menu_closed(self) -> None:
-        """Le menu se ferme : on regarde les racines cochees."""
-        from . import roots
-        pairs = getattr(self, "_root_boxes", [])
-        if not pairs:
-            return
-        wanted = [root for root, box in pairs if box.isChecked()]
-        self._root_boxes = []
-        if not wanted:
-            return
-        if {os.path.normcase(str(p)) for p in wanted} == self._root_ticks():
-            return
-        off = [str(root) for root, _box in pairs if root not in wanted]
-        self.cfg["roots_off"] = off
-        self.cfg.save_soon()
-        roots.set_off(off)
-        # Une seule : on l'ouvre elle-meme ; plusieurs : leur reunion.
-        self.open_root_async(wanted[0] if len(wanted) == 1 else Path(roots.UNION),
-                             MODE_FOLDERS)
-
-    def add_root(self) -> None:
-        """Une racine de plus : un disque, un dossier du PC, un partage."""
-        from . import roots
-        from .widgets import pick_folders
-        start = str(self.top_root()) if self.top_root() is not None and not roots.is_union(
-            self.top_root()) else ""
-        chosen = pick_folders(self, "Ajouter une ou plusieurs racines", start)
-        if not chosen:
-            return
-        have = {os.path.normcase(str(p)) for p in roots.roots()}
-        fresh = [str(canon_root(p)) for p in chosen
-                 if os.path.normcase(str(canon_root(p))) not in have]
-        if not fresh:
-            return self.show_banner("Ces racines y étaient déjà.", "quiet")
-        self.cfg["roots"] = [str(p) for p in roots.roots()] + fresh
-        self.cfg.save_soon()
-        roots.set_roots(self.cfg["roots"])
-        self.show_banner(f"{len(fresh)} racine(s) ajoutée(s) : le bouton ⌂ coche celles "
-                         "qu'on regarde.", "done")
-        self._reachable_roots = None
-        self._watch_roots()
-        if len(roots.roots()) > 1 and not roots.is_union(self.top_root()):
-            self.open_root_async(Path(roots.UNION), MODE_FOLDERS)
-        elif roots.is_union(self.root) and not self.scanning:
-            self._launch_scan()
-
-    def remove_root(self, root) -> None:
-        """Retire une racine de la liste ; rien ne bouge sur le disque."""
-        from . import roots
-        keep = [str(p) for p in roots.roots()
-                if os.path.normcase(str(p)) != os.path.normcase(str(root))]
-        self.cfg["roots"] = keep
-        self.cfg["roots_off"] = [p for p in (self.cfg["roots_off"] or [])
-                                 if os.path.normcase(str(p)) != os.path.normcase(str(root))]
-        self.cfg.save_soon()
-        roots.set_roots(keep)
-        roots.set_off(self.cfg["roots_off"])
-        self.show_banner(f"« {roots.label(root)} » retirée de la liste des racines (rien "
-                         "n'a bougé sur le disque).", "quiet")
-        if roots.is_union(self.root) and not self.scanning:
-            self._launch_scan()
-        self._show_root_button()
 
     def open_at_launch(self) -> None:
         """Au lancement : la derniere racine, sur « Dossiers », sans accueil.
@@ -2387,13 +2132,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
             self.global_quiet.pressed.connect(self.quiet_now)
         return self.global_quiet.start()
 
-    def choose_root(self) -> None:
-        start = self.cfg["root"] or str(Path.home())
-        chosen = QFileDialog.getExistingDirectory(self, "Choisir le dossier racine", start)
-        if chosen:
-            # « Réseau › AS1104T › partage » ou « X: » : la meme racine, donc
-            # les memes cles d'index, de favoris et de vignettes.
-            self.open_root_async(canon_root(chosen))
 
     def _under_origin(self, path) -> bool:
         if self.origin is None or path is None:
@@ -2632,29 +2370,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         # vignettes de ce qu'on regarde, non.
         self.scan_thread.start(RefreshThread.LowPriority)
 
-    def on_root_unreachable(self, why: str) -> None:
-        """La racine n'a pas repondu : la liste reste celle du dernier passage.
-
-        Rien n'a ete efface. On le dit, puis on reessaie tout seul — 5 s, 15 s,
-        puis chaque minute — tant que le NAS se tait.
-        """
-        if self.sender() is not None and self.sender() is not self.scan_thread:
-            return
-        delay = RETRY_DELAYS_S[min(self._retry_step, len(RETRY_DELAYS_S) - 1)]
-        self._retry_step += 1
-        self.show_banner(
-            f"NAS injoignable — liste du dernier passage. Nouvel essai dans "
-            f"{delay} s.\n{why}", "error")
-        self.retry_timer.start(delay * 1000)
-
-    def _retry_root(self) -> None:
-        """Nouvel essai de lecture, sur la racine qu'on regarde encore."""
-        if self.root is None or self.scanning:
-            return
-        if self._page() == PAGE_WELCOME:
-            return
-        mark(f"nouvel essai {self.root}")
-        self._launch_scan()
 
     def _tell_startup(self) -> None:
         """Ce qui s'est mal passe au lancement, dit une fois, au premier dossier.
@@ -2803,31 +2518,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         self._scan_started = 0.0
         self._refresh_scan_button()
 
-    # ------------------------------------------------------------------
-    # Corbeille de session
-    # ------------------------------------------------------------------
-    def open_trash(self) -> None:
-        """Liste ce qui a été écarté, avec de quoi le remettre en place."""
-        if not self.trash.count:
-            self.show_banner("La corbeille de session est vide", "quiet")
-            return
-        dialog = TrashDialog(self.trash, self)
-        dialog.exec()
-        self.setFocus()
-        # Un élément restauré redevient triable.
-        restored = list(self._restored_items())
-        for entry_path, item in restored:
-            item.status = ""
-            item.status_detail = ""
-            self._settle_board(item)
-        if restored:
-            # Ses videos reviennent dans les listes tirees de la collection.
-            self._touch(sortable=False)
-        self.update_counter()
-        # Sur la planche, on y reste : redessiner la fiche courante la
-        # remplacait par une video qu'on ne regardait pas.
-        if self.current is not None and not self.browsing:
-            self.show_item(self.index)
 
     def _restored_items(self):
         """Éléments dont la suppression a été défaite depuis la corbeille."""
@@ -2840,66 +2530,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
                     self.stats["deleted"] = max(0, self.stats["deleted"] - 1)
                     yield item.item_id, item
 
-    def _trash_restored(self, stored: str, target: str) -> None:
-        """Restaure depuis la corbeille : l'etoile revient avec l'element.
-
-        Et Ctrl+Z oublie cette suppression : l'annuler encore echouait sur un
-        element deja revenu, et masquait l'annulation d'avant.
-        """
-        self.ratings.rename(stored, target)
-        from .dupes_memory import NOT_DUPES
-        NOT_DUPES.renommer(stored, target)
-        gone = os.path.normcase(str(stored))
-        self.history = [entry for entry in self.history
-                        if not (entry.dst is not None
-                                and os.path.normcase(str(entry.dst)) == gone)]
-
-    def _trash_purged(self, paths: list) -> None:
-        """Detruits pour de bon : leurs favoris et leurs « pas des doublons »
-        n'ont plus d'objet."""
-        from .dupes_memory import NOT_DUPES
-        for path in paths:
-            self.ratings.forget_under(path)
-            NOT_DUPES.oublier(path)
-
-    def _flush_trash_on_close(self) -> None:
-        """Vide la corbeille de session, sans rien demander.
-
-        Sur un disque local, le contenu rejoint la corbeille de Windows ; sur
-        le NAS, il est detruit pour de bon — c'est voulu, et une question posee
-        a chaque fermeture finirait par etre approuvee sans etre lue.
-
-        Hors du fil de l'interface : un gros dossier sur le NAS, c'est un
-        aller-retour reseau par fichier, et la fenetre restait « Ne repond
-        pas » des minutes. La fenetre est deja masquee ; une petite boite dit
-        ce qui se passe si cela dure.
-        """
-        thread = self.trash.flush_in_background(self.cfg["delete_mode"])
-        started = time.monotonic()
-        waiter = None
-        while thread.is_alive():
-            thread.join(0.05)
-            QApplication.processEvents()
-            if waiter is None and time.monotonic() - started > 0.6:
-                waiter = QProgressDialog(
-                    "Vidage de la corbeille de session…", "", 0, 0, self)
-                waiter.setWindowTitle(APP_NAME)
-                waiter.setCancelButton(None)
-                waiter.setMinimumDuration(0)
-                waiter.show()
-        if waiter is not None:
-            waiter.close()
-        # Les signaux du vidage (favoris a oublier) arrivent par la file
-        # d'evenements : on les laisse passer avant d'ecrire les favoris.
-        QApplication.processEvents()
-        _done, problem = self.trash.flush_result or (0, "")
-        if problem:
-            QMessageBox.warning(
-                self, "Corbeille incomplète",
-                "La corbeille de session n'a pas pu être vidée entièrement. Ce "
-                "qui reste est gardé et sera repris au prochain lancement "
-                "(Ctrl+B).\n\n" + problem,
-            )
 
     # ------------------------------------------------------------------
     # Fabrication des vignettes d'avance
@@ -3199,16 +2829,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
                 gone.add(os.path.normcase(str(job.src)))
         return gone
 
-    @staticmethod
-    def _in_trash(key: str) -> bool:
-        """Ce chemin (`normcase`) dort-il dans une corbeille ?
-
-        L'analyse d'un dossier descend aussi dans sa corbeille de seance : ce
-        qu'on venait de supprimer ressortait au tirage au hasard.
-        """
-        local_trash = os.path.normcase(str(actions.LOCAL_TRASH)).rstrip("\\/")
-        return (os.sep + TRASH_FOLDER_NAME + os.sep in key
-                or key.startswith(local_trash + os.sep))
 
     def _departed(self) -> set:
         """`_gone_paths`, plus ce que l'historique a deja range ou ecarte."""
@@ -3789,47 +3409,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         self.raise_()
         self.activateWindow()
 
-    def open_tag(self, item) -> None:
-        """Montre les vidéos réunies par un mot-clé, comme une liste ordinaire."""
-        self.levels.append({
-            "root": self.root, "mode": self.mode,
-            "item_id": item.item_id,
-        })
-        # Sans `stat()` : sur un partage, ouvrir un mot-cle de cinq cents videos
-        # coutait cinq cents allers-retours pour une taille que rien n'affiche.
-        self.all_items = [Item(path=Path(video), kind=MODE_FILES, videos=[video],
-                               video_count=1, file_count=1)
-                          for video in item.videos]
-        self.items = self._filtered()
-        self.apply_sort()
-        self.mode = MODE_FLAT
-        self.index = 0
-        # Les videos d'un autre mot-cle, pas celle d'avant : le lecteur de
-        # cote lisait encore une video de la liste quittee.
-        if not self.aside_playlist and not self.aside.isHidden():
-            self.close_aside()
-        self.start_harvest()
-        self._apply_selectors()
-        # Un mot-cle n'est pas un dossier : sans ce rappel, le fil d'Ariane
-        # restait sur la racine et l'on ne savait plus ce qu'on regardait.
-        self._list_leaf = item.name
-        self.crumbs.set_path(self.top_root(), self.root)
-        self.crumbs.append_leaf(item.name)
-        noun = "photo(s)" if photo_mode() else "vidéo(s)"
-        if item.path.name == PINNED_UNREAD:
-            told = (f"{len(self.items)} {noun} dont le nom ne dit rien (8f7e6d5c4b, "
-                    "IMG_2041…), où qu'elles soient : à regarder pour les ranger")
-        elif item.path.name == PINNED_LOOSE:
-            told = (f"{len(self.items)} {noun} dont le nom ne dit rien, posées en "
-                    "vrac à la racine ou dans un dossier « + », hors de tout "
-                    "sous-dossier : à regarder pour les ranger")
-        else:
-            told = f"{len(self.items)} {noun} portant « {item.path.name} »"
-        self.show_banner(told, "info")
-        if self.browsing:
-            self.refresh_board()
-        elif self.items:
-            self.show_item(0)
 
     def go_parent(self) -> None:
         """Remonte d'un cran : par ou l'on est venu, sinon vers le parent reel."""
@@ -4266,92 +3845,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         if len(self.items) - 1 <= self.index + 2:
             self._request_previews(item, current=False)
 
-    def _add_tag_items(self) -> None:
-        """Place les dossiers virtuels en tete, une fois l'analyse terminee.
-
-        Ils se calculent sur les videos deja trouvees : inutile de relire le
-        disque, l'analyse vient de le faire. Les deux familles se calculent
-        hors du fil de l'interface et se gardent tant que la collection ne
-        bouge pas : « Mes mots » se refaisait a chaque visite, deux a quatre
-        secondes de fenetre figee sur cent mille videos.
-        """
-        if self.mode != MODE_FOLDERS:
-            return
-        mark(f"_add_tag_items {self.tag_family}")
-        # Les dossiers virtuels ne debordent plus sur la liste des dossiers
-        # reels : ils ont leur onglet, c'est la qu'on les cherche.
-        if self.tab != TAB_TAGS:
-            if any(i.is_tag for i in self.all_items):
-                self.all_items = [i for i in self.all_items if not i.is_tag]
-                if not self.all_items:
-                    self.all_items = self._collection()
-                self.items = self._filtered()
-                self.apply_sort()
-            return
-        # Les mots se tirent de la collection entiere, jamais de la liste
-        # affichee : celle-ci peut etre celle des mots eux-memes.
-        plain = self._collection()
-        key = self._collection_key()
-        # Deux familles : les mots qu'on a saisis, et ceux que les noms de
-        # fichiers repetent d'eux-memes. Les seconds ne demandent aucune saisie
-        # et decrivent souvent mieux la collection que ce qu'on aurait pense.
-        if self.tag_family != "mine":
-            cached = self._top_tags
-            if cached is None or cached[0] != key:
-                if self._tags_thread is None or self._tags_key != key:
-                    videos = [video for item in plain for video in item.videos]
-                    self._tags_key = key
-                    self._tags_thread = TagsThread(videos, INDEX.titles, self)
-                    self._tags_thread.ready.connect(self._on_top_tags)
-                    self._tags_thread.start()
-                    self.show_banner("Mots fréquents : calcul en cours…", "info")
-                if cached is None:
-                    return self._tags_computing("Calcul des mots fréquents…")
-                # L'ancienne liste reste a l'ecran le temps du calcul : une
-                # planche videe puis refaite pour presque les memes mots.
-            found = cached[1]
-            if not found:
-                return self._no_tags(
-                    "Aucun mot ne revient assez souvent dans ces noms de fichiers.")
-            return self._show_tag_list(found)
-        words = self.tags
-        if not words:
-            # Aucun mot-cle : la liste se vide **et l'affichage suit**. Il
-            # restait auparavant sur les categories precedentes, si bien que
-            # « Mes mots-cles » semblait rendre les mots frequents.
-            return self._no_tags(
-                "Ajoutez les vôtres par « ⋯ › Mots-clés automatiques… », ou "
-                "choisissez « Fréquents » pour les laisser deviner.")
-        # Mes propres mots valent pour une seule video ; ceux tires des noms
-        # de fichiers (`TagsThread`) doivent en reunir plusieurs.
-        minimum = 1
-        members = self.cfg["tag_members"] or {}
-        wanted = (key, tuple(words), minimum,
-                  tuple(sorted((k, len(v)) for k, v in members.items())))
-        cached = self._mine_tags
-        if cached is None or cached[0] != wanted:
-            if self._mine_key != wanted:
-                self._mine_key = wanted
-                videos = [video for item in plain for video in item.videos]
-                # Par tranches sur le fil de l'interface, et non dans un fil :
-                # un calcul Python y garde le verrou global, et la fenetre
-                # restait figee jusqu'a la fin (`iter_tag_items`).
-                old = self._mine_slicer
-                if old is not None and shiboken6.isValid(old):
-                    old.stop()
-                    old.deleteLater()
-                self._mine_slicer = self._in_slices(
-                    iter_tag_items(list(words), videos, minimum, dict(members)),
-                    lambda found, k=wanted: self._on_mine_tags(k, found))
-            if cached is None or cached[0][1:3] != wanted[1:3]:
-                return self._tags_computing("Calcul de vos mots-clés…")
-            # Memes mots, collection un peu changee : l'ancienne liste reste
-            # a l'ecran le temps du calcul.
-        found = cached[1]
-        if not found:
-            return self._no_tags(
-                "Aucun de vos mots-clés ne figure dans les noms de fichiers.")
-        self._show_tag_list(found)
 
     def _in_slices(self, work, then, budget_ms: float = 8.0) -> QTimer:
         """Mene un calcul (un generateur) par tranches sur le fil de l'interface.
@@ -4389,85 +3882,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         timer.start()
         return timer
 
-    def _tags_up_to_date(self) -> bool:
-        """Les mots-cles a l'ecran sont-ils ceux de la collection actuelle ?
-
-        Une relecture qui n'a rien change ne les refait pas : la planche des
-        mots-cles se rebatissait a chaque fin d'analyse, pour les memes.
-        """
-        key = self._collection_key()
-        if self.tag_family != "mine":
-            cached = self._top_tags
-            return (cached is not None and cached[0] == key
-                    and self.all_items is cached[1])
-        cached = self._mine_tags
-        return (cached is not None and cached[0][0] == key
-                and cached[0][1] == tuple(self.tags)
-                and self.all_items is cached[1])
-
-    def _on_mine_tags(self, key, found: list) -> None:
-        """Vos mots-cles sont faits : ils s'affichent, s'ils sont encore voulus."""
-        if key != self._mine_key:
-            # Un calcul remplace entre-temps (autres mots, autre collection).
-            return
-        self._mine_key = None
-        self._mine_tags = (key, found)
-        if self._at_tag_list() and self.tag_family == "mine":
-            self._add_tag_items()
-
-    def _tags_computing(self, text: str) -> None:
-        """Rien a montrer encore : on dit que ca se calcule."""
-        self.all_items = []
-        self.items = []
-        self.board.empty.setText(text)
-        if self.browsing:
-            self.refresh_board()
-        self.item_title.setText(text)
-        self.item_subtitle.setText("")
-        self._show_counts()
-
-    def _no_tags(self, why: str) -> None:
-        """Aucun mot-cle : la liste se vide, et le dit.
-
-        « Mes mots » sans aucune correspondance laissait la liste des
-        dossiers a l'ecran, sous l'onglet des mots-cles.
-        """
-        self.all_items = []
-        self.items = []
-        self.board.empty.setText(why)
-        if self.browsing:
-            self.refresh_board()
-        self.item_title.setText("Aucun mot-clé")
-        self.item_subtitle.setText(why)
-        self._show_counts()
-        self.update_counter()
-        self._tell_tags([])
-
-    def _show_tag_list(self, found: list) -> None:
-        # Dans son onglet, un mot-cle n'est pas un en-tete pose sur la liste des
-        # dossiers : c'est toute la liste (`_add_tag_items` ne vient ici que
-        # sous l'onglet des mots-cles).
-        self.all_items = found
-        self.items = self._filtered()
-        self.apply_sort()
-        self.board.empty.setText("Rien à afficher ici.")
-        self.start_harvest()
-        if self.browsing:
-            self.refresh_board()
-        elif self.items:
-            self.show_item(min(self.index, len(self.items) - 1))
-        self._show_counts()
-        self.update_counter()
-        self._tell_tags(found)
-
-    def _tell_tags(self, found: list) -> None:
-        """Apres « Mots-clés automatiques… » : combien ont trouve des videos."""
-        if not self._tags_banner:
-            return
-        self._tags_banner = False
-        self.show_banner(
-            f"{len(found)} mot(s)-clé(s) sur {len(self.tags)} ont trouvé "
-            f"des vidéos", "info")
 
     def on_scan_finished(self, mode: str, total: int) -> None:
         self.scanning = False
@@ -5127,13 +4541,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
                          name="labo-suit").start()
 
 
-    def search_web_for(self, text: str) -> None:
-        """La recherche web, preremplie avec cette demande."""
-        window = self._web_search_window()
-        window.queries.setPlainText(text)
-        window.showNormal()
-        window.raise_()
-        window.activateWindow()
 
     def search_labo_for(self, text: str) -> None:
         """Le Labo IA, cette demande deja tapee et lancee."""
@@ -7659,18 +7066,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         self.setFocus()
         return True
 
-    def _on_top_tags(self, found: list) -> None:
-        sender = self.sender()
-        if sender is not None and sender is not self._tags_thread:
-            # Un calcul remplace entre-temps (autre racine, autre collection) :
-            # son resultat se rangeait sous la cle du nouveau.
-            return
-        self.board.empty.setText("Rien à afficher ici.")
-        self._top_tags = (self._tags_key, found)
-        self._tags_thread = None
-        if self._at_tag_list() and self.tag_family != "mine":
-            self._add_tag_items()
-
 
     # Pendant les empreintes de « Chercher les doublons », ce qui est deja
     # releve se compare de temps en temps : on voit les doublons en cours de
@@ -7828,23 +7223,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         if self.root is not None and not self._show_tab_list():
             self.start_root(self.top_root(), MODE_FOLDERS, reset_levels=True)
 
-    def set_tag_family(self, family: str) -> None:
-        """Mes propres mots-clés, ou ceux que les noms de fichiers répètent."""
-        if family == self.tag_family:
-            # Recliquer la famille ou l'on est : on remonte a sa liste. C'est
-            # le geste qu'on fait quand on s'est perdu dans un mot-cle.
-            return self.go_home()
-        self.tag_family = family
-        self.cfg["tag_family"] = family
-        self.cfg.save_soon()
-        self.tag_chips.set_value(family)
-        # Le chemin de tous les onglets vers leur liste. Depuis l'interieur
-        # d'un mot-cle, la remise a zero faite ici laissait le mode a plat :
-        # les puces changeaient, la planche montrait toujours l'ancien mot, et
-        # Echap quittait la racine.
-        self.close_aside()
-        if self.root is not None and not self._show_tab_list():
-            self.start_root(self.top_root(), MODE_FOLDERS, reset_levels=True)
 
     def set_view(self, view: str) -> None:
         """Parcourir les vignettes, ou editer l'element ou l'on se trouve."""
@@ -7873,12 +7251,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         """
         return MODE_FLAT if self.tab == TAB_TAGS else self.mode_for_content()
 
-    def _at_tag_list(self) -> bool:
-        """Vrai a la racine de l'onglet « Mots-clés », la ou vivent ses mots."""
-        if self.tab != TAB_TAGS or self.levels or self.root is None:
-            return False
-        top = self.top_root()
-        return top is not None and Path(self.root) == Path(top)
 
     def _apply_selectors(self) -> None:
         """Aligne l'entête sur l'état réel, pour qu'il dise où l'on se trouve."""
@@ -10446,10 +9818,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         # Le geste suit l'onglet (`set_tab`) : rien a retenir sur le disque.
         self.setFocus()
 
-    def on_tree_root_changed(self, path: str) -> None:
-        # La meme ecriture partout (lettre plutot que \\serveur\partage).
-        self.cfg["tree_root"] = str(canon_root(path)) if path else ""
-        self.cfg.save_soon()
 
     # ------------------------------------------------------------------
     # Filtre par nom
@@ -11237,471 +10605,9 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
             self.show_banner(f"Restauration de « {name} »…", "info")
 
 
-    # -- « Similaires » : que des videos qui ressemblent a celle-ci ----------------
-    @staticmethod
-    def _tick_similar(bar, on: bool) -> None:
-        box = getattr(bar, "similar", None)
-        if box is not None and box.isChecked() != on:
-            box.blockSignals(True)
-            box.setChecked(on)
-            box.blockSignals(False)
-
-    def _similar_scope(self, seed: str = ""):
-        """Ou chercher : toutes les racines qui repondent, pas le seul dossier.
-
-        Celle de la video regardee en est toujours : un sondage du NAS qui
-        avait tarde (trois secondes) le disait injoignable, et toutes ses
-        voisines etaient ecartees -- « aucune vidéo ressemblante »."""
-        from . import roots
-        top = self.top_root()
-        listed = roots.roots() or ([top] if top is not None and not roots.is_union(top)
-                                   else [])
-        reach = self._reachable_roots
-        home = roots.owner(seed) if seed else None
-        if home is None and top is not None and not roots.is_union(top):
-            home = top
-        keep = [r for r in listed if reach is None or str(r) in reach]
-        if home is not None and not any(os.path.normcase(str(r)) == os.path.normcase(str(home))
-                                        for r in keep):
-            keep.append(home)
-        return [os.path.normcase(str(r)).rstrip("\\/") for r in keep]
-
-    def _find_similar(self, seed: str, then) -> None:
-        """Les voisines de `seed`, hors du fil de l'interface : `then(liste)`,
-        ou `then(None)` avec la raison deja dite."""
-        from . import similar
-        from .tunnel import Chore
-        scope = self._similar_scope(seed)
-        name = Path(seed).name
-        self.show_banner(f"✦ Recherche des vidéos qui ressemblent à « {name} »…",
-                         "quiet", seconds=20)
-
-        def keep(path: str) -> bool:
-            low = os.path.normcase(path)
-            if scope and not any(low == top or low.startswith(top + os.sep)
-                                 for top in scope):
-                return False
-            return not under_veiled(path)
-
-        def work():
-            space = similar.space()
-            if space is None:
-                return "index"
-            if not space.knows(seed):
-                return "inconnue"
-            raw = space.nearest(seed)
-            kept = [path for path, _score in raw if keep(path)]
-            found, missing = [], 0
-            for path in kept:
-                # L'index peut garder une video deplacee entre-temps.
-                if os.path.exists(path):
-                    found.append(path)
-                    if len(found) >= self.SIMILAR_COUNT:
-                        break
-                else:
-                    missing += 1
-                    if missing >= 400 and not found:
-                        break
-            if not found:
-                # Rien ne reste : on dit a quelle etape, plutot qu'un « aucune ».
-                return ("vide", len(raw), len(kept), missing)
-            return found
-
-        def done(result) -> None:
-            if result == "index" or result is None:
-                self.show_banner("Les ressemblances viennent de l'index du Labo IA, encore "
-                                 "vide : lancez l'indexation (bouton ✦ en haut à droite).",
-                                 "error", seconds=8)
-                return then(None)
-            if result == "inconnue":
-                self.show_banner(f"« {name} » n'est pas encore dans l'index du Labo IA : "
-                                 "indexez-la (Labo IA) pour chercher ses voisines.",
-                                 "error", seconds=8)
-                return then(None)
-            if isinstance(result, tuple):
-                _tag, raw, kept, missing = result
-                if not raw:
-                    why = "l'index du Labo ne lui connaît aucune voisine"
-                elif not kept:
-                    why = (f"ses {raw} voisines sont hors des racines joignables "
-                           f"ou dans des dossiers masqués")
-                else:
-                    why = (f"ses voisines ne sont plus à leur place sur le disque "
-                           f"({missing} introuvables) : relancez l'indexation du Labo")
-                self.show_banner(f"Aucune vidéo ressemblante trouvée : {why}.", "error",
-                                 seconds=10)
-                return then(None)
-            if not result:
-                self.show_banner("Aucune vidéo ressemblante trouvée.", "quiet")
-                return then(None)
-            then(result)
-
-        Chore(work, self, fallback=None, then=done).start()
 
     SIMILAR_COUNT = 150
 
-    def set_similar(self, on: bool) -> None:
-        """L'interrupteur ✦ de la fiche : la liste devient les voisines de la
-        video regardee, de la plus ressemblante a la moins ; decoche, on
-        retrouve la liste d'avant."""
-        if not on:
-            return self._stop_similar()
-        item = self.current
-        if (item is None or self.browsing or item.kind == MODE_FOLDERS
-                or item.is_tag or self._transient == "dupes"):
-            self._tick_similar(self.single_bar, False)
-            self.show_banner("✦ Similaires : ouvrez d'abord la fiche d'une vidéo.", "quiet")
-            return
-        seed = str(item.path)
-
-        def arrived(found) -> None:
-            current = self.current
-            box = getattr(self.single_bar, "similar", None)
-            if (found is None or box is None or not box.isChecked()
-                    or current is None or str(current.path) != seed):
-                self._tick_similar(self.single_bar, False)
-                return
-            self._enter_similar(seed, found)
-
-        self._find_similar(seed, arrived)
-
-    def _enter_similar(self, seed: str, videos: list) -> None:
-        back = {"root": self.root, "mode": self.mode, "levels": list(self.levels),
-                "all_items": self.all_items, "items": self.items, "index": self.index,
-                "list_leaf": self._list_leaf, "origin": self.origin}
-        position = max(0, self.single.player.position())
-        made = [Item(path=Path(path), kind=MODE_FILES, videos=[Path(path)],
-                     video_count=1, file_count=1) for path in [seed] + videos]
-        self._similar = {"seed": seed, "back": back}
-        self._transient = "similar"
-        self.all_items = made
-        self.items = list(made)
-        self.mode = MODE_FLAT
-        self.index = 0
-        self.plans = {}
-        self.pages = {}
-        name = Path(seed).name
-        self._list_leaf = f"✦ Comme « {Path(seed).stem} »"
-        self.crumbs.set_path(self.top_root(), self.root)
-        self.crumbs.append_leaf(self._list_leaf)
-        self._pending_start = ((os.path.normcase(seed), position, time.monotonic())
-                               if position > 0 else None)
-        self.show_item(0)
-        self._apply_selectors()
-        self.show_banner(f"✦ {len(videos)} vidéos qui ressemblent à « {name} », de la plus "
-                         "proche à la moins : ▸ ou Espace pour la suivante. Décochez ✦ "
-                         "pour revenir.", "info", seconds=8)
-
-    def _stop_similar(self) -> None:
-        state, self._similar = self._similar, None
-        if state is None or self._transient != "similar":
-            return
-        back = state["back"]
-        item = self.current
-        path = str(item.path) if item is not None else ""
-        position = max(0, self.single.player.position())
-        self._transient = ""
-        self.root, self.mode, self.origin = back["root"], back["mode"], back["origin"]
-        self.levels = back["levels"]
-        self.all_items, self.items = back["all_items"], back["items"]
-        self._list_leaf = back["list_leaf"]
-        self.plans = {}
-        self.pages = {}
-        self.crumbs.set_path(self._origin_for(self.root), self.root)
-        if self._list_leaf:
-            self.crumbs.append_leaf(self._list_leaf)
-        self._apply_selectors()
-        # La video regardee continue ; ▸ reprend la suite habituelle.
-        wanted = os.path.normcase(path)
-        for at, other in enumerate(self.items):
-            if os.path.normcase(str(other.path)) == wanted:
-                self._pending_start = ((wanted, position, time.monotonic())
-                                       if position > 0 else None)
-                return self.show_item(at)
-        if path:
-            # Une voisine venue d'ailleurs : la suite, c'est son dossier.
-            return self.play_in_app(path, position / 1000.0)
-        self.show_item(min(back["index"], len(self.items) - 1))
-
-    def set_aside_similar(self, on: bool) -> None:
-        """Le meme interrupteur, pour le lecteur de cote : ◂ ▸ y parcourent
-        les voisines de la video qu'il lit."""
-        if not on:
-            state, self._aside_similar = self._aside_similar, None
-            if state is not None:
-                self.aside_playlist = state["playlist"]
-                self.aside_playlist_at = state["at"]
-            return
-        seed = self.aside_current
-        if not seed:
-            self._tick_similar(self.aside_bar, False)
-            return
-
-        def arrived(found) -> None:
-            box = getattr(self.aside_bar, "similar", None)
-            if (found is None or box is None or not box.isChecked()
-                    or self.aside_current != seed):
-                self._tick_similar(self.aside_bar, False)
-                return
-            self._aside_similar = {"playlist": list(self.aside_playlist),
-                                   "at": self.aside_playlist_at}
-            self.aside_playlist = [seed] + found
-            self.aside_playlist_at = 0
-            self.show_banner(f"✦ {len(found)} vidéos qui ressemblent à « {Path(seed).name} » "
-                             "dans le lecteur de côté : ▸ pour la suivante.", "info")
-
-        self._find_similar(seed, arrived)
-
-    # -- l'ultra tri : tout a la souris ------------------------------------------
-    def toggle_ultra(self, on=None) -> None:
-        """Ctrl+U, le ⚡ du bandeau : clic gauche garde, clic droit supprime."""
-        on = (not self.ultra) if on is None else bool(on)
-        if on and not self._ultra_warned:
-            # Depuis le lecteur flottant, la question vient sur lui : Prisme
-            # est peut-etre reduit, et elle attendait derriere.
-            asker = self.floating if self.floating.active else self
-            answer = QMessageBox.question(
-                asker, "Ultra tri",
-                "Sur la fiche d'une vidéo, tout se fait à la souris :\n\n"
-                "   • clic gauche sur l'image : on la garde, et c'est la suivante ;\n"
-                "   • clic droit sur l'image : on la supprime.\n\n"
-                "Une vidéo triée ne revient qu'au tour suivant ; passée sans "
-                "choix (Espace, →), elle reste à trier et reviendra. La "
-                "pastille ⚡ en haut à gauche de l'image dit combien sont "
-                "déjà triées, sur combien.\n\n"
-                "Ce qui est supprimé passe par la corbeille de séance : Ctrl+Z le "
-                "reprend. Sur le NAS, c'est détruit pour de bon à la fermeture de "
-                "Prisme.\n\nActiver l'ultra tri ?")
-            if answer != QMessageBox.Yes:
-                on = False
-            else:
-                self._ultra_warned = True
-        self.ultra = on
-        hook = self._ultra_click if on else None
-        self.single.ultra = hook
-        self.floating.player.ultra = hook
-        box = getattr(self.single_bar, "ultra", None)
-        if box is not None and box.isChecked() != on:
-            box.blockSignals(True)
-            box.setChecked(on)
-            box.blockSignals(False)
-        self._show_task_pills()
-        self._show_ultra_tally()
-        self.show_banner("⚡ Ultra tri : clic gauche, on garde ; clic droit, on supprime. "
-                         "Ctrl+U pour arrêter." if on else "Ultra tri arrêté.",
-                         "info" if on else "quiet")
-
-    def _ultra_click(self, button: str) -> None:
-        item = self.current
-        if (not self.ultra or self.browsing or item is None or self.tab == TAB_SPLIT
-                or self._quiet):
-            return
-        # Deux clics trop rapprochés ne valent qu'un : le second tomberait sur
-        # la video suivante avant qu'on l'ait vue.
-        now = time.monotonic()
-        if now - self._ultra_at < 0.4:
-            return
-        self._ultra_at = now
-        if button == "left":
-            # Garder est un choix : la video sort du tour (Espace, lui, passe
-            # sans choisir).
-            self._ultra_chose(item)
-            return self.act_skip()
-        if item.kind == MODE_FOLDERS or item.is_tag:
-            return self.show_banner("Ultra tri : le clic droit ne supprime que des vidéos, "
-                                    "jamais un dossier entier.", "quiet")
-        self.act_delete()
-
-    # Ce que l'ultra tri parcourt n'a pas toujours de fin : le hasard tire sans
-    # cesse, et la voisine dans le dossier (« rester dans ce dossier ») fait le
-    # tour. Un petit dossier ramenait donc tres vite les memes videos -- et
-    # celles qu'on venait de supprimer, sur une fiche noire, « Déjà traité ».
-    # Chaque tour retient ce qui est passe (garde, supprime, range) : rien n'y
-    # revient avant que tout le reste soit passe.
-    def _ultra_video(self):
-        """La video de la fiche, si l'ultra tri vaut pour elle ; None sinon."""
-        item = self.current
-        if (not self.ultra or self.browsing or item is None or self.tab == TAB_SPLIT
-                or item.kind == MODE_FOLDERS or item.is_tag):
-            return None
-        return item
-
-    def _ultra_tour(self, item) -> dict:
-        """Le tour en cours pour ce que l'on parcourt depuis cette video."""
-        if self._in_random_run():
-            key, kind = ("hasard", str(self.top_root())), "hasard"
-        elif self._stays_in_folder():
-            key = ("dossier", os.path.normcase(str(Path(item.path).parent)))
-            kind = "dossier"
-        else:
-            key, kind = ("liste", str(self.root), self.mode, self.tab), "liste"
-        tour = self._ultra_tours.get(key)
-        if tour is None:
-            tour = self._ultra_tours[key] = {"kind": kind, "passed": set(),
-                                             "total": 0, "mark": None}
-        return tour
-
-    def _ultra_count(self, item) -> tuple:
-        """(passees, total) dans le tour en cours."""
-        tour = self._ultra_tour(item)
-        passed = tour["passed"]
-        if tour["kind"] == "hasard":
-            # Toute la collection, qu'on ne recompte que si elle change.
-            folders, weights = self._random_pool()
-            mark = ("hasard", weights[-1] if weights else 0)
-            if tour["mark"] == mark:
-                return len(passed), tour["total"]
-            pool = (str(video) for folder in folders for video in folder.videos)
-        elif tour["kind"] == "liste":
-            # La liste peut compter toute la collection : on ne la recompte
-            # que si elle change. Passer une video la retire du reste et
-            # l'ajoute aux passees -- le total ne bouge pas.
-            mark = (id(self.items), len(self.items))
-            if tour["mark"] == mark:
-                return len(passed), tour["total"]
-            pool = (str(other.path) for other in self.items
-                    if other.kind != MODE_FOLDERS and not other.is_tag
-                    and not other.locked)
-        else:
-            mark = None
-            pool = (str(video) for video in self._folder_videos(str(item.path)))
-        gone = self._departed()
-        rest = 0
-        for path in pool:
-            key = os.path.normcase(path)
-            if key not in passed and key not in gone and not self._in_trash(key):
-                rest += 1
-        tour["mark"] = mark
-        tour["total"] = len(passed) + rest
-        return len(passed), tour["total"]
-
-    def _show_ultra_tally(self) -> None:
-        """« ⚡ 12 / 40 triées », en haut a gauche de l'image."""
-        single = getattr(self, "single", None)
-        if single is None:
-            return
-        text = ""
-        item = self._ultra_video() if getattr(self, "ultra", False) else None
-        if item is not None:
-            done, total = self._ultra_count(item)
-            if total:
-                text = f"⚡ {done} / {total} triées"
-        # La ou la video joue : la fiche, ou le lecteur flottant. Le guet des
-        # bandeaux la repose ensuite a chaque battement.
-        floating = getattr(self, "floating", None)
-        afloat = floating is not None and floating.active
-        if afloat:
-            single.tally_text = text
-            single.hide_tally()
-            floating.player.set_tally(text)
-        else:
-            single.set_tally(text)
-            if floating is not None:
-                floating.player.tally_text = text
-
-    def _ultra_next(self) -> bool:
-        """La suivante de l'ultra tri, jamais deja passee dans ce tour.
-
-        False quand ce n'est pas a lui de choisir (un dossier, un mot-cle, une
-        analyse qui apporte encore des videos) : `advance` fait comme avant.
-        """
-        item = self._ultra_video()
-        if item is None:
-            return False
-        tour = self._ultra_tour(item)
-        passed = tour["passed"]
-        here = os.path.normcase(str(item.path))
-        # Seul un choix la sort du tour. Passee sans choisir (Espace, →, la
-        # fin de la video), elle n'est pas triee : elle reviendra.
-        chosen, self._ultra_choice = self._ultra_choice == here, ""
-        if chosen:
-            passed.add(here)
-        if tour["kind"] == "hasard":
-            moved = self.pick_random(skip=passed)
-        elif tour["kind"] == "dossier":
-            moved = self._ultra_folder_step(item, passed)
-        else:
-            moved = self._ultra_list_step(passed)
-            if not moved and self.scanning:
-                return False
-        if moved:
-            return True
-        if here not in passed and here not in self._departed():
-            # Plus qu'elle a trier : on ne boucle pas sur elle, on le dit.
-            self.show_banner("⚡ C'est la dernière vidéo pas encore triée de ce tour : "
-                             "clic gauche pour la garder, clic droit pour la supprimer.",
-                             "info")
-            return True
-        return self._ultra_round_done(tour, item)
-
-    def _ultra_chose(self, item) -> None:
-        """Une decision sur cette video : elle compte comme triee."""
-        if self.ultra and item is not None:
-            self._ultra_choice = os.path.normcase(str(item.path))
-
-    def _ultra_list_step(self, passed) -> bool:
-        """La prochaine de la liste, hors ce tour et ce qui est parti."""
-        gone = self._departed()
-        count = len(self.items)
-        for offset in range(1, count):
-            # Jusqu'au bout de la liste, puis depuis le debut : un tour
-            # commence la ou l'on a ouvert la fiche, pas forcement en tete.
-            position = (self.index + offset) % count
-            other = self.items[position]
-            if other.kind == MODE_FOLDERS or other.is_tag or other.locked:
-                continue
-            key = os.path.normcase(str(other.path))
-            if key in passed or key in gone:
-                continue
-            self.show_item(position)
-            return True
-        return False
-
-    def _ultra_folder_step(self, item, passed) -> bool:
-        """La prochaine du dossier, hors ce tour et ce qui est parti."""
-        listing = [str(video) for video in self._folder_videos(str(item.path))]
-        keys = [os.path.normcase(path) for path in listing]
-        here = os.path.normcase(str(item.path))
-        at = keys.index(here) if here in keys else -1
-        gone = self._departed()
-        locked = {os.path.normcase(str(other.path)) for other in self.items
-                  if other.locked}
-        for offset in range(1, len(listing) + 1):
-            position = (at + offset) % len(listing)
-            key = keys[position]
-            if key == here or key in passed or key in gone or key in locked:
-                continue
-            target = listing[position]
-            for index, other in enumerate(self.items):
-                if str(other.path) == target:
-                    self.show_item(index)
-                    return True
-            self.play_in_app(target)
-            return True
-        return False
-
-    def _ultra_round_done(self, tour, item) -> bool:
-        """Tout est passe : on le dit, et un nouveau tour commence."""
-        count = len(tour["passed"])
-        tour["passed"] = set()
-        tour["total"], tour["mark"] = 0, None
-        # Pas de page « Tri terminé » : elle coupait la video, jusque dans le
-        # lecteur flottant, noir. On repart, et le bandeau le dit.
-        # Le nouveau tour part de zero : rien n'y est trie sans un choix.
-        if tour["kind"] == "hasard":
-            moved = self.pick_random()
-        elif tour["kind"] == "liste":
-            moved = self._ultra_list_step(tour["passed"])
-        else:
-            moved = self._ultra_folder_step(item, tour["passed"])
-        if not moved:
-            self.show_banner("C'est la seule vidéo qui reste ici.", "quiet")
-            self._show_ultra_tally()
-            return True
-        # Apres le tirage, dont le bandeau aurait recouvert celui-ci.
-        self.show_banner(f"⚡ Tour complet : les {count} vidéos sont passées — "
-                         "un nouveau tour commence.", "done")
-        return True
 
     # -- les videos abimees (repair.py) -------------------------------------------
     def open_repair(self) -> None:
@@ -11953,75 +10859,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         self.update_counter()
         self._settle_board(item)
 
-    def start_rename(self, text: str | None = None) -> None:
-        """F2 : le nom de ce qu'on regarde devient un champ, sur place.
-
-        Au bout du fil d'Ariane, la ou on le lit : aucune fenetre. Entree
-        renomme, Echap renonce. Le renommage passe par la file des transferts,
-        hors du fil de l'interface, et Ctrl+Z le defait.
-        """
-        item = self.current
-        if self.browsing or self.tab == TAB_SPLIT or item is None:
-            self.show_banner("F2 renomme la vidéo ou le dossier ouvert dans sa "
-                             "fiche.", "quiet")
-            return
-        if item.locked:
-            self.show_banner("Cet élément part, ou est déjà parti : il ne se "
-                             "renomme plus.", "quiet")
-            return
-        if not item.movable or Path(item.path).name.startswith(PARENT_PREFIX):
-            self.show_banner("Un mot-clé, une entrée « en vrac » ou un dossier de "
-                             "tête ne se renomme pas d'ici.", "quiet")
-            return
-        if self.cinema:
-            # Le titre est dans la barre que le cinema cache : on en sort, et
-            # le champ se pose une fois la barre revenue a sa place. Sur la
-            # fiche : venu du ⛶ d'une video ouverte a cote, la sortie rendait
-            # la planche, et F2 n'avait plus rien a renommer.
-            self._back_to_board = False
-            self.toggle_cinema(False)
-            QTimer.singleShot(0, lambda: self.start_rename(text))
-            return
-        self._cancel_rename()
-        piece = self._title_piece()
-        if piece is None:
-            return
-        field = _RenameField(self.top_bar)
-        field.setObjectName("renameField")
-        # La police du titre qu'il remplace (14 points, gras), et avant de
-        # mesurer le texte : le champ ecrivait plus petit que le nom.
-        field.ensurePolished()
-        field.setText(Path(item.path).name if text is None else text)
-        bar = self.top_bar.width()
-        corner = piece.mapTo(self.top_bar, QPoint(0, 0))
-        wanted = field.fontMetrics().horizontalAdvance(field.text()) + 40
-        width = max(160, min(max(wanted, piece.width()), bar - 8))
-        height = max(piece.height(), field.sizeHint().height())
-        x = max(0, min(corner.x(), bar - width - 4))
-        y = max(0, corner.y() + (piece.height() - height) // 2)
-        field.setGeometry(x, y, width, height)
-        # Ce qui suit le titre sur la ligne (« 240p · 76,7 Ko ») s'efface le
-        # temps de l'edition, sans que rien ne bouge : le champ le recouvrait
-        # a moitie et touchait la taille du fichier.
-        subtitle = self.item_subtitle
-        if subtitle.isVisible():
-            policy = subtitle.sizePolicy()
-            self._rename_subtitle = policy.retainSizeWhenHidden()
-            policy.setRetainSizeWhenHidden(True)
-            subtitle.setSizePolicy(policy)
-            subtitle.hide()
-        field.committed.connect(self._commit_rename)
-        field.cancelled.connect(self._cancel_rename)
-        self._rename_field, self._renaming = field, item
-        field.show()
-        field.raise_()
-        field.setFocus(Qt.OtherFocusReason)
-        # Le nom sans son extension, pret a etre remplace, comme dans
-        # l'explorateur.
-        name = field.text()
-        stem = (len(Path(name).stem) if item.kind != MODE_FOLDERS and Path(name).suffix
-                else len(name))
-        field.setSelection(0, stem)
 
     def _title_piece(self):
         """Le dernier segment du fil d'Ariane : le nom de ce qu'on regarde."""
@@ -12030,72 +10867,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
                 return piece
         return None
 
-    def _cancel_rename(self) -> None:
-        """Referme le champ de renommage, sans rien renommer."""
-        field, self._rename_field = self._rename_field, None
-        self._renaming = None
-        retain, self._rename_subtitle = self._rename_subtitle, None
-        if retain is not None:
-            subtitle = self.item_subtitle
-            subtitle.show()
-            policy = subtitle.sizePolicy()
-            policy.setRetainSizeWhenHidden(retain)
-            subtitle.setSizePolicy(policy)
-        if field is None:
-            return
-        field.blockSignals(True)
-        field.hide()
-        field.deleteLater()
-        if self.isActiveWindow():
-            self.setFocus()
-
-    def _commit_rename(self, text: str) -> None:
-        """Entree dans le champ : verifie le nom, puis envoie le renommage."""
-        item = self._renaming
-        self._cancel_rename()
-        if item is None or item is not self.current or item.locked:
-            return
-        old = Path(item.path)
-        name = text.strip()
-        if not name or name.startswith("."):
-            # Avant l'extension : un champ vide devenait « .mp4 », un nom
-            # cache, et la video disparaissait de la collection.
-            what = "le dossier" if item.kind == MODE_FOLDERS else "la vidéo"
-            self.show_banner("Le nom ne peut pas être vide." if not name else
-                             f"Un nom qui commence par « . » serait caché : {what} "
-                             "disparaîtrait de Prisme.", "error")
-            QTimer.singleShot(0, lambda: self.start_rename(text))
-            return
-        if (item.kind != MODE_FOLDERS and old.suffix
-                and not name.lower().endswith(old.suffix.lower())):
-            # L'extension reste : sans elle, la video ne s'ouvrirait plus.
-            name += old.suffix
-        if name == old.name:
-            return
-        problem = actions.name_problem(name) or self._name_taken(item, name)
-        if problem:
-            self.show_banner(problem, "error")
-            # On reste dans le champ, avec ce qu'on avait tape, pour corriger.
-            QTimer.singleShot(0, lambda: self.start_rename(text))
-            return
-        resume = 0
-        if item.kind != MODE_FOLDERS and not self.browsing:
-            resume = max(0, int(self.single.player.position()))
-        item.status = "pending_rename"
-        item.status_detail = name
-        self._rename_resume = resume
-        self.show_banner(f"Renommage : « {old.name} » → « {name} »…", "info")
-
-        def send() -> None:
-            # Windows ne renomme pas un fichier ouvert : le lecteur le lache.
-            # Il le reprend a l'arrivee, au meme instant (`_reshow_renamed`).
-            # Vider un lecteur coute jusqu'a cent millisecondes : au tour
-            # suivant, une fois le champ parti et le bandeau pose, Entree
-            # repond aussitot.
-            self._release_media(old)
-            self._submit(Transfer(kind="rename", src=old, new_name=name,
-                                  label=old.name, item_id=item.item_id), item)
-        QTimer.singleShot(0, send)
 
     def _name_taken(self, item, name: str) -> str:
         """Un voisin connu porte-t-il deja ce nom ? Sans rien demander au NAS :
@@ -12109,168 +10880,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
                 return f"« {name} » existe déjà dans ce dossier."
         return ""
 
-    def _reshow_renamed(self, item) -> None:
-        """La fiche reprend sa video, sous son nom, a l'instant ou on l'a laissee."""
-        ms, self._rename_resume = self._rename_resume, None
-        if ms and item.kind != MODE_FOLDERS:
-            self._pending_start = (os.path.normcase(str(item.path)), int(ms),
-                                   time.monotonic())
-        self.show_item(self.index)
-
-    def _follow_rename(self, item, old, new) -> None:
-        """La collection en memoire suit un renommage reussi.
-
-        Contrairement a un rangement, l'element reste la ou il est, sous son
-        nouveau nom : sa carte, sa fiche et ses voisines le montrent aussitot,
-        sans attendre la relecture du dossier. Un dossier renomme emporte le
-        chemin de tout ce qu'il contient.
-        """
-        old_s, new_s = str(old), str(new)
-        if not old_s or not new_s or old_s == new_s:
-            return
-        if (item is not None and item.kind != MODE_FOLDERS and not item.is_tag
-                and self._follow_file_rename(item, old_s, new_s)):
-            return
-        # Les dossiers qui le contiennent d'abord, tant que l'element porte
-        # encore son ancien nom.
-        self._follow_move(old_s, new_s)
-        size = len(old_s)
-
-        def moved(path):
-            text = str(path)
-            if text.startswith(old_s) and (len(text) == size
-                                           or text[size] in "\\/"):
-                return _as_path(new_s + text[size:])
-            return None
-
-        done = set()
-        renamed = []
-        for items in (self.all_items, self._plain_items,
-                      [item] if item is not None else []):
-            for other in items:
-                if id(other) in done:
-                    continue
-                done.add(id(other))
-                fresh = moved(other.path)
-                if fresh is None:
-                    continue
-                was = other.item_id
-                other.path = fresh
-                other.videos = [moved(video) or video for video in other.videos]
-                other.__dict__.pop("sort_name", None)
-                renamed.append(other)
-                if was in self.board.picked_ids:
-                    self.board.picked_ids.discard(was)
-                    self.board.picked_ids.add(other.item_id)
-        # Sa carte, si elle est sur la page : la planche la croyait inchangee
-        # (meme element), et gardait l'ancien nom et un apercu introuvable.
-        first, last = self.board._page_bounds()
-        shown = self.board.items
-        for position in range(max(0, first), min(last, len(shown))):
-            if any(shown[position] is other for other in renamed):
-                card = self.board._card_for(position)
-                if card is not None:
-                    card.set_item(shown[position],
-                                  self.ratings.get(shown[position].path))
-                    if self.browsing:
-                        self.on_board_preview(position)
-        # Les niveaux empiles et l'historique de navigation passaient
-        # peut-etre par un dossier renomme : ils y menaient a « introuvable ».
-        for entry in list(self.levels) + list(self.visited):
-            fresh = moved(entry.get("root", ""))
-            if fresh is not None:
-                entry["root"] = fresh
-        # Le nom a change : la recherche et les tris sont a refaire.
-        self._touch()
-
-    def _follow_file_rename(self, item, old_s: str, new_s: str) -> bool:
-        """Une video renommee : on ne suit que ce qui la porte.
-
-        Le cas general balaye toute la collection (un dossier renomme emporte
-        tout ce qu'il contient), puis fait tout replier et retrier : sur cent
-        mille videos, deux a trois cents millisecondes de gel a la fin du
-        renommage, et autant a son Ctrl+Z, plus une demi-seconde au geste
-        suivant. Une video n'a rien sous elle : ses dossiers, ses fiches et
-        son nom replie suffisent. Rend faux si ses dossiers sont introuvables
-        tels quels -- le cas general s'en charge alors.
-        """
-        parents = {str(parent) for parent in Path(old_s).parents}
-        holders = []
-        for other in self._plain_items:
-            if (not other.is_tag and other.kind == MODE_FOLDERS
-                    and str(other.path) in parents):
-                holders.append(other)
-        if self._plain_items and not holders:
-            return False
-        fresh = _as_path(new_s)
-        touched = set()
-        for other in holders:
-            videos = other.videos
-            for at, video in enumerate(videos):
-                if str(video) == old_s:
-                    other.videos = list(videos)
-                    other.videos[at] = fresh
-                    touched.add(other.item_id)
-                    break
-        # Les fiches qui la montrent : elle-meme, celle de l'onglet Videos, et
-        # celle de la liste affichee si c'en est une autre.
-        renamed = [item]
-        cached = self._flat_cache.pop(old_s, None)
-        if cached is not None and str(cached.path) == old_s:
-            self._flat_cache[new_s] = cached
-            renamed.append(cached)
-        renamed.extend(other for other in self.all_items
-                       if str(other.path) == old_s)
-        seen = set()
-        for other in renamed:
-            if id(other) in seen or str(other.path) != old_s:
-                continue
-            seen.add(id(other))
-            was = other.item_id
-            other.path = fresh
-            other.videos = [fresh if str(video) == old_s else video
-                            for video in other.videos]
-            other.__dict__.pop("sort_name", None)
-            if was in self.board.picked_ids:
-                self.board.picked_ids.discard(was)
-                self.board.picked_ids.add(other.item_id)
-        # Les noms replies, a leur place : la liste triable ne change pas de
-        # membres, seul ce nom-ci a change.
-        for entry in self._sortable_memo.values():
-            folded = entry[4]
-            if folded is None:
-                continue
-            for position, other in enumerate(entry[2]):
-                if id(other) in seen and position < len(folded):
-                    name = fold(other.name)
-                    folded[position] = name
-                    if entry[5] is not None:
-                        entry[5][id(other)] = name
-        first, last = self.board._page_bounds()
-        shown = self.board.items
-        for position in range(max(0, first), min(last, len(shown))):
-            if id(shown[position]) in seen:
-                card = self.board._card_for(position)
-                if card is not None:
-                    card.set_item(shown[position],
-                                  self.ratings.get(shown[position].path))
-                    if self.browsing:
-                        self.on_board_preview(position)
-        if touched:
-            # Les apercus retenus de ses dossiers montraient l'ancien chemin
-            # (meme regle que `_follow_move`).
-            def owner(key: str) -> str:
-                for prefix in ("board@", "peek@"):
-                    if key.startswith(prefix):
-                        return key[len(prefix):]
-                return key.rsplit("@", 1)[0]
-
-            self.plans = {key: plan for key, plan in self.plans.items()
-                          if owner(key) not in touched}
-        # La collection a change de chemins (mur, hasard, voisines) ; la liste
-        # triable, elle, garde ses membres et ses noms viennent d'etre suivis.
-        self._touch(sortable=False)
-        return True
 
     def _tell_hidden_files(self, job: Transfer, item) -> None:
         """Un dossier ecarte emportait plus que ses videos : le dire tant qu'un
@@ -12299,91 +10908,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
             "pour le reprendre.", "error", action=self.open_trash,
             seconds=15, keep=True)
 
-    def _follow_move(self, old, new) -> None:
-        """La collection en memoire suit un deplacement reussi.
-
-        L'index oublie les dossiers touches, et la prochaine relecture les
-        corrigera ; d'ici la, la video rangee restait a son ancien chemin dans
-        l'onglet Videos, le mur ou les favoris, et n'apparaissait pas au
-        nouveau. On retire donc ce qui est parti des dossiers qui le
-        contenaient, et on l'ajoute a ceux qui le recoivent. L'element deplace
-        lui-meme garde son etat « rangé » jusqu'a la relecture.
-        """
-        old_s, new_s = str(old), str(new)
-        if not old_s or not new_s or old_s == new_s or not self._plain_items:
-            return
-        old_pref = old_s.rstrip("\\/") + os.sep
-        new_pref = new_s.rstrip("\\/") + os.sep
-        low_old = os.path.normcase(old_pref)
-        low_new = os.path.normcase(new_pref)
-        moved = None           # les videos parties, telles qu'elles etaient
-        takers = []
-        touched = set()
-        for item in self._plain_items:
-            if item.is_tag or item.kind != MODE_FOLDERS:
-                continue
-            base = os.path.normcase(str(item.path).rstrip("\\/") + os.sep)
-            if low_old.startswith(base) and low_old != base:
-                # Un dossier qui contenait ce qui est parti.
-                keep, gone = [], []
-                for video in item.videos:
-                    text = str(video)
-                    if text == old_s or os.path.normcase(text).startswith(low_old):
-                        gone.append(text)
-                    else:
-                        keep.append(video)
-                if gone:
-                    item.videos = keep
-                    item.video_count = max(0, item.video_count - len(gone))
-                    item.file_count = max(0, item.file_count - len(gone))
-                    if moved is None:
-                        moved = gone
-                    touched.add(item.item_id)
-            if low_new.startswith(base) and low_new != base:
-                takers.append(item)
-        if moved is None:
-            # Le dossier deplace etait lui-meme un element de la collection :
-            # ce sont ses videos qui partent.
-            for item in self._plain_items:
-                if not item.is_tag and str(item.path) == old_s:
-                    moved = [str(video) for video in item.videos]
-                    break
-        # Les fiches « video » de l'onglet Videos : celles de ce qui est parti
-        # seulement, et non un balayage des cent mille.
-        self._flat_cache.pop(old_s, None)
-        for text in moved or ():
-            self._flat_cache.pop(text, None)
-        if moved and takers:
-            arrived = [_as_path(new_s + text[len(old_s):]) for text in moved]
-            for item in takers:
-                known = {str(video) for video in item.videos}
-                fresh = [video for video in arrived if str(video) not in known]
-                if item.loose_only:
-                    # L'entree « en vrac » d'un rayonnage ne porte que ses
-                    # videos directes, pas celles de ses sous-dossiers.
-                    here = os.path.normcase(str(item.path).rstrip("\\/"))
-                    fresh = [video for video in fresh
-                             if os.path.normcase(str(Path(video).parent)) == here]
-                if fresh:
-                    item.videos = list(item.videos) + fresh
-                    item.video_count += len(fresh)
-                    item.file_count += len(fresh)
-                    touched.add(item.item_id)
-        if touched or moved:
-            # La collection a change : ce qu'on en a tire est a refaire. La
-            # liste triable seulement si c'est elle qu'on regarde : un dossier
-            # vide de ses videos cesse d'etre triable.
-            self._touch(sortable=self.all_items is self._plain_items)
-        if touched:
-            # Les apercus retenus montraient l'ancienne composition.
-            def owner(key: str) -> str:
-                for prefix in ("board@", "peek@"):
-                    if key.startswith(prefix):
-                        return key[len(prefix):]
-                return key.rsplit("@", 1)[0]
-
-            self.plans = {key: plan for key, plan in self.plans.items()
-                          if owner(key) not in touched}
 
     def on_transfers_changed(self, active: int) -> None:
         self.pending_label.setText(
@@ -12391,45 +10915,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
         )
         self.pending_label.setVisible(active > 0)
 
-    def on_trash_changed(self, count: int) -> None:
-        self._show_trash_badge(count)
-        for action in self.overflow.actions():
-            if action.text().startswith("Corbeille"):
-                action.setText(
-                    f"Corbeille de session ({count})" if count
-                    else "Corbeille de session"
-                )
-
-    def _show_trash_badge(self, count: int) -> None:
-        """La pastille de la corbeille de session : son compte, et son sort."""
-        badge = getattr(self, "trash_badge", None)
-        if badge is None:
-            return
-        if not count:
-            badge.hide()
-            return
-        mode = self.cfg["delete_mode"]
-        doomed = mode == "permanent" or (mode != "local_trash" and any(
-            self._is_remote(entry.origin) for entry in self.trash.entries))
-        tone = "doomed" if doomed else "kept"
-        if tone != self._trash_badge_tone:
-            self._trash_badge_tone = tone
-            badge.setStyleSheet(
-                "QPushButton#trashBadge { background: #3a2226; border-color: #6b3036;"
-                " color: #ffb4b8; font-weight: 600; padding: 4px 10px; }"
-                if doomed else
-                "QPushButton#trashBadge { color: #c9d1db; padding: 4px 10px; }")
-        # Le poids, a cote du nombre : ce que la fermeture va liberer.
-        weight = sum(int(entry.size or 0) for entry in self.trash.entries)
-        badge.setText(f"{count} · {self._weight(weight)}" if weight else str(count))
-        noun = "élément" if count == 1 else "éléments"
-        badge.setToolTip(
-            (f"{count} {noun} ({self._weight(weight)}) dans la corbeille de session — "
-             if weight else f"{count} {noun} dans la corbeille de session — ")
-            + ("détruit(s) définitivement à la fermeture de Prisme.\n"
-               if doomed else "envoyé(s) à la corbeille de Windows à la fermeture.\n")
-            + "Cliquer pour les revoir ou les reprendre   (Ctrl+B)")
-        badge.show()
 
     @staticmethod
     def _weight(size: int) -> str:
@@ -12978,38 +11463,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
             self._add_tag_items()
         return len(fresh)
 
-    def edit_tags(self) -> None:
-        """Saisit les mots-clés qui deviendront des dossiers virtuels.
-
-        Un mot par ligne ; les dossiers se refont aussitôt, sans relire le
-        disque — ce qu'il faut pour savoir en changeant un mot s'il attrape ce
-        qu'on visait.
-        """
-        dialog = TagsDialog(self.tags, self)
-        if dialog.exec() != dialog.DialogCode.Accepted:
-            return self.setFocus()
-        self.tags = dialog.result_tags()
-        self.cfg["tags"] = self.tags
-        # Un mot retire emporte les videos qu'on y avait rangees a la main.
-        kept = {fold(t) for t in self.tags}
-        members = self.cfg["tag_members"] or {}
-        if any(fold(k) not in kept for k in members):
-            self.cfg["tag_members"] = {k: v for k, v in members.items() if fold(k) in kept}
-            self._mine_tags = None
-        self.tag_family = "mine"
-        self.cfg["tag_family"] = "mine"
-        self.cfg.save()
-        self.tag_chips.set_value("mine")
-        if self.root is None:
-            return self.setFocus()
-        # Le compte se dit une fois les mots faits : ils se calculent hors
-        # du fil de l'interface (`_tell_tags`).
-        self._tags_banner = True
-        if self.tab == TAB_TAGS and self.mode == MODE_FOLDERS:
-            self._add_tag_items()
-        else:
-            self.set_tab(TAB_TAGS)
-        self.setFocus()
 
     def edit_destinations(self) -> None:
         top = self.top_root()
@@ -13021,179 +11474,6 @@ class MainWindow(DupesMixin, PhoneMixin, ShareMixin, SolosMixin, UpdateMixin, Ba
             self._rebuild_commands(force=True)
         self.setFocus()
 
-    def _show_web_status(self) -> None:
-        """La pastille de la recherche web, a jour (chaque seconde)."""
-        window = getattr(self, "_web_window", None)
-        text, fraction, tip = "", None, ""
-        if window is not None and shiboken6.isValid(window):
-            try:
-                text, fraction, tip = web_recap(window.activity())
-            except Exception:                           # noqa: BLE001
-                text = ""
-        self._show_task_pills()
-        if not text:
-            self.web_status.hide()
-            return
-        if self.web_status.text() != text:
-            self.web_status.setText(text)
-            # Sa largeur, prise au fil d'Ariane (qui cede la sienne), jamais
-            # au point d'elargir la fenetre.
-            self.web_status.setMinimumWidth(min(self.web_status.sizeHint().width(), 460))
-        self.web_status.setToolTip(tip)
-        # L'avancement des telechargements remplit la pastille, de gauche a
-        # droite, comme une barre de progression.
-        base = ("QPushButton#webStatus { border: 1px solid #2f4a78; border-radius: 11px;"
-                " padding: 2px 11px; color: #dfe8f5; font-size: 12px; background: %s; }"
-                "QPushButton#webStatus:hover { border-color: #4f8bf0; color: #ffffff; }")
-        if fraction is None:
-            fill = "#151a21"
-        else:
-            edge = max(0.0, min(0.999, fraction))
-            fill = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1f3d6e, "
-                    f"stop:{edge:.3f} #1f3d6e, stop:{edge + 0.001:.3f} #151a21, stop:1 #151a21)")
-        style = base % fill
-        if style != self._web_status_style:
-            self._web_status_style = style
-            self.web_status.setStyleSheet(style)
-        self.web_status.show()
-
-    @staticmethod
-    def _pill_style(fraction) -> str:
-        """Une pastille qui se remplit de gauche a droite, comme celle du web."""
-        if fraction is None:
-            fill = "#151a21"
-        else:
-            edge = max(0.0, min(0.999, float(fraction)))
-            fill = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1f3d6e, "
-                    f"stop:{edge:.3f} #1f3d6e, stop:{edge + 0.001:.3f} #151a21, stop:1 #151a21)")
-        return ("QPushButton#taskPill { border: 1px solid #2f4a78; border-radius: 11px;"
-                " padding: 2px 11px; color: #dfe8f5; font-size: 12px; background: %s; }"
-                "QPushButton#taskPill:hover { border-color: #4f8bf0; color: #ffffff; }"
-                % fill)
-
-    def _task_pill_states(self) -> list:
-        """Ce qui tourne en fond : [(clef, texte, avancement, infobulle, clic)]."""
-        found = []
-        lab = getattr(self, "_lab_window", None)
-        if lab is not None and shiboken6.isValid(lab):
-            try:
-                said = lab.pill_activity()
-            except Exception:                           # noqa: BLE001
-                said = None
-            if said:
-                found.append(("labo", said[0], said[1], said[2], self.open_ai_lab))
-        if getattr(self, "sig_scan", None) is not None:
-            done, total = getattr(self, "_sig_counts", (0, 0))
-            text = self.__dict__.get("_task_text", {}).get("sig_scan") or "empreintes…"
-            found.append(("sigs", f"⧉ {text}", done / total if total else None,
-                          "Les empreintes des vidéos, pour la recherche de doublons.\n"
-                          "⋯ › Doublons pour l'arrêter.", None))
-        if getattr(self, "ultra", False):
-            found.append(("ultra", "⚡ Ultra tri — gauche : garder · droit : supprimer",
-                          None, "Sur la fiche d'une vidéo : clic gauche, on la garde et on "
-                          "passe à la suivante ; clic droit, on la supprime (Ctrl+Z annule).\n"
-                          "Cliquer ici (ou Ctrl+U) pour arrêter.",
-                          lambda: self.toggle_ultra(False)))
-        state = getattr(self, "_solo_state", None)
-        if state is not None and getattr(self, "_solo_busy", False):
-            total = max(1, state["total"])
-            found.append(("solos", f"⇢ « 1 » : {state['done']} / {state['total']}",
-                          state["done"] / total,
-                          f"Regroupement des vidéos seules dans « 1 » — {state['name']}",
-                          None))
-        dialog = getattr(self, "_repair_dialog", None)
-        if dialog is not None and shiboken6.isValid(dialog) and dialog.busy:
-            done, total, whole, name = dialog.progress_state
-            found.append(("repair", f"🛠 réparation {min(done + 1, max(total, 1))} / "
-                          f"{max(total, 1)} · {int(whole * 100)} %", whole,
-                          f"Vérification ou réparation de vidéos abîmées — {name}\n"
-                          "Cliquer pour ouvrir la fenêtre.", self._show_repair))
-        from . import voice
-        part = voice.download_progress()
-        if part is not None:
-            found.append(("voix", f"🎤 voix : {int(part * 100)} %", part,
-                          "Téléchargement du modèle de reconnaissance vocale (970 Mo)",
-                          None))
-        return found
-
-    def _show_task_pills(self) -> None:
-        states = self._task_pill_states()
-        alive = set()
-        for key, text, fraction, tip, slot in states:
-            alive.add(key)
-            pill = self.task_pills.get(key)
-            if pill is None:
-                pill = QPushButton("", self.web_status.parentWidget())
-                pill.setObjectName("taskPill")
-                pill.setFocusPolicy(Qt.NoFocus)
-                pill.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-                pill.setMaximumWidth(420)
-                if slot is not None:
-                    pill.setCursor(Qt.PointingHandCursor)
-                    pill.clicked.connect(slot)
-                pill._style = None
-                self._pill_row.addWidget(pill)
-                self.task_pills[key] = pill
-            if pill.text() != text:
-                pill.setText(text)
-                pill.setMinimumWidth(min(pill.sizeHint().width(), 380))
-            pill.setToolTip(tip)
-            style = self._pill_style(fraction)
-            if key == "ultra":
-                style = style.replace("#2f4a78", "#b8691f").replace("#151a21", "#2a1a0c")
-            if style != pill._style:
-                pill._style = style
-                pill.setStyleSheet(style)
-            pill.show()
-        for key, pill in self.task_pills.items():
-            if key not in alive and pill.isVisible():
-                pill.hide()
-
-    def open_web_search(self) -> None:
-        """Recherche de videos hors des grandes plateformes, en lien seul.
-
-        Importee a la premiere ouverture seulement (requests, bs4) : pres
-        d'une seconde, qu'on payait sinon a chaque lancement.
-        """
-        # Une fenetre a part, qu'on garde ouverte a cote : elle etait une
-        # boite modale, petite, qui bloquait Prisme tant qu'on cherchait.
-        window = self._web_search_window()
-        window.showNormal()
-        window.raise_()
-        window.activateWindow()
-
-    def _web_search_window(self, busy_cursor: bool = True):
-        """La fenetre de recherche web, creee au premier besoin (cachee)."""
-        window = getattr(self, "_web_window", None)
-        if window is not None and shiboken6.isValid(window):
-            return window
-        if busy_cursor:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            from .search_dialog import WebSearchWindow
-            window = WebSearchWindow(self.cfg, self, ffmpeg=Tools.ffmpeg)
-        finally:
-            if busy_cursor:
-                QApplication.restoreOverrideCursor()
-        window.setAttribute(Qt.WA_DeleteOnClose)
-        self._web_window = window
-        return window
-
-    def _resume_web_downloads(self) -> None:
-        """Au lancement : des telechargements interrompus a la derniere
-        fermeture ? La recherche web se rouvre en coulisse et les reprend (la
-        pastille de la barre les montre) -- sans attendre qu'on ouvre sa
-        fenetre."""
-        import json
-        from .config import PRIVATE_DIR
-        try:
-            data = json.loads((PRIVATE_DIR / "recherche-web.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        pending = [d for d in (data.get("downloads") or [])
-                   if isinstance(d, dict) and d.get("state") == "running"]
-        if pending and not getattr(self, "_closing", False):
-            self._web_search_window(busy_cursor=False)
 
     # ------------------------------------------------------------------
     # Clavier
