@@ -10506,7 +10506,16 @@ class MainWindow(QMainWindow):
                 or not area.isVisible() or not self.isActiveWindow()):
             self.aside_player.marks.hide()
             return self.aside_bar.hide()
-        if self._pointer_on(area):
+        # Comme sur la fiche : la souris se tait, le bandeau s'en va et ne
+        # laisse que le trait fin ; posee sur lui, il patiente un peu plus.
+        self._note_pointer_moves()
+        bar = self.aside_bar
+        if bar.dragging and not QApplication.mouseButtons() & Qt.LeftButton:
+            bar._stop_drag()
+        quiet = time.monotonic() - getattr(self, "_cine_moved", 0.0)
+        on_bar = bar.isVisible() and bar.geometry().contains(QCursor.pos())
+        awake = bar.dragging or quiet < (self.BAR_IDLE_S if on_bar else self.STRIP_IDLE_S)
+        if (self._pointer_on(area) or on_bar) and awake:
             self.aside_player.marks.hide()
             self._show_pause(self.aside_bar, self.aside_player)
             self.aside_bar.set_favorite(self._is_favorite(self.aside_current))
@@ -10562,13 +10571,19 @@ class MainWindow(QMainWindow):
             self._watch_cinema_strip(area)
         bar = self.single_bar
         on_bar = bar.isVisible() and bar.geometry().contains(QCursor.pos())
+        if bar.dragging and not QApplication.mouseButtons() & Qt.LeftButton:
+            # Le bouton relache hors du bandeau : il se croyait encore tire,
+            # et ne s'en allait plus jamais.
+            bar._stop_drag()
         # La souris se tait : le bandeau s'en va avec les cinq instants, et
-        # il ne reste que le trait fin. Sur le bandeau, ou en tirant le
-        # trait, il reste.
-        awake = (on_bar or bar.dragging
-                 or (self.cinema and self.single.strip_has_pointer())
-                 or time.monotonic() - getattr(self, "_cine_moved", 0.0)
-                 < self.STRIP_IDLE_S)
+        # il ne reste que le trait fin. Pose dessus, il patiente un peu plus
+        # (le temps de viser un bouton), mais s'en va aussi ; il ne reste
+        # que pendant qu'on tire le trait.
+        quiet = time.monotonic() - getattr(self, "_cine_moved", 0.0)
+        awake = (bar.dragging
+                 or (self.cinema and self.single.strip_has_pointer()
+                     and quiet < self.BAR_IDLE_S)
+                 or quiet < (self.BAR_IDLE_S if on_bar else self.STRIP_IDLE_S))
         if self.isActiveWindow() and self._pointer_on(area) and awake:
             self.single.marks.hide()
             self._show_pause(self.single_bar, self.single)
@@ -10595,6 +10610,8 @@ class MainWindow(QMainWindow):
 
     # La pellicule repart quand la souris se tait depuis tant de secondes.
     STRIP_IDLE_S = 2.5
+    # Le bandeau, quand la souris est posee dessus : un peu plus longtemps.
+    BAR_IDLE_S = 5.0
 
     def _note_pointer_moves(self) -> None:
         """Retient quand la souris a bouge pour la derniere fois."""

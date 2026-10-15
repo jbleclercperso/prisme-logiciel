@@ -77,6 +77,8 @@ SHORTCUTS = [
         ("Maj+← / Maj+→", "10 secondes en arrière, en avant — sur le mur et le "
                           "lecteur de côté, dans la vidéo survolée"),
         ("Survol du trait d'avancement", "l'image à cet instant ; un clic y va"),
+        ("Clic sur une image de la pellicule", "la lecture va à cet instant (le survol "
+                                               "ne fait que l'éclairer)"),
         ("12 / 340", "dans le bandeau, la place de la vidéo dans ce que "
                      "parcourent ◂ ▸ (son dossier, si l'on y reste)"),
         ("Ctrl+L, ou ⧉", "lecteur flottant : la vidéo dans une fenêtre toujours "

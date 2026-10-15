@@ -2164,6 +2164,9 @@ class SinglePlayer(QWidget):
             tile.setMaximumWidth(190)
             self.strip_layout.addWidget(tile, 1)
             self.tiles.append(tile)
+            # Le clic, pas le survol, mene a l'instant -- pellicule a cote de
+            # l'image ou flottante en plein ecran.
+            tile.installEventFilter(self)
         strip.setFixedWidth(176)
         layout.addWidget(strip)
         self.strip = strip
@@ -2796,7 +2799,9 @@ class SinglePlayer(QWidget):
         self._on_position(self.player.position())
 
     def _poll_hover(self) -> None:
-        # Survoler une image de la pellicule déplace la lecture à cet instant.
+        # Survoler une image de la pellicule l'eclaire seulement ; c'est le clic
+        # qui y mene (`_strip_click`) : un survol involontaire envoyait la
+        # video a la fin sans qu'on ait rien demande.
         # Le lecteur flottant repond au survol meme sans avoir le clavier : on
         # travaille ailleurs pendant qu'il joue.
         owner = self.window()
@@ -2815,8 +2820,22 @@ class SinglePlayer(QWidget):
         self.hovered_slot = slot
         if slot != -1:
             self.tiles[slot].set_hovered(True)
-            self.player.setPosition(int(self.tiles[slot].ts * 1000))
-            self.player.play()
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton
+                and watched in self.tiles):
+            self._strip_click(self.tiles.index(watched))
+            return True
+        return super().eventFilter(watched, event)
+
+    def _strip_click(self, slot: int) -> None:
+        """Un clic sur une image de la pellicule : la lecture y va."""
+        tile = self.tiles[slot]
+        if not tile.video:
+            return
+        self.player.setPosition(int(tile.ts * 1000))
+        self.player.play()
+        self._show_position(int(tile.ts * 1000))
 
     def wheelEvent(self, event):
         """Molette : parcourir la vidéo.
