@@ -83,9 +83,13 @@ class RenameMixin:
             if text is not None and tries < 10:
                 self._rename_tries = tries + 1
                 QTimer.singleShot(50, lambda: self.start_rename(text))
-            else:
-                self._rename_tries = 0
-            return
+                return
+            self._rename_tries = 0
+            if text is None or not self.crumbs.isVisible():
+                return
+            # Le titre ne revient pas : le champ se pose sur le fil d'Ariane
+            # plutot que de perdre ce qu'on avait tape.
+            piece = self.crumbs
         self._rename_tries = 0
         field = _RenameField(self.top_bar)
         field.setObjectName("renameField")
