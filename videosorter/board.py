@@ -921,6 +921,18 @@ class BoardView(QWidget):
         self._ensure_cards(shown)
         width = self._card_width()
         needed = []
+        # Une seule mise a l'ecran pour toute la page, pas une par carte
+        # ajoutee : quarante cartes, quarante mises en page evitees.
+        self.canvas.setUpdatesEnabled(False)
+        try:
+            self._place_cards(first, shown, width, previous, needed)
+        finally:
+            self.canvas.setUpdatesEnabled(True)
+        self.pageChanged.emit(first + 1 if self.items else 0, last, len(self.items))
+        self._pending_previews = set(needed)
+        self.request_visible()
+
+    def _place_cards(self, first: int, shown: int, width: int, previous, needed: list) -> None:
         for slot, card in enumerate(self.cards):
             if slot >= shown:
                 self.grid.removeWidget(card)
@@ -946,9 +958,6 @@ class BoardView(QWidget):
             card.set_picked(item.item_id in self.picked_ids)
             self.grid.addWidget(card, slot // self._cols(), slot % self._cols())
             card.show()
-        self.pageChanged.emit(first + 1 if self.items else 0, last, len(self.items))
-        self._pending_previews = set(needed)
-        self.request_visible()
 
     def _on_picked(self, position: int, picked: bool) -> None:
         if not (0 <= position < len(self.items)):

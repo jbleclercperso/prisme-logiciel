@@ -84,7 +84,8 @@ def main() -> int:
     check(stub._pending_dupes is not None and stub.named == (1, False),
           "le résultat final est en attente, l'entrée nommée")
     relaunched = _Stub()
-    MainWindow._reload_found_dupes(relaunched)
+    # Lu hors du fil de l'interface au lancement, puis pose : la meme suite.
+    MainWindow._found_dupes_loaded(relaunched, FoundDupes().load())
     check(relaunched._pending_dupes is not None
           and len(relaunched._pending_dupes[0]) == 1
           and relaunched.named == (1, False),
@@ -93,7 +94,7 @@ def main() -> int:
     check(stub._pending_dupes is None and stub.named == (0, False),
           "« aucun doublon » remplace l'ancien résultat")
     empty = _Stub()
-    MainWindow._reload_found_dupes(empty)
+    MainWindow._found_dupes_loaded(empty, FoundDupes().load())
     check(empty._pending_dupes is None and store.path.exists(),
           "plus rien à recharger, et le fichier n'est pas effacé")
 

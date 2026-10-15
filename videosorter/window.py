@@ -3372,11 +3372,13 @@ class MainWindow(QMainWindow):
         if self._pending_dupes is not None or self.dupes is not None:
             return
         from .dupes_memory import FOUND_DUPES
-        try:
-            found = FOUND_DUPES.load()
-        except Exception:                               # noqa: BLE001
-            found = None
-        if not found:
+        from .tunnel import Chore
+        # Lu hors du fil de l'interface : des milliers de paires a relire
+        # figeaient la fenetre a son ouverture.
+        Chore(FOUND_DUPES.load, self, fallback=None, then=self._found_dupes_loaded).start()
+
+    def _found_dupes_loaded(self, found) -> None:
+        if not found or self._pending_dupes is not None or self.dupes is not None:
             return
         groups, by_image, partial = found
         self._pending_dupes = (groups, by_image)
