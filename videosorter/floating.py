@@ -3,8 +3,9 @@
 On trie, on ouvre un dossier ou une page web -- et la video disparaissait
 derriere. Le lecteur flottant prend le relais, a l'instant ou elle en etait :
 une fenetre toujours au premier plan, sans cadre, ou toute la place va a
-l'image. Elle prend les proportions de la video, se redimensionne par ses
-bords et se deplace par son titre, pose discretement en haut a gauche.
+l'image. Elle se redimensionne par ses bords et se deplace par son titre,
+pose discretement en haut a gauche ; la taille choisie reste d'une video a
+l'autre (elle prenait les proportions de chacune, et sautait a chaque fois).
 
 C'est le meme lecteur que la fiche (`SinglePlayer`), sans sa pellicule : le
 clic met en pause, la molette avance, clic maintenu + molette zoome, le temps
@@ -169,7 +170,6 @@ class FloatingPlayer(QWidget):
         self.note = None              # le bandeau de Prisme, ici (`say`)
         self.auto = False             # ouvert tout seul (Prisme recouvert)
         self._pending_ms = 0
-        self._fitted = ""             # la video dont on a pris les proportions
 
         self.watch = QTimer(self)
         self.watch.setInterval(self.WATCH_MS)
@@ -211,7 +211,7 @@ class FloatingPlayer(QWidget):
         self._when_loaded(deck, deck.player.mediaStatus())
 
     def _when_loaded(self, deck, status) -> None:
-        """Des la video chargee : l'instant demande, et ses proportions."""
+        """Des la video chargee : l'instant demande."""
         if deck is not self.player.decks[self.player._active]:
             return
         if os.path.normcase(deck.path) != os.path.normcase(self.path):
@@ -223,33 +223,6 @@ class FloatingPlayer(QWidget):
         if self._pending_ms:
             wanted, self._pending_ms = self._pending_ms, 0
             deck.player.setPosition(wanted)
-        if self._fitted != self.path:
-            self._fitted = self.path
-            self._fit(deck)
-
-    def _fit(self, deck) -> None:
-        """La fenetre prend les proportions de la video : pas de bandes noires.
-        La largeur reste celle qu'on a choisie ; seule la hauteur suit."""
-        if self.isFullScreen() or self.isMaximized():
-            return
-        size = deck.video.videoSink().videoSize()
-        try:
-            width, height = size.width(), size.height()
-        except AttributeError:
-            return
-        if width <= 0 or height <= 0:
-            return
-        border = 2 * self.BORDER
-        inner_width = max(1, self.width() - border)
-        wanted = int(inner_width * height / width) + border
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        limit = screen.availableGeometry().height() - 40 if screen else 1000
-        if wanted > limit:
-            # Trop haute (une video verticale) : c'est la largeur qui cede.
-            inner_height = limit - border
-            self.resize(int(inner_height * width / height) + border, limit)
-        else:
-            self.resize(self.width(), max(self.minimumHeight(), wanted))
 
     def position(self) -> int:
         """L'instant atteint, en millisecondes -- ou celui qu'on attend encore."""
@@ -335,7 +308,6 @@ class FloatingPlayer(QWidget):
             self.showNormal()
         self.player.release()
         self.path = ""
-        self._fitted = ""
         self.auto = False
         self.hide()
 
@@ -472,7 +444,7 @@ class FloatingPlayer(QWidget):
             self.bar.place_on(area)
             self.bar.reveal()
         else:
-            self.bar.hide()
+            self.bar.fade_out()
             self.player.marks.set_favorite(self.favorite_of(self.path))
             self.player.marks.place_on(area)
 

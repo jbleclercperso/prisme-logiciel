@@ -1609,6 +1609,11 @@ class MainWindow(
         # permet : avant son chargement, un saut se perdait.
         for deck in self.single.decks:
             deck.player.mediaStatusChanged.connect(self._seek_when_ready)
+        # Les cinq instants flottent sur l'image, fiche ou plein ecran : ils
+        # arrivent de la droite au survol et y repartent, en fondu, quand la
+        # souris se tait. Leur colonne fixe a cote de l'image ne partait
+        # jamais.
+        self.single.float_strip(True)
         self.single.finished.connect(self.on_video_finished)
         # Le diaporama des photos : ⏯, Entree ou un clic sur l'image.
         self.single.slideshowToggled.connect(self.toggle_slideshow)
@@ -7809,7 +7814,7 @@ class MainWindow(
             self._place_aside_bar()
             self.aside_bar.reveal()
         else:
-            self.aside_bar.hide()
+            self.aside_bar.fade_out()
             self.aside_player.marks.set_favorite(self._is_favorite(self.aside_current))
             self.aside_player.marks.place_on(area)
 
@@ -7854,8 +7859,7 @@ class MainWindow(
             return
         self.single.place_tally()
         self._note_pointer_moves()
-        if self.cinema:
-            self._watch_cinema_strip(area)
+        self._watch_cinema_strip(area)
         bar = self.single_bar
         on_bar = bar.isVisible() and bar.geometry().contains(QCursor.pos())
         if bar.dragging and not QApplication.mouseButtons() & Qt.LeftButton:
@@ -7880,7 +7884,7 @@ class MainWindow(
             self.single_bar.place_on(area)
             self.single_bar.reveal()
         else:
-            self.single_bar.hide()
+            self.single_bar.fade_out()
             self.single.marks.set_favorite(self._is_favorite(item.path))
             self.single.marks.place_on(area)
         if self.banner.isVisible():
@@ -7908,13 +7912,14 @@ class MainWindow(
             self._cine_moved = time.monotonic()
 
     def _watch_cinema_strip(self, area) -> None:
-        """Plein ecran : la souris bouge sur l'image, les cinq instants
-        arrivent ; elle se tait ou s'en va, ils repartent. Sur eux, ils
-        restent."""
-        now = time.monotonic()
-        if self.single.strip_has_pointer() or (
+        """La souris bouge sur l'image, les cinq instants arrivent ; elle se
+        tait ou s'en va, ils repartent vers la droite, en fondu. Pose sur eux,
+        ils patientent comme le bandeau, puis s'en vont aussi : ils restaient
+        tant que la souris y dormait."""
+        quiet = time.monotonic() - getattr(self, "_cine_moved", 0.0)
+        if (self.single.strip_has_pointer() and quiet < self.BAR_IDLE_S) or (
                 self.isActiveWindow() and self._pointer_on(area)
-                and now - getattr(self, "_cine_moved", 0.0) < self.STRIP_IDLE_S):
+                and quiet < self.STRIP_IDLE_S):
             self.single.reveal_strip()
         else:
             self.single.tuck_strip()
@@ -8678,9 +8683,6 @@ class MainWindow(
         if not self.cinema and getattr(self, "_back_to_board", False):
             self._back_to_board = False
             self.show_board_at(self.index)
-        # La pellicule : sur l'image et au survol en plein ecran, dans sa
-        # colonne sinon.
-        self.single.float_strip(self.cinema)
         self._cine_moved = time.monotonic()
         if self.cinema:
             self.tree.hide()

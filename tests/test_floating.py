@@ -89,14 +89,16 @@ def main() -> int:
     check(wait_for(app, lambda: floating.title.isVisible()
                    and floating.title.text() == window.current.name, 5),
           "le titre, discret, posé sur l'image")
-    check(wait_for(app, lambda: floating._fitted == floating.path, 10)
-          and abs((floating.height() - 8) / max(1, floating.width() - 8) - 240 / 320) < 0.05,
-          f"la fenêtre prend les proportions de la vidéo ({floating.width()}×{floating.height()})")
+    floating.resize(611, 287)
+    chosen = floating.size()
 
     print("\n[3] Ses gestes")
     window.step(1)
     check(wait_for(app, lambda: floating.path == str(window.items[1].path)),
           "▸ passe à la suivante, dans le lecteur flottant")
+    wait_for(app, lambda: floating.player.player.position() > 300, 5)
+    check(floating.size() == chosen,
+          f"il garde la taille choisie d'une vidéo à l'autre ({floating.width()}×{floating.height()})")
     check(not any(deck.path for deck in single.decks),
           "la fiche ne charge toujours rien")
     window.cfg.set_destinations([{"key": "6", "label": "Rangés",

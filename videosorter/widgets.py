@@ -1641,7 +1641,14 @@ class OverBar(FloatGuard, QWidget):
     def hideEvent(self, event):
         self._stop_drag()
         self._end_scrub()
+        fade = getattr(self, "_fade", None)
+        if fade is not None:
+            fade.stop()
+        self._fading_out = False
         super().hideEvent(event)
+        # Cache, il retrouve toute son opacite : un show() direct le montre
+        # entier, `reveal` le refait partir de zero.
+        self.setWindowOpacity(1.0)
 
     def add_gesture(self, glyph: str, tip: str, slot) -> None:
         """Un geste de plus. Le signe remplit le bouton : à douze points, on
@@ -1767,11 +1774,49 @@ class OverBar(FloatGuard, QWidget):
                 break
             button.hide()
 
+    # Le bandeau parait et s'en va en fondu : disparaitre d'un coup, quand la
+    # souris se tait, faisait sursauter l'oeil.
+    FADE_IN_MS = 140
+    FADE_OUT_MS = 380
+
+    def _fade_to(self, target: float, ms: int, then=None) -> None:
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+        fade = getattr(self, "_fade", None)
+        if fade is not None:
+            fade.stop()
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(ms)
+        fade.setStartValue(self.windowOpacity())
+        fade.setEndValue(target)
+        fade.setEasingCurve(QEasingCurve.OutCubic if target > 0 else QEasingCurve.InQuad)
+        if then is not None:
+            fade.finished.connect(then)
+        self._fade = fade
+        fade.start()
+
     def reveal(self) -> None:
-        """Se montre, et ne remonte au premier plan qu'a ce moment-la."""
+        """Se montre en fondu, et ne remonte au premier plan qu'a ce moment-la.
+        En train de s'effacer, il revient la ou il en etait."""
+        fading_out = getattr(self, "_fading_out", False)
+        self._fading_out = False
         if self.isHidden():
+            self.setWindowOpacity(0.0)
             self.show()
             self.raise_()
+            self._fade_to(1.0, self.FADE_IN_MS)
+        elif fading_out:
+            self._fade_to(1.0, self.FADE_IN_MS)
+
+    def fade_out(self) -> None:
+        """S'efface doucement, puis se cache : la souris s'est tue. `hide()`
+        reste immediat, pour quand l'image elle-meme s'en va."""
+        if self.isHidden() or getattr(self, "_fading_out", False):
+            return
+        if self.dragging:
+            return self.hide()
+        self._fading_out = True
+        self._fade_to(0.0, self.FADE_OUT_MS,
+                      then=lambda: self.hide() if self._fading_out else None)
 
     def add_stay(self, tip: str, on: bool, slot) -> "StayCheck":
         """La coche « rester dans ce dossier » : ◂ ▸ ne sortent plus du
@@ -2511,7 +2556,8 @@ class SinglePlayer(QWidget):
         area = self.video_area
         corner = area.mapToGlobal(QPoint(0, 0))
         width = self.strip.width() + 16
-        height = max(220, min(area.height() - 120, 640))
+        # Dans la fiche, l'image peut etre basse : jamais plus haute qu'elle.
+        height = min(max(220, min(area.height() - 120, 640)), max(120, area.height() - 16))
         y = corner.y() + (area.height() - height) // 2
         right = corner.x() + area.width()
         return QPoint(right - width - 14, y), QPoint(right + 2, y), QSize(width, height)
