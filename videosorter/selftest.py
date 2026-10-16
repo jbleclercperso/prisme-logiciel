@@ -180,6 +180,49 @@ def run(argv: list) -> int:
         assert "size" in box, box.get("error") or "aucune image reçue"
         return f"images {box['size'][0]}×{box['size'][1]} reçues"
 
+    @_check("son égalisé (vidéos trop basses remontées)")
+    def _leveling():
+        import subprocess
+        import numpy as np
+        from PySide6.QtCore import QEventLoop, QTimer, QUrl
+        from PySide6.QtMultimedia import QAudioBufferOutput, QMediaPlayer
+        from PySide6.QtWidgets import QApplication
+        from .boost import _Pipe, MAX_GAIN_DB
+        from .media import NO_WINDOW, Tools
+        if not Tools.resolve():
+            raise RuntimeError("sans ffmpeg, pas de vidéo d'essai")
+        # Un son tres bas (-50 dB) : il doit ressortir nettement plus fort.
+        clip = os.path.join(os.environ["PRISME_SANDBOX"], "essai-son.mp4")
+        subprocess.run([Tools.ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=2", "-af", "volume=0.025",
+                        "-c:a", "aac", clip], check=True, creationflags=NO_WINDOW)
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        player, tap, loop, box = QMediaPlayer(), QAudioBufferOutput(), QEventLoop(), {"in": [], "out": []}
+        pipe = _Pipe(None)
+
+        def got(buffer) -> None:
+            if not buffer.isValid() or buffer.byteCount() <= 0:
+                return
+            wave = np.frombuffer(bytes(buffer.constData()), dtype=np.float32)
+            seconds = buffer.duration() / 1e6
+            pipe._measure(wave, seconds)
+            box["in"].append(float(np.max(np.abs(wave))))
+            box["out"].append(float(np.max(np.abs(pipe._amplify(wave, seconds)))))
+            if len(box["in"]) >= 40:
+                loop.quit()
+        tap.audioBufferReceived.connect(got)
+        player.setAudioBufferOutput(tap)
+        player.setSource(QUrl.fromLocalFile(clip))
+        player.play()
+        QTimer.singleShot(15000, loop.quit)
+        loop.exec()
+        player.stop()
+        app.processEvents()
+        assert box["in"], "aucun tampon de son reçu"
+        gain_db = 20 * np.log10(max(box["out"][-5:]) / max(1e-9, max(box["in"][-5:])))
+        assert gain_db > 12, f"remonté de {gain_db:.0f} dB seulement"
+        return f"son remonté de {gain_db:.0f} dB (au plus {MAX_GAIN_DB:.0f})"
+
     from . import ia, iapython
 
     @_check("Labo IA : son Python")

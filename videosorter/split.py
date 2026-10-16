@@ -1131,7 +1131,9 @@ class SplitWall(QWidget):
             follow(output)
             output.setMuted(self.muted)
             pane.audio = output
-            pane.player.setAudioOutput(output)
+            # Par l'egalisation : les videos trop basses remontees.
+            from .boost import Booster
+            pane.booster = Booster(pane.player, output)
         else:
             self._mute_heard(self.muted)
 

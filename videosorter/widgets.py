@@ -2057,7 +2057,10 @@ class _Deck:
         from .media import track_player
         track_player(self.player)
         self.player.setVideoOutput(self.video)
-        self.player.setAudioOutput(self.audio)
+        # Le son passe par l'egalisation (les videos trop basses remontees) ;
+        # `audio` garde les reglages : coupure, volume, sortie.
+        from .boost import Booster
+        self.booster = Booster(self.player, self.audio)
         self.path = ""
         self.primed = False      # une image de `path` est arrivee sur la surface
         self.path_shown = False  # la surface a deja montre une video

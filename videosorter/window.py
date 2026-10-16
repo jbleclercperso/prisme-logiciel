@@ -969,6 +969,8 @@ class MainWindow(
         audiodev.set_volume(int(self.cfg["volume"] if self.cfg["volume"] is not None
                                 else 100) / 100.0)
         audiodev.choose(self.cfg["audio_output"] or "")
+        from . import boost
+        boost.set_enabled(self.cfg["level_audio"] is not False)
         row_one.addWidget(self.mute_button, 0)
         # Survoler le haut-parleur : le curseur du volume parait dessous.
         from .volume import VolumeFlyout
@@ -10983,6 +10985,10 @@ class MainWindow(
         title = menu.addAction("Volume de Prisme")
         title.setEnabled(False)
         menu.addAction(holder)
+        level = menu.addAction("Égaliser le volume : les vidéos trop basses remontées")
+        level.setCheckable(True)
+        level.setChecked(self.cfg["level_audio"] is not False)
+        level.toggled.connect(self.set_level_audio)
         # Ou part le son : celle de Windows, ou une sortie choisie ici.
         from . import audiodev
         menu.addSeparator()
@@ -11006,6 +11012,15 @@ class MainWindow(
             tests.addAction(device.description(),
                             lambda d=device: audiodev.test_output(d))
         menu.exec(self.mute_button.mapToGlobal(self.mute_button.rect().bottomLeft()))
+
+    def set_level_audio(self, on: bool) -> None:
+        """L'egalisation du volume, pour tous les lecteurs."""
+        from . import boost
+        self.cfg["level_audio"] = bool(on)
+        self.cfg.save_soon()
+        boost.set_enabled(on)
+        self.show_banner("Volume égalisé : les vidéos trop basses sont remontées." if on
+                         else "Volume d'origine : chaque vidéo à son niveau.", "info")
 
     def set_audio_output(self, name: str) -> None:
         """La sortie du son des lecteurs : choisie ici, ou celle de Windows."""
