@@ -8,6 +8,7 @@ ne se consultent jamais.
 from __future__ import annotations
 
 import threading
+import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap
@@ -277,7 +278,21 @@ class ShareDialog(QDialog):
         away, home = self.pc_away["shown"] or "", self.pc_home["shown"] or ""
         address, how = "", ""
         self._phone_fix_set()
-        if not on:
+        published = self._nas_catalogue_at() if (not on and on_nas) else 0.0
+        nas_any = nas_link or (self.nas_home["shown"] or "")
+        if not on and published and nas_any:
+            # Le NAS a son propre serveur : il continue de servir le telephone
+            # avec ce que le PC lui a envoye en dernier. Seule la mise a jour
+            # s'est arretee -- « coupé » laissait croire que le lien ne
+            # marchait plus, alors qu'il marchait.
+            address = nas_any
+            state = "Le téléphone entre toujours, par le NAS."
+            how = (f"Mais le NAS n'est plus mis à jour depuis le {when(published)} : "
+                   "les vidéos arrivées depuis n'y paraissent pas. « Autoriser le "
+                   "partage à distance » (Réglages) reprend la mise à jour.")
+            self._phone_fix_set("Reprendre la mise à jour du NAS",
+                                lambda: self.switch.setChecked(True))
+        elif not on:
             state = ("Le partage est coupé : le téléphone ne peut pas entrer, "
                      "et le NAS n'est plus mis à jour.")
             self._phone_fix_set("Activer le partage",
@@ -308,7 +323,7 @@ class ShareDialog(QDialog):
                 f"Le NAS n'est pas utilisé : ce PC ne voit pas la bibliothèque "
                 f"sur le NAS (racine : {top}). Choisissez une racine sur le NAS "
                 "pour un lien qui marche PC éteint.")
-        if address:
+        if address and on:
             state = "Prêt — scannez ce code avec l'appareil photo du téléphone."
         self.phone_state.setText(state)
         self.phone_how.setText(how)
@@ -525,6 +540,9 @@ class ShareDialog(QDialog):
         box.addWidget(head)
 
         self.switch = QCheckBox("Autoriser le partage à distance", page)
+        self.switch.setToolTip("Ce PC sert le téléphone et tient le NAS à jour. Décoché, "
+                               "le lien du NAS marche encore, mais sur la collection "
+                               "telle qu'elle était : rien de nouveau n'y arrive.")
         self.switch.setChecked(bool(self.window.cfg["share"]))
         self.switch.toggled.connect(self.window.set_share)
         box.addWidget(self.switch)
@@ -1274,6 +1292,21 @@ class ShareDialog(QDialog):
         self.pc_open.setVisible(on and not public)
         self.pc_open.setEnabled(not self._busy and window.share_server is not None)
 
+    def _nas_catalogue_at(self) -> float:
+        """Quand le PC a mis le NAS a jour pour la derniere fois (0 : jamais,
+        ou NAS injoignable). Relu au plus une fois par minute."""
+        from .nas_publish import FOLDER, share_root
+        kept = getattr(self, "_catalogue_seen", None)
+        if kept is not None and time.time() - kept[0] < 60:
+            return kept[1]
+        root = share_root(self.window.top_root() or "")
+        try:
+            at = (root / FOLDER / "catalogue.json").stat().st_mtime if root else 0.0
+        except OSError:
+            at = 0.0
+        self._catalogue_seen = (time.time(), at)
+        return at
+
     def _refresh_nas(self) -> None:
         from .nas_publish import NAS_PORT, PUBLISHER
         from .web import INVITE_PATH
@@ -1333,6 +1366,13 @@ class ShareDialog(QDialog):
         # Le nom de la personne, quelle que soit l'etiquette de la ligne
         # (Chrome, icone, autre reseau) : `window.alias` suit son profil.
         named = self.window.alias
+        # Ses propres appareils (« C'est moi ») n'encombrent pas les journaux,
+        # sauf si l'onglet Visiteurs demande de les montrer.
+        mine = getattr(self.window, "is_mine", None)
+        page = getattr(self, "people", None)
+        if mine is not None and not (page is not None and page.show_own.isChecked()):
+            visits = [row for row in visits if not mine(row[2])]
+            views = [row for row in views if not mine(row[2])]
         visits = [row + (named(row[2]),) for row in visits]
         views = [row + (named(row[2]),) for row in views]
         if (visits, views) == self._rows:

@@ -14,7 +14,8 @@ import time
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLayout, QListWidget, QListWidgetItem, QMessageBox,
+    QCheckBox, QFrame, QHBoxLayout, QLabel, QLayout, QListWidget, QListWidgetItem,
+    QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -404,6 +405,15 @@ class VisitorCard(QFrame):
             rename.setObjectName("vButton")
             rename.clicked.connect(lambda: page.rename(person["labels"][0]))
             actions.addWidget(rename)
+        mine = page.is_mine(person)
+        own = QPushButton("Ce n'est pas moi" if mine else "C'est moi", self)
+        own.setObjectName("vButton")
+        own.setToolTip("Ce n'est pas un visiteur : c'est vous (votre téléphone, votre "
+                       "télé…). Ses visites ne comptent plus nulle part ; rien n'est "
+                       "effacé." if not mine else
+                       "Le compter de nouveau comme un visiteur.")
+        own.clicked.connect(lambda: page.set_mine(person, not mine))
+        actions.addWidget(own)
         if person["pin"]:
             unlock = QPushButton("Retirer son code (oublié)", self)
             unlock.setObjectName("vButton")
@@ -427,6 +437,11 @@ class VisitorsPage(QWidget):
         top = QHBoxLayout()
         self.head = _label("", "vInfo", self)
         top.addWidget(self.head, 1)
+        self.show_own = QCheckBox("Montrer aussi mes appareils", self)
+        self.show_own.setToolTip("Vos propres appareils (« C'est moi ») sont écartés des "
+                                 "visiteurs ; cochez pour les revoir.")
+        self.show_own.toggled.connect(lambda _on: self._refilter())
+        top.addWidget(self.show_own)
         surveys = QPushButton("Sondages aux visiteurs…", self)
         surveys.setObjectName("vButton")
         surveys.setToolTip("Leur faire noter des vidéos, ou choisir entre deux : la "
@@ -451,10 +466,43 @@ class VisitorsPage(QWidget):
         box.addWidget(scroll, 1)
         self._shown = None
 
+    def is_mine(self, person: dict) -> bool:
+        mine = getattr(self.window, "is_mine", None)
+        if mine is None:
+            return False
+        return any(mine(label, person.get("key", "")) for label in person["labels"])
+
+    def set_mine(self, person: dict, on: bool) -> None:
+        """« C'est moi » : ses etiquettes (et son profil) rejoignent les siens."""
+        cfg = self.window.cfg
+        labels = set(cfg["own_labels"] or [])
+        keys = set(cfg["own_profiles"] or [])
+        if on:
+            labels |= set(person["labels"])
+            if person.get("key"):
+                keys.add(person["key"])
+        else:
+            labels -= set(person["labels"])
+            keys.discard(person.get("key", ""))
+        cfg["own_labels"], cfg["own_profiles"] = sorted(labels), sorted(keys)
+        cfg.save()
+        self._changed()
+
+    def _refilter(self) -> None:
+        self._shown = None
+        if getattr(self, "_people", None) is not None:
+            self.show_people(self._people)
+
     def show_people(self, people: list) -> None:
+        self._people = people
+        hidden = 0
+        if not self.show_own.isChecked():
+            kept = [one for one in people if not self.is_mine(one)]
+            hidden = len(people) - len(kept)
+            people = kept
         # Refaites seulement si quelque chose a change : la liste ne saute
         # pas sous la souris toutes les quatre secondes.
-        key = repr(people)
+        key = repr(people) + str(hidden)
         if key == self._shown:
             return
         self._shown = key
@@ -468,7 +516,8 @@ class VisitorsPage(QWidget):
         online = sum(1 for one in people if one["online"])
         self.head.setText(f"{len(people)} visiteur(s)" + (
             f" · {online} en ligne" if online else "") +
-            " — une fiche par personne ; ses appareils y sont réunis.")
+            " — une fiche par personne ; ses appareils y sont réunis." + (
+            f" ({hidden} à vous, écarté(s))" if hidden else ""))
         if not people:
             empty = _label("Personne n'est encore venu par le lien d'invitation.",
                            "vDim", self.inner)

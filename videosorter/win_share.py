@@ -561,9 +561,22 @@ class ShareMixin:
         self._viewers_busy = True
         Chore(work, self, fallback=[], then=self._viewers_ready).start()
 
+    def is_mine(self, label: str, key: str = "") -> bool:
+        """Un de ses propres appareils (« C'est moi ») : par son etiquette, par
+        son profil, ou parce qu'il partage un profil avec un appareil marque."""
+        own = set(self.cfg["own_labels"] or [])
+        if not own and not self.cfg["own_profiles"]:
+            return False
+        if label in own or (key and key in (self.cfg["own_profiles"] or [])):
+            return True
+        people = getattr(self, "_people", None) or {}
+        return bool(set(people.get(label, ("", frozenset()))[1]) & own)
+
     def _viewers_ready(self, found: list) -> None:
         self._viewers_busy = False
-        self.viewers = found or []
+        # Ses propres appareils ne comptent pas parmi les spectateurs.
+        self.viewers = [entry for entry in (found or [])
+                        if not self.is_mine(entry.get("label", ""))]
         self._follow_step()
         count = len(self.viewers)
         button = self.viewers_button

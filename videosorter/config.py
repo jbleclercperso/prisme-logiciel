@@ -267,6 +267,11 @@ DEFAULTS = {
     # Le dernier usage du micro : la reconnaissance ne se precharge que pour
     # qui s'en sert.
     "voice_used_at": 0,
+    # Ses propres appareils (« C'est moi » sur leur fiche de visiteur) : ecartes
+    # des visiteurs, de l'oeil des spectateurs et des journaux. Rien n'est
+    # efface ; « Montrer aussi mes appareils » les fait reparaitre.
+    "own_labels": [],
+    "own_profiles": [],
     # Recherche web et Labo : ecrits par leurs fenetres, mais absents d'ici ils
     # n'etaient jamais relus au lancement suivant (Config.load ne garde que
     # les cles connues).
