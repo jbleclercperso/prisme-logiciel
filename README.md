@@ -863,9 +863,10 @@ Un seul code, sur `master`, deux programmes (`videosorter/edition.py`) :
   journaux de visites, ce qui a été regardé, l'œil, sondages, missions,
   récompenses, inscription, demandes reçues (le bouton du haut
   de la page n'envoie plus qu'un lien à télécharger). Essai de 14 jours, puis
-  une clé. La page du téléphone y garde le code de verrouillage (le cadenas
-  du haut ; oublié, il se retire au PC : ⋯ › Téléphone › Partage à distance ›
-  Réglages) et l'icône de l'écran d'accueil.
+  une clé. La page du téléphone y garde le code de verrouillage, mais il se
+  pose au PC (⋯ › Téléphone › Partage à distance › Réglages › « Code du
+  téléphone ») et la page le demande à chaque ouverture ; elle garde aussi
+  l'icône de l'écran d'accueil.
 
 Une modification du code commun va donc dans les deux d'office ; une
 modification des visiteurs ne touche que la version perso. Le code commun

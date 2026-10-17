@@ -584,12 +584,32 @@ class ShareDialog(QDialog):
         renew.clicked.connect(self._renew)
         box.addWidget(renew, 0, Qt.AlignLeft)
         if not edition.perso():
-            # Pas de fiches de visiteurs ou retirer un code : un bouton.
-            forget = QPushButton("Retirer le code du téléphone", page)
-            forget.setToolTip("Code de verrouillage oublié : la page du téléphone "
-                              "s'ouvrira de nouveau sans code.")
-            forget.clicked.connect(self._forget_pins)
-            box.addWidget(forget, 0, Qt.AlignLeft)
+            # Le code de la page du telephone : il se pose ici, pas sur le
+            # telephone, et la page le demande a chaque ouverture.
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Code du téléphone", page))
+            self.phone_pin = QLineEdit(page)
+            self.phone_pin.setEchoMode(QLineEdit.Password)
+            self.phone_pin.setMaxLength(4)
+            from PySide6.QtCore import QRegularExpression
+            from PySide6.QtGui import QRegularExpressionValidator
+            self.phone_pin.setValidator(QRegularExpressionValidator(
+                QRegularExpression(r"[0-9]{0,4}"), self.phone_pin))
+            self.phone_pin.setPlaceholderText("0000")
+            self.phone_pin.setFixedWidth(70)
+            self.phone_pin.setToolTip("Quatre chiffres, demandés à chaque ouverture "
+                                      "de la page du téléphone.")
+            row.addWidget(self.phone_pin)
+            put = QPushButton("Poser le code", page)
+            put.clicked.connect(lambda: self._phone_pin_set(self.phone_pin.text().strip()))
+            row.addWidget(put)
+            drop = QPushButton("Retirer", page)
+            drop.clicked.connect(lambda: self._phone_pin_set(""))
+            row.addWidget(drop)
+            self.phone_pin_state = QLabel("", page)
+            row.addWidget(self.phone_pin_state, 1)
+            box.addLayout(row)
+            self._phone_pin_paint()
 
         self.state = QLabel("", page)
         box.addWidget(self.state)
@@ -955,20 +975,34 @@ class ShareDialog(QDialog):
         self.window.set_phone_hidden(picked, False)
         self._fill_hidden()
 
-    def _forget_pins(self) -> None:
-        """Les codes du telephone, chez Prisme et sur le NAS."""
+    def _phone_pin_files(self) -> list:
+        """Ou le code vit : chez Prisme (page servie par le PC), et sur le NAS."""
         from . import profils
         from .config import PRIVATE_DIR
         from .demandes import FILE_NAME
         from .nas_publish import FOLDER, share_root
-        cleared = profils.clear_all_pins(profils.path_for(PRIVATE_DIR / FILE_NAME))
+        files = [profils.path_for(PRIVATE_DIR / FILE_NAME)]
         root = share_root(self.window.top_root() or "")
-        if root is not None:
-            cleared += profils.clear_all_pins(root / FOLDER / "etat" / profils.FILE_NAME)
-        QMessageBox.information(
-            self, "Code du téléphone",
-            "Code retiré : la page du téléphone s'ouvre de nouveau sans code."
-            if cleared else "Aucun code n'était posé.")
+        if root is not None and (root / FOLDER).is_dir():
+            files.append(root / FOLDER / "etat" / profils.FILE_NAME)
+        return files
+
+    def _phone_pin_paint(self) -> None:
+        from . import profils
+        on = profils.owner_pin_set(self._phone_pin_files()[0])
+        self.phone_pin_state.setText("Code demandé à l'ouverture." if on else "Aucun code.")
+
+    def _phone_pin_set(self, pin: str) -> None:
+        from . import profils
+        if pin and not profils.PIN.fullmatch(pin):
+            QMessageBox.information(self, "Code du téléphone", "Le code fait quatre chiffres.")
+            return
+        done = all([profils.set_owner_pin(path, pin) for path in self._phone_pin_files()])
+        self.phone_pin.clear()
+        self._phone_pin_paint()
+        if not done:
+            QMessageBox.warning(self, "Code du téléphone",
+                                "Le code n'a pas pu être enregistré partout (le NAS est-il joignable ?).")
 
     # -- journaux ------------------------------------------------------------
     def _visitors(self) -> QWidget:

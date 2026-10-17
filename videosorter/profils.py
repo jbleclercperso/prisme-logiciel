@@ -307,12 +307,9 @@ def _key(profiles: dict, me: str, label: str) -> str:
     return ""
 
 
-def pin_action(path, me: str, label: str, told: dict, create: bool = False) -> dict:
+def pin_action(path, me: str, label: str, told: dict) -> dict:
     """Le code de verrouillage : « check » (ouvrir), « set » (choisir ou
-    changer, l'ancien exige), « clear » (retirer, l'ancien exige).
-
-    `create` : la version vendue n'a pas d'accueil ; le premier code choisi
-    fait naitre le profil de l'appareil, sans nom ni adresse."""
+    changer, l'ancien exige), « clear » (retirer, l'ancien exige)."""
     me = valid_me(me)
     if path is None or not me:
         return {"ok": False, "error": "Profil inconnu : rechargez la page."}
@@ -321,9 +318,6 @@ def pin_action(path, me: str, label: str, told: dict, create: bool = False) -> d
     with _lock:
         profiles = _read(Path(path))
         key = _key(profiles, me, label)
-        if not key and create and action == "set":
-            profiles[me] = {"labels": [label] if label else [], "at": time.time()}
-            key = me
         if not key:
             return {"ok": False, "error": "Profil inconnu : rechargez la page."}
         profile = profiles[key]
@@ -381,22 +375,53 @@ def clear_pin_of(path, key: str) -> bool:
         return _write(Path(path), profiles)
 
 
-def clear_all_pins(path) -> int:
-    """Retire tous les codes d'un fichier de profils : la version vendue n'a
-    qu'un proprietaire, qui a oublie le sien. Rend combien."""
-    if path is None or not Path(path).is_file():
-        return 0
+# -- le code du proprietaire (version vendue) --------------------------------
+# Pas de visiteurs, pas de profils : un seul code pour la page du telephone,
+# pose au PC (fenetre du partage, « Réglages »), demande a chaque ouverture.
+# Il vit dans le fichier des profils sous cette cle, que le PC ecrit chez lui
+# et sur le NAS : chaque serveur lit le sien.
+OWNER = "*"
+
+
+def owner_pin_set(path) -> bool:
+    if path is None:
+        return False
+    owner = _read(Path(path)).get(OWNER)
+    return isinstance(owner, dict) and bool(owner.get("pin_hash"))
+
+
+def set_owner_pin(path, pin: str) -> bool:
+    """Pose le code (quatre chiffres), ou le retire (pin vide)."""
+    if path is None or (pin and not PIN.fullmatch(pin)):
+        return False
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with _lock:
         profiles = _read(Path(path))
-        cleared = 0
-        for key, profile in profiles.items():
-            if isinstance(profile, dict) and profile.pop("pin_hash", None) is not None:
-                profile.pop("pin_salt", None)
-                _pin_fails.pop(key, None)
-                cleared += 1
-        if cleared and not _write(Path(path), profiles):
-            return 0
-    return cleared
+        if pin:
+            salt = secrets.token_hex(16)
+            profiles[OWNER] = {"pin_salt": salt, "pin_hash": _pin_hash(salt, pin)}
+        elif profiles.pop(OWNER, None) is None:
+            return True
+        _pin_fails.pop(OWNER, None)
+        return _write(Path(path), profiles)
+
+
+def owner_pin_check(path, pin: str) -> dict:
+    """Le code tape sur le telephone : essais comptes, comme pin_action."""
+    owner = _read(Path(path)).get(OWNER) if path is not None else None
+    if not isinstance(owner, dict) or not owner.get("pin_hash"):
+        return {"ok": True}
+    wait = _pin_wait(OWNER)
+    if wait:
+        return {"ok": False, "wait": wait, "error": f"Trop d'essais : réessayez dans {wait} s."}
+    right = bool(PIN.fullmatch(pin or "")) and hmac.compare_digest(
+        _pin_hash(owner.get("pin_salt", ""), pin), owner["pin_hash"])
+    _pin_note(OWNER, right)
+    if right:
+        return {"ok": True}
+    wait = _pin_wait(OWNER)
+    return {"ok": False, "wait": wait,
+            "error": "Code incorrect." + (f" Réessayez dans {wait} s." if wait else "")}
 
 
 def labels_of(profile: dict | None, label: str) -> list:
