@@ -845,10 +845,34 @@ Code oublié : Prisme fermé, vider `pin_salt` et `pin_digest` dans `config.json
   fois par jour au plus.
 - Le début de l'essai est aussi noté dans le registre (`HKCU\Software\Prisme`) ;
   reculer l'horloge ne rend pas de jours.
-- **`PUBLIC_KEY` est vide dans `licence.py` : version de développement, sans
-  essai ni licence.** Avant de distribuer, y coller la clé publique du site
-  (hexadécimal ou base64), régler `SITE`, et vérifier que le générateur de clés
-  du site produit bien le format ci-dessus.
+- **Seule la version vendue a l'essai et la licence** (voir ci-dessous) : la
+  version perso n'en a pas. `PUBLIC_KEY` est la moitié publique de la paire dont
+  le site garde l'autre (variable `PRISME_LICENCE_PRIVATE` de Netlify) ; en
+  changer rendrait muettes toutes les clés vendues.
+
+## Version perso et version vendue
+
+Un seul code, sur `master`, deux programmes (`videosorter/edition.py`) :
+
+- **la version perso** a tout, visiteurs compris ; elle se construit comme
+  avant (`python construire.py`), se met à jour par le NAS, et n'a ni essai ni
+  licence ;
+- **la version vendue** a tout aussi — labo IA, recherche sur Internet,
+  Telegram, partage de sa bibliothèque avec son téléphone ou son NAS — sauf ce
+  qui regarde les visiteurs : accès envoyés à d'autres, partage d'une vidéo,
+  journaux de visites, ce qui a été regardé, l'œil, sondages, missions,
+  récompenses, inscription, code de la page, demandes reçues (le bouton du haut
+  de la page n'envoie plus qu'un lien à télécharger). Essai de 14 jours, puis
+  une clé.
+
+Une modification du code commun va donc dans les deux d'office ; une
+modification des visiteurs ne touche que la version perso. Le code commun
+demande `edition.perso()` avant d'ouvrir une porte des visiteurs, et n'importe
+leurs modules (`edition.VISITORS_ONLY`) qu'à ce moment-là : la version vendue
+ne les emporte pas. Le serveur du téléphone n'y répond pas à leurs adresses
+(`web.VISITOR_ROUTES`), et la page cache ce qui va avec (`SOLO_STYLE`).
+
+Pour voir la version vendue depuis les sources : `PRISME_EDITION=vendue`.
 
 ## Labo IA (essai)
 
