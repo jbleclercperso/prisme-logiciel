@@ -861,9 +861,11 @@ Un seul code, sur `master`, deux programmes (`videosorter/edition.py`) :
   Telegram, partage de sa bibliothèque avec son téléphone ou son NAS — sauf ce
   qui regarde les visiteurs : accès envoyés à d'autres, partage d'une vidéo,
   journaux de visites, ce qui a été regardé, l'œil, sondages, missions,
-  récompenses, inscription, code de la page, demandes reçues (le bouton du haut
+  récompenses, inscription, demandes reçues (le bouton du haut
   de la page n'envoie plus qu'un lien à télécharger). Essai de 14 jours, puis
-  une clé.
+  une clé. La page du téléphone y garde le code de verrouillage (le cadenas
+  du haut ; oublié, il se retire au PC : ⋯ › Téléphone › Partage à distance ›
+  Réglages) et l'icône de l'écran d'accueil.
 
 Une modification du code commun va donc dans les deux d'office ; une
 modification des visiteurs ne touche que la version perso. Le code commun

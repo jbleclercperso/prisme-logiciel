@@ -307,9 +307,12 @@ def _key(profiles: dict, me: str, label: str) -> str:
     return ""
 
 
-def pin_action(path, me: str, label: str, told: dict) -> dict:
+def pin_action(path, me: str, label: str, told: dict, create: bool = False) -> dict:
     """Le code de verrouillage : « check » (ouvrir), « set » (choisir ou
-    changer, l'ancien exige), « clear » (retirer, l'ancien exige)."""
+    changer, l'ancien exige), « clear » (retirer, l'ancien exige).
+
+    `create` : la version vendue n'a pas d'accueil ; le premier code choisi
+    fait naitre le profil de l'appareil, sans nom ni adresse."""
     me = valid_me(me)
     if path is None or not me:
         return {"ok": False, "error": "Profil inconnu : rechargez la page."}
@@ -318,6 +321,9 @@ def pin_action(path, me: str, label: str, told: dict) -> dict:
     with _lock:
         profiles = _read(Path(path))
         key = _key(profiles, me, label)
+        if not key and create and action == "set":
+            profiles[me] = {"labels": [label] if label else [], "at": time.time()}
+            key = me
         if not key:
             return {"ok": False, "error": "Profil inconnu : rechargez la page."}
         profile = profiles[key]
@@ -373,6 +379,24 @@ def clear_pin_of(path, key: str) -> bool:
         profile.pop("pin_hash", None)
         _pin_fails.pop(key, None)
         return _write(Path(path), profiles)
+
+
+def clear_all_pins(path) -> int:
+    """Retire tous les codes d'un fichier de profils : la version vendue n'a
+    qu'un proprietaire, qui a oublie le sien. Rend combien."""
+    if path is None or not Path(path).is_file():
+        return 0
+    with _lock:
+        profiles = _read(Path(path))
+        cleared = 0
+        for key, profile in profiles.items():
+            if isinstance(profile, dict) and profile.pop("pin_hash", None) is not None:
+                profile.pop("pin_salt", None)
+                _pin_fails.pop(key, None)
+                cleared += 1
+        if cleared and not _write(Path(path), profiles):
+            return 0
+    return cleared
 
 
 def labels_of(profile: dict | None, label: str) -> list:

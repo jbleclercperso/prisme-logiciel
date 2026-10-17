@@ -47,11 +47,12 @@ from .textfold import fold
 
 # La version perso sert aussi des visiteurs ; la version vendue, seulement la
 # bibliotheque de son proprietaire, sur son telephone (edition.py). Ces
-# adresses-la n'y repondent pas : profil, code, preferences, presence,
-# sondages, missions.
+# adresses-la n'y repondent pas : accueil, preferences, presence, sondages,
+# missions. Le code de verrouillage, lui, reste (`/api/pin`, et `/api/profil`
+# qui dit seulement s'il y en a un).
 VISITORS = edition.perso()
 VISITOR_ROUTES = frozenset((
-    "/api/profil", "/api/pin", "/api/pourvous", "/api/tag", "/api/ici",
+    "/api/pourvous", "/api/tag", "/api/ici",
     "/api/sondages", "/api/sondage", "/api/missions", "/api/mission",
     "/api/mission/morceau",
 ))
@@ -1217,6 +1218,8 @@ def _make_handler(server: Server):
             if route == "/api/demande":
                 return self._demande(body)
             if route == "/api/profil":
+                if not VISITORS:
+                    return self._send(HTTPStatus.NOT_FOUND, "Rien ici.")
                 return self._save_profile(body)
             if route == "/api/pin":
                 return self._pin(body)
@@ -1558,6 +1561,12 @@ def _make_handler(server: Server):
         def _profile(self) -> None:
             """Qui est cet appareil, et ou il en est du bon d'achat."""
             label = self._label()
+            if not VISITORS:
+                # Seulement : un code est-il demande a l'ouverture ?
+                profils.attach(server.profiles_path, self._me(), label)
+                profile = profils.find(server.profiles_path, self._me(), label)
+                return self._json({"profile": {"pin": bool(profile.get("pin_hash"))}
+                                   if profile else None})
             if getattr(self, "_query", {}).get("ouverture"):
                 # La page vient de s'ouvrir : une connexion, au nom de la
                 # personne (le lien, lui, n'a que le nom du navigateur).
@@ -1656,7 +1665,8 @@ def _make_handler(server: Server):
             if not isinstance(told, dict):
                 return self._json({"ok": False, "error": "Demande illisible."},
                                   HTTPStatus.BAD_REQUEST)
-            done = profils.pin_action(server.profiles_path, self._me(), self._label(), told)
+            done = profils.pin_action(server.profiles_path, self._me(), self._label(), told,
+                                      create=not VISITORS)
             self._json(done)
 
         # -- contenus ----------------------------------------------------
@@ -3550,6 +3560,10 @@ if (!VISITORS) {
   $('askBtn').title = 'Envoyer un lien';
   $('askBtn').setAttribute('aria-label', 'Envoyer un lien');
   $('askBtn').querySelector('span').textContent = 'Lien';
+  // Le cadenas du haut : la feuille des recompenses ne garde que le code.
+  $('perksTitle').textContent = 'Code de verrouillage';
+  $('lockBtn').hidden = false;
+  $('lockBtn').onclick = () => { paintLockRow(); openSheet('perks'); };
 }
 $('fewAsk').onclick = () => {
   askOpen();
@@ -4090,7 +4104,9 @@ addEventListener('keydown', (e) => {
 document.querySelector('.lockicon').addEventListener('error', (e) => { e.target.hidden = true; });
 $('lockCancel').onclick = lockHide;
 $('lockForgot').onclick = () => {
-  $('lockErr').textContent = 'Demandez à la personne qui vous a invité de retirer votre code.';
+  $('lockErr').textContent = VISITORS
+    ? 'Demandez à la personne qui vous a invité de retirer votre code.'
+    : 'Sur le PC, dans Prisme : ⋯ › Téléphone › Partage à distance › Réglages › « Retirer le code du téléphone ».';
 };
 // Revenu apres une minute ailleurs : le code, de nouveau.
 document.addEventListener('visibilitychange', () => {
@@ -5121,7 +5137,16 @@ $('lockClear').onclick = () => pinSetup('clear');
 
 async function welcome() {
   if (!VISITORS) {
-    lockHide();
+    // Ni accueil ni recompenses : le code, s'il y en a un, puis l'icone.
+    const d = await getJSON('/api/profil');
+    profile = (d && d.profile) || {pin: false};
+    if (profile.pin) {
+      setPinFlag(true);
+      lockApp();
+    } else {
+      if (pinFlag) setPinFlag(false);
+      lockHide();
+    }
     setTimeout(askInstall, cameToInstall ? 300 : 1200);
     return;
   }
@@ -5173,10 +5198,12 @@ APP_SCRIPT = APP_SCRIPT.replace(
 # La version vendue : la page de son seul proprietaire. Ce qui ne sert qu'aux
 # visiteurs reste cache, quoi qu'en dise le code : partager une video avec
 # quelqu'un, l'accueil, les recompenses, les sondages, les missions, les
-# demandes (le bouton du haut n'envoie plus qu'un lien).
+# demandes (le bouton du haut n'envoie plus qu'un lien). La feuille des
+# recompenses ne garde que le code de verrouillage, ouverte par le cadenas.
 SOLO_STYLE = """
 html.solo #share, html.solo #gift, html.solo #pollLine, html.solo #pins,
-html.solo #forYou, html.solo #few, html.solo #perks, html.solo #hello,
+html.solo #forYou, html.solo #few, html.solo #giftCard, html.solo #friendCard,
+html.solo #jobsCard, html.solo #perksEdit, html.solo #hello,
 html.solo #coach, html.solo #poll, html.solo #jobs, html.solo #toast,
 html.solo #askKinds { display: none !important; }
 """
@@ -5270,6 +5297,8 @@ APP_PAGE = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
     </div>
     <button id="askBtn" class="ask" title="Envoyer une demande"
             aria-label="Envoyer une demande"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 21 23 12 2 3v7l15 2-15 2z"/></svg><span>Demande</span></button>
+    <button id="lockBtn" class="ask" title="Code de verrouillage" aria-label="Code de verrouillage"
+            hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></button>
   </div>
 </header>
 <main>
@@ -5331,13 +5360,13 @@ APP_PAGE = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
 <div id="perks" hidden>
   <div class="sheet" role="dialog" aria-labelledby="perksTitle">
     <h2 id="perksTitle">Vos récompenses</h2>
-    <div class="reward gold">
+    <div class="reward gold" id="giftCard">
       <div class="reward-head"><span class="perk-ic sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C9.5 3 12 8 12 8s2.5-5 4.5-5a2.5 2.5 0 0 1 0 5"/></svg></span><div>
         <b id="perkTitle">Bon d’achat Amazon de 20&nbsp;€</b><small id="perkSub"></small></div></div>
       <div class="meter"><i id="perkBar"></i></div>
       <button class="textlink" id="perkMail" hidden>Ajouter mon email</button>
     </div>
-    <div class="reward">
+    <div class="reward" id="friendCard">
       <div class="reward-head"><span class="perk-ic sm alt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><div>
         <b>Parrainez vos amis</b><small id="friendSub"></small></div></div>
       <div class="stats"><span><b id="friendCount">0</b>ami(s) inscrit(s)</span>
