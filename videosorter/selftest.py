@@ -148,6 +148,22 @@ def run(argv: list) -> int:
         from .ffmpeg_fetch import folder
         return f"absent : proposé au lancement (posé dans {folder()})"
 
+    @_check("moteur de réparation PixMedic")
+    def _repair_engine():
+        # une vraie reparation (moteur.selftest : une photo fabriquee, abimee
+        # comme le fait un lecteur de carte). Le programme vendu n'emporte que
+        # les sources du moteur : ses bibliotheques se telechargent au premier
+        # usage -- pas encore la, ce n'est pas une panne.
+        from . import moteur
+        if not moteur.available():
+            if moteur.can_install():
+                return f"à télécharger au premier usage ({moteur.DOWNLOAD_SIZE}), sources présentes"
+            raise RuntimeError(moteur.why_missing())
+        res = moteur.selftest()
+        assert res["outcome"] == "repaired", f"{res['outcome']} {res['error_code']} {res['report']}"
+        where = "Python du labo" if moteur.external() else "Prisme"
+        return f"photo de test réparée ({res['report'].get('lost_blocks')} blocs rebouchés, {where})"
+
     @_check("lecture vidéo (QtMultimedia)")
     def _playback():
         import subprocess

@@ -1,0 +1,3 @@
+[submodule "moteur"]
+	path = moteur
+	url = https://github.com/jbleclercperso/pixmedic-moteur-reparation.git

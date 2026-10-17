@@ -45,6 +45,9 @@ EXCLUDES = [
     # machine qui construit, PyInstaller suivrait ses imports et emporterait
     # plusieurs gigaoctets de torch.
     "torch", "torchvision", "torchaudio", "transformers", "open_clip",
+    # Le moteur de réparation PixMedic, pareil (moteur.py) : ses 150 Mo se
+    # téléchargent au premier usage, jamais dans le programme.
+    "reparateur", "cv2", "numba", "llvmlite", "av",
     "huggingface_hub", "safetensors", "tokenizers", "timm", "sympy",
     "faster_whisper", "ctranslate2", "onnxruntime", "sklearn", "pandas",
 ]
@@ -213,6 +216,13 @@ extra_datas += [(r"{here}\nas\serveur.py", "nas")]
 # dossier du programme porte des paquets qui ne sont pas les siens.
 extra_datas += [(path, "prisme-src/videosorter")
                 for path in glob.glob(r"{here}\videosorter\*.py")]
+
+# Le moteur de reparation PixMedic (sous-module « moteur ») : ses sources
+# seules, 300 Ko. Ses bibliotheques (numba, OpenCV, Pillow, PyAV : 150 Mo) se
+# telechargent au premier usage dans le Python du labo, ou il tourne
+# (moteur.py) : jamais dans le programme.
+extra_datas += [(path, "moteur-src/reparateur")
+                for path in glob.glob(r"{here}\moteur\reparateur\*.py")]
 
 a = Analysis(
     [r"{here}\main.py"],

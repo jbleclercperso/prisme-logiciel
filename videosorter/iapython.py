@@ -230,6 +230,12 @@ def _child_env() -> dict:
     for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP"):
         if FROZEN:
             env.pop(key, None)
+    if external() and not os.environ.get("PRISME_IA_PYTHON", "").strip():
+        # Le Python du labo n'a que ses bibliotheques : sans cela, il voit
+        # aussi celles qu'un Python de meme version a posees pour l'utilisateur
+        # (%APPDATA%\Python\Python3xx) -- pip les croit installees et ne pose
+        # rien, puis on charge des versions qui ne sont pas les siennes.
+        env["PYTHONNOUSERSITE"] = "1"
     return env
 
 

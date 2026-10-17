@@ -1,4 +1,8 @@
-"""La fenetre « Réparer des vidéos abîmées » (repair.py fait le travail)."""
+"""La fenetre « Réparer des vidéos abîmées » (et des photos).
+
+Le moteur de reparation PixMedic (moteur.py, partage avec le site et le
+logiciel) fait la vraie reparation ; repair.py garde les outils de secours
+des videos (figer, couper, masquer, recoller l'enveloppe)."""
 from __future__ import annotations
 
 import queue
@@ -7,11 +11,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QButtonGroup, QDialog, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QPushButton,
+    QButtonGroup, QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QProgressBar, QPushButton,
     QRadioButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
-from . import repair, resync
+from . import moteur, repair, resync
 
 STYLE = """
 QDialog { background: #0e1116; }
@@ -50,6 +54,12 @@ def _log(path: str, text: str) -> None:
     except OSError:
         pass
 
+
+ENGINE = ("engine", "Réparer avec le moteur PixMedic — recommandé, la vraie réparation",
+          "Le moteur de réparation PixMedic (le même que le site pixmedic.com) remet en place "
+          "ce qui a été décalé, fusionne les copies, refait l'en-tête des vidéos coupées et "
+          "réécrit les photos sans recompression : les images d'origine, sans perte, tant "
+          "qu'elles sont dans le fichier. Photos JPEG et vidéos MP4, MOV, MTS, AVI, WMV.")
 
 METHODS = (
     ("rebuild", "Reconstruire les images — recommandé, la vraie réparation",
@@ -124,8 +134,11 @@ class RepairDialog(QDialog):
             self.rows[path] = row
         box.addWidget(self.table, 1)
 
+        # le moteur PixMedic remplace « Reconstruire » (qu'il contient) quand il est la,
+        # ou quand il peut se telecharger (programme vendu, premier usage)
+        self.method_list = ((ENGINE,) + METHODS[1:]) if moteur.offered() else METHODS
         self.methods = QButtonGroup(self)
-        for at, (key, text, tip) in enumerate(METHODS):
+        for at, (key, text, tip) in enumerate(self.method_list):
             radio = QRadioButton(text, self)
             radio.setToolTip(tip)
             radio.setProperty("method", key)
@@ -133,7 +146,7 @@ class RepairDialog(QDialog):
             box.addWidget(radio)
         self.methods.button(0).setChecked(True)
         # Ce que fait la methode choisie, en une phrase, sous les choix.
-        self.hint = QLabel(METHODS[0][2], self)
+        self.hint = QLabel(self.method_list[0][2], self)
         self.hint.setObjectName("repHint")
         self.hint.setWordWrap(True)
         box.addWidget(self.hint)
@@ -210,14 +223,17 @@ class RepairDialog(QDialog):
             def progress(fraction, n=number, total=len(todo), p=path):
                 self.mail.put(("progress", (n, total, fraction, Path(p).name)))
             try:
-                report = repair.diagnose(path, progress, lambda: self._stop)
+                if moteur.is_photo(path):
+                    report = self._photo_report(path)
+                else:
+                    report = repair.diagnose(path, progress, lambda: self._stop)
             except Exception as exc:                        # noqa: BLE001
                 self.mail.put(("state", (path, f"illisible : {exc}")))
                 continue
             if self._stop:
                 self.mail.put(("state", (path, "arrêtée")))
                 return
-            if report["errors"]:
+            if report["errors"] and not report.get("photo"):
                 # Des images decalees (recuperables) ou des donnees effacees ?
                 # On le dit avant de reparer : « Reconstruire » sur une video
                 # qui n'a rien de decale finissait sur un message pris pour
@@ -228,6 +244,35 @@ class RepairDialog(QDialog):
                     report["shifted"] = 0
                     _log(path, f"analyse : {type(exc).__name__} : {exc}")
             self.mail.put(("report", (path, report)))
+
+    def _photo_report(self, path: str) -> dict:
+        """Une photo : le bilan du moteur (zones decalees, s'ouvre ou non)."""
+        if not moteur.available():
+            if moteur.can_install():
+                # pas encore telecharge : on ne peut pas l'examiner, on le
+                # propose a la reparation (qui telecharge d'abord le moteur)
+                return {"photo": True, "errors": ["à examiner"], "pending": True, "messages": []}
+            return {"photo": True, "errors": [], "messages": [moteur.why_missing()], "unavailable": True}
+        d = moteur.api().diagnose(path)
+        damaged = d.get("zones", 0) > 0 or not d.get("opens", True)
+        return {"photo": True, "errors": ["photo abîmée"] if damaged else [], "zones": d.get("zones", 0),
+                "opens": d.get("opens", True), "messages": [d["error"]] if d.get("error") else []}
+
+    def _engine_repair(self, path: str, progress) -> tuple:
+        """(fichier repare ou None, texte) par le moteur PixMedic."""
+        target = moteur.repaired_name(path)
+        res = moteur.api().repair_file(path, str(target))
+        if res.outcome == "repaired" and res.output_path:
+            note = res.public_message
+            rep = res.report or {}
+            if rep.get("errors_before") is not None and rep.get("errors_after") is not None:
+                note += f" ({rep['errors_before']} → {rep['errors_after']} erreur(s) du décodeur)"
+            return res.output_path, note
+        if res.outcome == "healthy":
+            return None, "✓ rien à réparer : ce fichier est intact"
+        if res.error_code:
+            _log(path, f"moteur : {res.outcome} / {res.error_code} / {res.report}")
+        return None, res.public_message
 
     def _repair_all(self, method: str, paths: list) -> None:
         tools = {"freeze": repair.freeze, "cut": repair.cut_damage,
@@ -241,6 +286,17 @@ class RepairDialog(QDialog):
                 self.mail.put(("progress", (n, total, fraction, Path(p).name)))
             note = ""
             try:
+                if method == "engine" or moteur.is_photo(path):
+                    target, note = self._engine_repair(path, progress)
+                    if target is None:
+                        self.mail.put(("result", (path, note)))
+                        if not moteur.is_photo(path) and not note.startswith("✓"):
+                            self.mail.put(("suggest", None))
+                        continue
+                    check = ({"errors": []} if moteur.is_photo(path)
+                             else repair.diagnose(target, stop=lambda: self._stop))
+                    self.mail.put(("repaired", (path, str(target), check, method, note)))
+                    continue
                 if method == "rebuild":
                     target = repair.repaired_name(path, "rebuild")
                     stats = resync.rebuild(path, target, progress=progress,
@@ -295,6 +351,21 @@ class RepairDialog(QDialog):
                 self.reports[path] = report
                 row = self.rows[path]
                 damaged = bool(report["errors"])
+                if report.get("photo"):
+                    if report.get("unavailable"):
+                        text = "moteur de réparation indisponible"
+                    elif report.get("pending"):
+                        text = (f"photo à examiner — le moteur de réparation ({moteur.DOWNLOAD_SIZE}) "
+                                "se télécharge à la première réparation")
+                    elif not damaged:
+                        text = "✓ photo intacte"
+                    elif not report.get("opens", True):
+                        text = "⚠ photo illisible"
+                    else:
+                        text = f"⚠ photo abîmée — {report.get('zones', 0)} zone(s) décalée(s)"
+                    row.setText(self.COL_STATE, text)
+                    self._suggest()
+                    continue
                 text = ("⚠ " if damaged else "✓ ") + repair.summary(report)
                 if damaged:
                     shifted = report.get("shifted", 0)
@@ -329,6 +400,8 @@ class RepairDialog(QDialog):
                                 + f"{Path(target).name} — "
                                 + ("propre" if clean else repair.summary(check)))
                 row.setToolTip(self.COL_RESULT, target)
+            elif kind == "install":
+                self.bar.setFormat(value[:160])
             elif kind == "suggest":
                 self._suggest(force=True)
             elif kind == "error":
@@ -346,7 +419,10 @@ class RepairDialog(QDialog):
         damaged = [r for r in self.reports.values() if r.get("errors")]
         if not damaged or (self._chose and not force):
             return
-        wanted = "rebuild" if any(r.get("shifted") for r in damaged) else "freeze"
+        if moteur.offered():
+            wanted = "engine"
+        else:
+            wanted = "rebuild" if any(r.get("shifted") for r in damaged) else "freeze"
         if force:
             wanted = "freeze"
         for button in self.methods.buttons():
@@ -367,13 +443,15 @@ class RepairDialog(QDialog):
         method = self._method()
         # Sans selection, ce qui est deja repare n'est pas repropose.
         pool = chosen or [p for p in self.rows if p not in self.repaired]
+        if method != "engine":
+            pool = [p for p in pool if not moteur.is_photo(p)]
         if method == "remux":
             return pool
         return [p for p in pool if self.reports.get(p, {}).get("errors")]
 
     def _refresh_buttons(self) -> None:
         method = self._method()
-        for key, _text, tip in METHODS:
+        for key, _text, tip in self.method_list:
             if key == method and self.hint.text() != tip:
                 self.hint.setText(tip)
         targets = self._targets()
@@ -385,8 +463,25 @@ class RepairDialog(QDialog):
 
     def _repair(self) -> None:
         targets = self._targets()
-        if targets and not self._busy:
-            self._start(lambda: self._repair_all(self._method(), targets), "réparation")
+        if not targets or self._busy:
+            return
+        method = self._method()
+        fetch = ((method == "engine" or any(moteur.is_photo(p) for p in targets))
+                 and not moteur.available() and moteur.can_install())
+        if fetch:
+            asked = QMessageBox.question(
+                self, "Moteur de réparation",
+                "Le moteur de réparation PixMedic n'est pas encore installé.\n\n"
+                f"Il se télécharge une seule fois ({moteur.DOWNLOAD_SIZE}), puis la réparation "
+                "commence. Le télécharger maintenant ?")
+            if asked != QMessageBox.Yes:
+                return
+
+        def work():
+            if fetch:
+                moteur.install(lambda line: self.mail.put(("install", line)))
+            self._repair_all(method, targets)
+        self._start(work, "réparation")
 
     def _halt(self) -> None:
         self._stop = True
@@ -403,6 +498,14 @@ class RepairDialog(QDialog):
     def _watch(self) -> None:
         path = self._watch_target()
         if not path:
+            return
+        if moteur.is_photo(path):
+            import os
+            shown = self.repaired.get(path) or path
+            try:
+                os.startfile(shown)                         # noqa: S606 (Windows)
+            except OSError:
+                pass
             return
         from .repair_compare import RepairCompare
         if self.compare is not None:
