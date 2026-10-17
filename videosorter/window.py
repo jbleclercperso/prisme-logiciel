@@ -71,6 +71,7 @@ from .access import JOURNAL
 from .perf import LOG as STALL_LOG, WATCH, mark
 from .quiet import QUIET_COVERS, QuietPage
 from .lock import LockPage, PinDialog, ask_pin, pin_is_set
+from . import edition
 from . import licence
 from . import update
 # Le dialogue du partage et la recherche sur le web s'importent a leur
@@ -1064,7 +1065,11 @@ class MainWindow(
         self.viewers_timer = QTimer(self)
         self.viewers_timer.setInterval(5000)
         self.viewers_timer.timeout.connect(self._poll_viewers)
-        self.viewers_timer.start()
+        if edition.perso():
+            self.viewers_timer.start()
+        else:
+            # La version vendue n'a pas de visiteurs a guetter.
+            self.viewers_button.hide()
 
         # Le repli. Un rond gris, sans legende : il ne doit rien annoncer a
         # qui regarde par-dessus l'epaule, et se trouver sans reflechir.
@@ -1199,6 +1204,11 @@ class MainWindow(
                 ("Demandes reçues…", self.open_demandes),
                 ("Sondages aux visiteurs…", self.open_surveys),
                 ("Vidéo à la demande : missions…", self.open_missions),
+            ]) if edition.perso() else ("Téléphone", [
+                # La version vendue : sa bibliotheque sur son telephone, rien
+                # pour des visiteurs (edition.py).
+                ("Partage à distance…", self.open_share),
+                ("Cachés sur le téléphone…", self.edit_phone_hidden),
             ]),
             ("Réglages", [
                 ("Mots-clés automatiques…", self.edit_tags),

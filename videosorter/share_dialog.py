@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import edition
 from .access import JOURNAL, spell, when
 from .tunnel import (
     CONSENT, FIXED_CLOSED, Chore, close_fixed, connect_fixed,
@@ -28,6 +29,15 @@ from .tunnel import (
 # Un mot de passe devant l'internet entier : douze caracteres au moins. Une
 # adresse publique se fait essayer des milliers de fois par nuit.
 MIN_PASSWORD = 12
+
+# Ce que disent les onglets du lien. La version vendue ne partage qu'avec son
+# propre telephone (edition.py).
+_HOW_TO_ENTER = ("Scannez le code, ou envoyez le lien : l'ouvrir suffit pour "
+                 "entrer, sans mot de passe." if edition.perso() else
+                 "Scannez le code avec votre téléphone : il entre sans mot de passe.")
+_KEEP_LINK = ("Quiconque a le lien entre dans la bibliothèque : ne l'envoyez "
+              "qu'à qui vous voulez." if edition.perso() else
+              "Ce lien ouvre votre bibliothèque : gardez-le pour vous.")
 
 
 class Installer(QObject):
@@ -184,10 +194,11 @@ class ShareDialog(QDialog):
         tabs.addTab(self._invite(), "Via le NAS")
         tabs.addTab(self._settings(), "Réglages")
         tabs.addTab(self._phone_hidden(), "Cachés sur le téléphone")
-        # Une fiche par personne, avant le detail des journaux.
-        tabs.addTab(self._visitors(), "Visiteurs")
-        tabs.addTab(self._visits(), "Connexions")
-        tabs.addTab(self._views(), "Ce qui a été regardé")
+        if edition.perso():
+            # Une fiche par personne, avant le detail des journaux.
+            tabs.addTab(self._visitors(), "Visiteurs")
+            tabs.addTab(self._visits(), "Connexions")
+            tabs.addTab(self._views(), "Ce qui a été regardé")
         tabs.addTab(self._favorites(), "Favoris")
         outer.addWidget(tabs, 1)
 
@@ -337,14 +348,11 @@ class ShareDialog(QDialog):
         page = self._nas()
         box = page.layout()
         head = QLabel("Par le NAS — de partout (Wi-Fi, 4G, ailleurs), même PC éteint. "
-                      "Scannez le code, ou envoyez le lien : l'ouvrir suffit pour "
-                      "entrer, sans mot de passe.", page)
+                      + _HOW_TO_ENTER, page)
         head.setObjectName("shareHead")
         head.setWordWrap(True)
         box.insertWidget(0, head)
-        warn = QLabel(
-            "Quiconque a le lien entre dans la bibliothèque : ne l'envoyez "
-            "qu'à qui vous voulez.", page)
+        warn = QLabel(_KEEP_LINK, page)
         warn.setObjectName("shareWarn")
         warn.setWordWrap(True)
         # Avant l'espace qui pousse tout en haut.
@@ -358,9 +366,8 @@ class ShareDialog(QDialog):
         page = QWidget(self)
         box = QVBoxLayout(page)
         box.setSpacing(10)
-        head = QLabel("Par le PC — Prisme doit être ouvert sur ce PC. Scannez le "
-                      "code, ou envoyez le lien : l'ouvrir suffit pour entrer, "
-                      "sans mot de passe.", page)
+        head = QLabel("Par le PC — Prisme doit être ouvert sur ce PC. " + _HOW_TO_ENTER,
+                      page)
         head.setObjectName("shareHead")
         head.setWordWrap(True)
         box.addWidget(head)
@@ -381,8 +388,7 @@ class ShareDialog(QDialog):
         column = self.pc_away["box"]
         column.insertWidget(column.count() - 1, self.pc_open, 0, Qt.AlignLeft)
         box.addLayout(row)
-        warn = QLabel("Quiconque a le lien entre dans la bibliothèque : ne l'envoyez "
-                      "qu'à qui vous voulez.", page)
+        warn = QLabel(_KEEP_LINK, page)
         warn.setObjectName("shareWarn")
         warn.setWordWrap(True)
         box.addWidget(warn)
@@ -398,7 +404,9 @@ class ShareDialog(QDialog):
         intro = QLabel(
             "Votre Prisme reste sur ce PC. Après chaque analyse, il dépose sur "
             "le NAS le catalogue, les vignettes et la clé du lien ; un petit "
-            "serveur, sur le NAS, les montre aux invités et lit les vidéos "
+            "serveur, sur le NAS, les montre "
+            + ("aux invités" if edition.perso() else "à votre téléphone")
+            + " et lit les vidéos "
             "directement sur ses disques. À préparer une fois sur le NAS : "
             "voir « Installer sur le NAS ».", page)
         intro.setWordWrap(True)
@@ -550,7 +558,8 @@ class ShareDialog(QDialog):
         hint = QLabel(
             "Le partage est actif dès le lancement. On y entre par le lien "
             "d'invitation (onglets « Via le PC » et « Via le NAS »), ou avec ce mot de passe — "
-            "utile pour qui n'a pas le lien.", page)
+            + ("utile pour qui n'a pas le lien." if edition.perso() else
+               "utile depuis un appareil qui n'a pas le lien."), page)
         hint.setWordWrap(True)
         box.addWidget(hint)
 
@@ -865,9 +874,10 @@ class ShareDialog(QDialog):
         box.addWidget(head)
         hint = QLabel(
             "Ces dossiers et ces vidéos restent dans Prisme, sur ce PC, mais n'apparaissent "
-            "pas sur la page des visiteurs — ni par le PC, ni par le NAS (qui suit la liste "
+            "pas sur la page du téléphone — ni par le PC, ni par le NAS (qui suit la liste "
             "en quelques secondes). Leurs sous-dossiers sont cachés avec eux.\n"
-            "Depuis Prisme : ⋯ › Visiteurs › « Cachés sur le téléphone… », puis cochez "
+            "Depuis Prisme : ⋯ › " + ("Visiteurs" if edition.perso() else "Téléphone")
+            + " › « Cachés sur le téléphone… », puis cochez "
             "les dossiers dans l'arborescence.", page)
         hint.setWordWrap(True)
         box.addWidget(hint)
@@ -1355,6 +1365,8 @@ class ShareDialog(QDialog):
         """
         nas_visits, nas_views = self._nas_journal()
         self._fill_favorites(getattr(self, "_nas_favorites", []))
+        if not edition.perso():
+            return              # la version vendue n'a que ses favoris
         self._fill_people()
         visits = [row + ("",) for row in JOURNAL.visits()]
         visits += [row + (" · NAS",) for row in nas_visits]

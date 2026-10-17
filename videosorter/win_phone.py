@@ -55,6 +55,9 @@ class PhoneMixin:
         if self._closing or getattr(self, "_asks_reading", False):
             return
         self._import_phone_videos()
+        from . import edition
+        if not edition.perso():
+            return                  # ni demandes, ni sondages, ni missions
         self._poll_surveys()
         self._poll_missions()
         from . import demandes
