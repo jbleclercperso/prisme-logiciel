@@ -374,6 +374,8 @@ DEFAULTS = {
     "volume": 100,
     # La sortie du son choisie a la main ("" : celle de Windows).
     "audio_output": "",
+    # Les videos trop basses remontees au niveau d'une video ordinaire (boost.py).
+    "level_audio": True,
     # Les demandes du telephone deja vues, et celles qu'on a faites (demandes.py).
     "demandes_vues": [],
     # Les sondages finis deja annonces (sondage|serveur|personne).

@@ -529,7 +529,7 @@ class SplitPane(QFrame):
             self.bar.reveal()
         else:
             self.marks.with_rail = True
-            self.bar.hide()
+            self.bar.fade_out()
         # Au repos, l'etoile doree dit le favori, a cote du temps restant.
         self.marks.set_favorite(self.favorite and not hovered)
         self.marks.place_on(self.stage)
@@ -1131,7 +1131,9 @@ class SplitWall(QWidget):
             follow(output)
             output.setMuted(self.muted)
             pane.audio = output
-            pane.player.setAudioOutput(output)
+            # Par l'egalisation : les videos trop basses remontees.
+            from .boost import Booster
+            pane.booster = Booster(pane.player, output)
         else:
             self._mute_heard(self.muted)
 

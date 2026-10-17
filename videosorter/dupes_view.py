@@ -11,6 +11,10 @@ qualite, puis le chemin le plus long »). Des dossiers a privilegier passent
 avant tout. « Comparer en video » lit les copies d'un groupe ensemble, au
 meme instant, et enchaine les groupes un par un.
 
+Une photo n'a pas de moments : une seule image par copie, plus grande, ses
+dimensions (« 4032×3024 ») au lieu de « 1080p », et la copie gardee est
+d'office celle qui a le plus de pixels, puis le plus gros fichier.
+
 Rien ne part sans le bouton du bas, et tout passe par la corbeille de la
 seance (Ctrl+B pour reprendre). Un groupe garde toujours au moins une copie.
 """
@@ -36,6 +40,10 @@ THUMB_H = 90
 # Extraites un peu plus grandes que montrees : nettes une fois reduites.
 THUMB_MADE = 240
 MOMENTS = (0.15, 0.5, 0.85)
+# Une photo : une seule image, de la largeur des trois d'une video.
+PHOTO_W = 240
+PHOTO_H = 180
+PHOTO_MADE = 360
 PAGE = 30
 
 # Les dossiers d'arrivee : une copie qui y dort n'est pas encore rangee.
@@ -57,6 +65,10 @@ CRITERIA = (
     ("shallowest", "Chemin le plus court"),
 )
 DEFAULT_CRITERIA = ("best", "deepest", "biggest")
+# Pour des photos : la plus grande definition, puis le plus gros fichier (a
+# definition egale, le moins recompresse). Ni duree ni debit.
+PHOTO_CRITERIA = ("best", "biggest", "deepest")
+VIDEO_ONLY_CRITERIA = ("bitrate", "longest")
 
 STYLE = """
 QWidget#dupesRoot, QWidget#dupesContent { background: #0e1116; color: #e6edf3; }
@@ -175,6 +187,8 @@ class Group:
         n = len(self.paths)
         self.sizes = list(getattr(dupe, "sizes", [0] * n))
         self.heights = list(getattr(dupe, "heights", [0] * n))
+        self.widths = list(getattr(dupe, "widths", None) or [0] * n)
+        self.photo = bool(getattr(dupe, "photo", False))
         self.durations = list(getattr(dupe, "durations", [0.0] * n))
         self.sure = bool(getattr(dupe, "sure", True))
         self.places = [Placement(p, tops, destinations) for p in self.paths]
@@ -189,9 +203,16 @@ class Group:
     def __len__(self) -> int:
         return len(self.paths)
 
+    def definition(self, i: int) -> int:
+        """La hauteur d'une video ; les pixels d'une photo, qui peut etre
+        couchee ou debout."""
+        if self.photo and self.widths[i]:
+            return self.widths[i] * (self.heights[i] or 0)
+        return self.heights[i] or 0
+
     def quality(self, i: int) -> tuple:
         """Le dernier recours : definition, poids, duree, chemin court."""
-        return (self.heights[i] or 0, self.sizes[i] or 0, self.durations[i] or 0.0,
+        return (self.definition(i), self.sizes[i] or 0, self.durations[i] or 0.0,
                 -len(self.paths[i]))
 
     def bitrate(self, i: int) -> float:
@@ -202,7 +223,7 @@ class Group:
         """La valeur d'une copie pour ce critere : la plus grande gagne."""
         place = self.places[i]
         if criterion == "best":
-            return self.heights[i] or 0
+            return self.definition(i)
         if criterion == "deepest":
             return place.depth
         if criterion == "shallowest":
@@ -267,9 +288,9 @@ class _Thumbs(QObject):
     def _remember(self, key: str, file: str) -> None:
         self.done[key] = file
 
-    def ask(self, video: str, ts: float) -> str:
+    def ask(self, video: str, ts: float, width: int = THUMB_MADE) -> str:
         from . import media
-        key = f"{video}|{ts:.2f}"
+        key = f"{video}|{ts:.2f}|{width}"
         self.wanted.add(key)
         if key in self.done:
             file = self.done[key]
@@ -278,7 +299,7 @@ class _Thumbs(QObject):
         if key in self.asked:
             return key
         self.asked.add(key)
-        hit = media.cached_thumb(Path(video), ts, THUMB_MADE)
+        hit = media.cached_thumb(Path(video), ts, width)
         if hit is not None:
             QTimer.singleShot(0, lambda: self.ready.emit(key, str(hit)))
             return key
@@ -288,7 +309,7 @@ class _Thumbs(QObject):
                 self.asked.discard(key)       # redemandee si on y revient
                 return
             try:
-                out = media.extract_thumb(Path(video), ts, THUMB_MADE, keyframe=True)
+                out = media.extract_thumb(Path(video), ts, width, keyframe=True)
             except Exception:                                # noqa: BLE001
                 out = None
             self.ready.emit(key, str(out) if out else "")
@@ -321,7 +342,8 @@ class _Facts(QObject):
                 pass
             try:
                 info = media.probe(Path(path)) or {}
-                found.update(height=int(info.get("height") or 0),
+                found.update(width=int(info.get("width") or 0),
+                             height=int(info.get("height") or 0),
                              duration=float(info.get("duration") or 0.0),
                              codec=str(info.get("codec") or ""))
             except Exception:                                # noqa: BLE001
@@ -459,6 +481,10 @@ class DupesReview(QWidget):
         tops, dests = self._places_of(window)
         self.fresh = {_key(p) for p in fresh}
         self.groups = [Group(g, tops, dests, self.fresh) for g in groups if len(g.paths) >= 2]
+        # Des photos : ni moments, ni duree, ni lecture cote a cote.
+        self.photo = bool(self.groups) and all(g.photo for g in self.groups)
+        self.defaults = PHOTO_CRITERIA if self.photo else DEFAULT_CRITERIA
+        self.noun = "photo" if self.photo else "vidéo"
         self.thumbs = _Thumbs(self)
         self.thumbs.ready.connect(self._thumb_ready)
         self.facts = _Facts(self)
@@ -468,7 +494,7 @@ class DupesReview(QWidget):
         self._infos: dict = {}          # (id groupe, copie) -> etiquette des mesures
         self._cards: list = []          # (groupe, [(cadre, badge)])
         self.prefer: list = []
-        self._rule = (DEFAULT_CRITERIA, (), False)
+        self._rule = (self.defaults, (), False)
         self.page = 0
         self._compare = None
 
@@ -505,13 +531,15 @@ class DupesReview(QWidget):
         grid.setVerticalSpacing(6)
         grid.addWidget(QLabel("<b>Garder</b> dans chaque groupe :", bar), 0, 0)
         self.criteria = []
-        for n, wanted in enumerate(DEFAULT_CRITERIA):
+        for n, wanted in enumerate(self.defaults):
             if n:
                 grid.addWidget(QLabel("puis, à égalité :", bar), 0, 2 * n)
             pick = QComboBox(bar)
             if n:
                 pick.addItem("—", "")
             for key, text in CRITERIA:
+                if self.photo and key in VIDEO_ONLY_CRITERIA:
+                    continue
                 pick.addItem(text, key)
             pick.setCurrentIndex(max(0, pick.findData(wanted)))
             self.criteria.append(pick)
@@ -528,15 +556,18 @@ class DupesReview(QWidget):
         self.prefer_button.clicked.connect(self._pick_prefer)
         grid.addWidget(self.prefer_button, 1, 0, 1, 2)
         self.doubtful = QCheckBox("Aussi les groupes « à vérifier »", bar)
-        self.doubtful.setToolTip("Les groupes peu sûrs (une seule image commune, durée inconnue) "
-                                 "ne sont pas touchés par les critères, sauf ici.")
+        self.doubtful.setToolTip(
+            ("Les groupes peu sûrs (des photos qui se ressemblent sans être tout à fait "
+             "la même image) " if self.photo else
+             "Les groupes peu sûrs (une seule image commune, durée inconnue) ")
+            + "ne sont pas touchés par les critères, sauf ici.")
         grid.addWidget(self.doubtful, 1, 2, 1, 2)
         grid.addWidget(QLabel("Montrer :", bar), 1, 4, Qt.AlignRight)
         self.show_pick = QComboBox(bar)
         for key, text in (("all", "Tous les groupes"), ("sure", "Les groupes sûrs"),
                           ("doubt", "Les groupes à vérifier"),
                           ("loose", "Une copie rangée + une non rangée"),
-                          ("new", "Avec une vidéo nouvelle"),
+                          ("new", f"Avec une {self.noun} nouvelle"),
                           ("todo", "Sans décision")):
             self.show_pick.addItem(text, key)
         if self.fresh:
@@ -569,6 +600,7 @@ class DupesReview(QWidget):
         foot.addWidget(self.next_button)
         compare_all = QPushButton("▶ Comparer en vidéo, groupe par groupe", self)
         compare_all.clicked.connect(lambda: self._open_compare(None))
+        compare_all.setVisible(not self.photo)
         foot.addWidget(compare_all)
         foot.addStretch(1)
         self.summary = QLabel("", self)
@@ -583,7 +615,7 @@ class DupesReview(QWidget):
         # a verifier attend qu'on le regarde.
         for group in self.groups:
             if group.sure:
-                group.apply(DEFAULT_CRITERIA)
+                group.apply(self.defaults)
         self._rebuild(0)
         # Le codec n'est jamais dans le groupe ; le reste, parfois pas.
         for group in self.groups:
@@ -688,7 +720,8 @@ class DupesReview(QWidget):
         if not group.sure:
             head.addWidget(_tag("à vérifier", "doubt", card))
         if any(group.new):
-            head.addWidget(_tag("vidéo nouvelle", "new", card))
+            head.addWidget(_tag(f"{'photo' if group.photo else 'vidéo'} nouvelle",
+                                "new", card))
         head.addStretch(1)
         for text, tip, slot in (
                 ("▶ Comparer en vidéo", "Lire les copies ensemble, au même instant",
@@ -697,6 +730,8 @@ class DupesReview(QWidget):
                  lambda _c=False, g=group: self._set_all(g, True)),
                 ("Pas des doublons", "Ce groupe n'en est pas un : il quitte la liste et ne "
                  "reviendra plus", lambda _c=False, g=group: self._not_dupes(g))):
+            if group.photo and text.startswith("▶"):
+                continue          # une photo ne se lit pas cote a cote
             button = QPushButton(text, card)
             button.setObjectName("dupesSmall")
             button.setToolTip(tip)
@@ -726,7 +761,13 @@ class DupesReview(QWidget):
         badge.clicked.connect(lambda g=group, n=i: self._toggle(g, n))
         lay.addWidget(badge)
         strip = []
-        for _slot in MOMENTS:
+        if group.photo:
+            picture = _Picture(row, PHOTO_W, PHOTO_H)
+            picture.setToolTip("Clic : garder, ou mettre à la corbeille")
+            picture.clicked.connect(lambda g=group, n=i: self._toggle(g, n))
+            strip.append(picture)
+            lay.addWidget(picture)
+        for _slot in (() if group.photo else MOMENTS):
             picture = _Picture(row)
             picture.setToolTip("Les mêmes moments pour chaque copie (15, 50 et 85 %).\n"
                                "Clic : garder, ou mettre à la corbeille")
@@ -770,7 +811,7 @@ class DupesReview(QWidget):
         lay.addWidget(only)
         play = QPushButton("▶", row)
         play.setObjectName("dupesSmall")
-        play.setToolTip("Ouvrir cette vidéo dans Prisme")
+        play.setToolTip(f"Ouvrir cette {'photo' if group.photo else 'vidéo'} dans Prisme")
         play.clicked.connect(lambda _c=False, p=path: self._play(p))
         lay.addWidget(play)
         return row, badge
@@ -779,14 +820,17 @@ class DupesReview(QWidget):
         strip = self._strips.get((id(group), i))
         if not strip:
             return
-        moments = moments_of(group.durations[i])
+        if group.photo:
+            moments, width = [0.0], PHOTO_MADE
+        else:
+            moments, width = moments_of(group.durations[i]), THUMB_MADE
         if not moments:
             return              # la duree arrive avec les mesures
         for picture, ts in zip(strip, moments):
             if getattr(picture, "asked", None) == round(ts, 2):
                 continue
             picture.asked = round(ts, 2)
-            key = self.thumbs.ask(group.paths[i], ts)
+            key = self.thumbs.ask(group.paths[i], ts, width)
             self._pictures.setdefault(key, []).append(picture)
 
     @staticmethod
@@ -796,6 +840,18 @@ class DupesReview(QWidget):
             colour = "#7ee2a8" if best else "#c9d1d9"
             return f"<span style='color:{colour}'>{text}</span>"
         many = len(group) > 1
+        if group.photo:
+            best_p = max(group.definition(j) for j in range(len(group)))
+            best_s = max(group.sizes or [0])
+            w, h, s = group.widths[i], group.heights[i], group.sizes[i]
+            codec = group.codecs[i]
+            parts = [
+                fact(f"{w}×{h}", many and group.definition(i) == best_p) if w and h else "",
+                fact(human_size(s), many and s == best_s) if s else "",
+                fact(codec.upper(), False) if codec else "",
+            ]
+            return (" · ".join(x for x in parts if x)
+                    or "<span style='color:#6e7681'>mesures…</span>")
         best_h = max(group.heights or [0])
         best_s = max(group.sizes or [0])
         best_d = max(group.durations or [0.0])
@@ -819,6 +875,8 @@ class DupesReview(QWidget):
             group.sizes[i] = int(found["size"])
         if found.get("height"):
             group.heights[i] = int(found["height"])
+        if found.get("width"):
+            group.widths[i] = int(found["width"])
         if found.get("duration"):
             group.durations[i] = float(found["duration"])
         if found.get("codec"):
@@ -904,7 +962,7 @@ class DupesReview(QWidget):
         self._repaint(group)
 
     def _apply_all(self) -> None:
-        criteria = self._chosen_criteria() or DEFAULT_CRITERIA
+        criteria = self._chosen_criteria() or self.defaults
         doubtful = self.doubtful.isChecked()
         self._rule = (criteria, tuple(self.prefer), doubtful)
         for group in self.groups:

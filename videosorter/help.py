@@ -130,9 +130,11 @@ SHORTCUTS = [
                                                 "(ses racines récentes juste dessous)"),
         ("⋯ › Collection › Chercher les doublons",
          "une seule recherche, copies exactes et réencodages : longue la "
-         "première fois, presque immédiate ensuite. Le meilleur de chaque "
-         "groupe est marqué « ✓ à garder », les autres sont cochés d'office ; "
-         "« Pas des doublons » (⊘) retire un groupe pour de bon"),
+         "première fois, presque immédiate ensuite. En mode Photos, aussi la "
+         "même photo redimensionnée, recompressée ou convertie (HEIC, PNG, "
+         "WebP…). Le meilleur de chaque groupe est marqué « ✓ à garder », les "
+         "autres sont cochés d'office ; « Pas des doublons » (⊘) retire un "
+         "groupe pour de bon"),
         ("⋯ › Collection › Repérer les plans", "les vignettes se posent sur des "
                                                "changements de plan, non sur des "
                                                "fractions"),

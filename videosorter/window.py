@@ -969,6 +969,8 @@ class MainWindow(
         audiodev.set_volume(int(self.cfg["volume"] if self.cfg["volume"] is not None
                                 else 100) / 100.0)
         audiodev.choose(self.cfg["audio_output"] or "")
+        from . import boost
+        boost.set_enabled(self.cfg["level_audio"] is not False)
         row_one.addWidget(self.mute_button, 0)
         # Survoler le haut-parleur : le curseur du volume parait dessous.
         from .volume import VolumeFlyout
@@ -1609,6 +1611,11 @@ class MainWindow(
         # permet : avant son chargement, un saut se perdait.
         for deck in self.single.decks:
             deck.player.mediaStatusChanged.connect(self._seek_when_ready)
+        # Les cinq instants flottent sur l'image, fiche ou plein ecran : ils
+        # arrivent de la droite au survol et y repartent, en fondu, quand la
+        # souris se tait. Leur colonne fixe a cote de l'image ne partait
+        # jamais.
+        self.single.float_strip(True)
         self.single.finished.connect(self.on_video_finished)
         # Le diaporama des photos : ⏯, Entree ou un clic sur l'image.
         self.single.slideshowToggled.connect(self.toggle_slideshow)
@@ -2742,7 +2749,7 @@ class MainWindow(
 
     # Les trois recherches de doublons, et ce qu'on en dit.
     DUPES_KINDS = {"size": "même taille", "image": "même image",
-                   "sigs": "d'après les empreintes"}
+                   "sigs": "d'après les empreintes", "photos": "des photos"}
 
     def find_duplicates(self, by_image: bool = False) -> None:
         """Rassemble les vidéos de taille rigoureusement identique.
@@ -2758,6 +2765,7 @@ class MainWindow(
         if self.root is None:
             return
         top = self.top_root()
+        self._dupes_photos = False
         self._dupes_by_image = by_image
         self._dupes_from_sigs = False
         if by_image:
@@ -7809,7 +7817,7 @@ class MainWindow(
             self._place_aside_bar()
             self.aside_bar.reveal()
         else:
-            self.aside_bar.hide()
+            self.aside_bar.fade_out()
             self.aside_player.marks.set_favorite(self._is_favorite(self.aside_current))
             self.aside_player.marks.place_on(area)
 
@@ -7854,8 +7862,7 @@ class MainWindow(
             return
         self.single.place_tally()
         self._note_pointer_moves()
-        if self.cinema:
-            self._watch_cinema_strip(area)
+        self._watch_cinema_strip(area)
         bar = self.single_bar
         on_bar = bar.isVisible() and bar.geometry().contains(QCursor.pos())
         if bar.dragging and not QApplication.mouseButtons() & Qt.LeftButton:
@@ -7880,7 +7887,7 @@ class MainWindow(
             self.single_bar.place_on(area)
             self.single_bar.reveal()
         else:
-            self.single_bar.hide()
+            self.single_bar.fade_out()
             self.single.marks.set_favorite(self._is_favorite(item.path))
             self.single.marks.place_on(area)
         if self.banner.isVisible():
@@ -7908,13 +7915,14 @@ class MainWindow(
             self._cine_moved = time.monotonic()
 
     def _watch_cinema_strip(self, area) -> None:
-        """Plein ecran : la souris bouge sur l'image, les cinq instants
-        arrivent ; elle se tait ou s'en va, ils repartent. Sur eux, ils
-        restent."""
-        now = time.monotonic()
-        if self.single.strip_has_pointer() or (
+        """La souris bouge sur l'image, les cinq instants arrivent ; elle se
+        tait ou s'en va, ils repartent vers la droite, en fondu. Pose sur eux,
+        ils patientent comme le bandeau, puis s'en vont aussi : ils restaient
+        tant que la souris y dormait."""
+        quiet = time.monotonic() - getattr(self, "_cine_moved", 0.0)
+        if (self.single.strip_has_pointer() and quiet < self.BAR_IDLE_S) or (
                 self.isActiveWindow() and self._pointer_on(area)
-                and now - getattr(self, "_cine_moved", 0.0) < self.STRIP_IDLE_S):
+                and quiet < self.STRIP_IDLE_S):
             self.single.reveal_strip()
         else:
             self.single.tuck_strip()
@@ -8254,6 +8262,15 @@ class MainWindow(
             action = self._menu_by_text.get(text)
             if action is not None:
                 action.setVisible(not photo and text not in self.HIDDEN_MENU)
+        dupes = self._menu_by_text.get("Chercher les doublons")
+        if dupes is not None:
+            dupes.setToolTip(
+                "Copies exactes, et la même photo sous un autre poids "
+                "(redimensionnée, recompressée, convertie). Ne lit que les photos "
+                "nouvelles : les autres ont déjà leur empreinte en mémoire." if photo
+                else "Ne relève que les vidéos nouvelles : les autres ont déjà leur "
+                "empreinte en mémoire. Les vidéos qui arrivent sont aussi vérifiées "
+                "toutes seules.")
         self.random_button.setToolTip(
             ("Une photo au hasard" if photo else "Une vidéo au hasard")
             + ", dans toute la collection — jamais deux fois la même avant "
@@ -8363,6 +8380,11 @@ class MainWindow(
             self.floating.close_quietly()
         self.close_aside()
         self.stop_scan()
+        if self.dupes is not None:
+            # Arretee par le changement, pas finie : son resultat vide ne
+            # doit pas passer pour « aucun doublon » dans l'autre collection.
+            self._dupes_stopped = True
+            self._dupes_next = None
         self._stop_background()
         self.preview.stop_harvest()
         self._release_media()
@@ -8382,6 +8404,12 @@ class MainWindow(
         self.controls.set_orientations(("vertical", "horizontal"))
         self.cfg.save_soon()
         self._reset_collection_state()
+        # Les doublons trouves sont ceux de la collection quittee : l'autre a
+        # les siens, dans son propre fichier.
+        self._pending_dupes = None
+        self._pending_partial = False
+        self._name_dupes_action(0)
+        QTimer.singleShot(0, self._reload_found_dupes)
         self._apply_kind_ui()
         return True
 
@@ -8678,9 +8706,6 @@ class MainWindow(
         if not self.cinema and getattr(self, "_back_to_board", False):
             self._back_to_board = False
             self.show_board_at(self.index)
-        # La pellicule : sur l'image et au survol en plein ecran, dans sa
-        # colonne sinon.
-        self.single.float_strip(self.cinema)
         self._cine_moved = time.monotonic()
         if self.cinema:
             self.tree.hide()
@@ -9240,7 +9265,7 @@ class MainWindow(
         size = sum(max(0, item.size) for item in items)
         lines = [f"{len(items)} élément(s)"
                  + (f", dont {len(folders)} dossier(s)" if folders else "")
-                 + f" : {videos} vidéo(s)"
+                 + f" : {videos} {'photo(s)' if photo_mode() else 'vidéo(s)'}"
                  + (f" et {others} autre(s) fichier(s) — documents, images…"
                     if others else "")
                  + (f", {human_size(size)}" if size else "") + "."]
@@ -10981,6 +11006,10 @@ class MainWindow(
         title = menu.addAction("Volume de Prisme")
         title.setEnabled(False)
         menu.addAction(holder)
+        level = menu.addAction("Égaliser le volume : les vidéos trop basses remontées")
+        level.setCheckable(True)
+        level.setChecked(self.cfg["level_audio"] is not False)
+        level.toggled.connect(self.set_level_audio)
         # Ou part le son : celle de Windows, ou une sortie choisie ici.
         from . import audiodev
         menu.addSeparator()
@@ -11004,6 +11033,15 @@ class MainWindow(
             tests.addAction(device.description(),
                             lambda d=device: audiodev.test_output(d))
         menu.exec(self.mute_button.mapToGlobal(self.mute_button.rect().bottomLeft()))
+
+    def set_level_audio(self, on: bool) -> None:
+        """L'egalisation du volume, pour tous les lecteurs."""
+        from . import boost
+        self.cfg["level_audio"] = bool(on)
+        self.cfg.save_soon()
+        boost.set_enabled(on)
+        self.show_banner("Volume égalisé : les vidéos trop basses sont remontées." if on
+                         else "Volume d'origine : chaque vidéo à son niveau.", "info")
 
     def set_audio_output(self, name: str) -> None:
         """La sortie du son des lecteurs : choisie ici, ou celle de Windows."""
