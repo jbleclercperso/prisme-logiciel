@@ -5,7 +5,8 @@ import os
 import time
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
-from .dupes import SignatureGroupScan, SignatureScan
+from .config import photo_mode
+from .dupes import PhotoDuplicateScan, SignatureGroupScan, SignatureScan
 from .header import TAB_FOLDERS, TAB_SPLIT
 from .scan import MODE_FILES, MODE_FLAT, Item, as_path as _as_path, human_size
 from .index import INDEX
@@ -28,7 +29,9 @@ class DupesMixin:
         self.show_banner(banner, "info")
 
     def _dupes_kind(self) -> str:
-        """La recherche en cours : « size », « image » ou « sigs »."""
+        """La recherche en cours : « size », « image », « sigs » ou « photos »."""
+        if getattr(self, "_dupes_photos", False):
+            return "photos"
         if getattr(self, "_dupes_from_sigs", False):
             return "sigs"
         return "image" if getattr(self, "_dupes_by_image", False) else "size"
@@ -57,15 +60,31 @@ class DupesMixin:
     def _launch_dupes(self, kind: str) -> None:
         if kind == "sigs":
             self.duplicates_from_sigs()
+        elif kind == "photos":
+            self.find_photo_dupes()
         else:
             self.find_duplicates(by_image=kind == "image")
 
     def on_dupes_progress(self, seen: int) -> None:
         if self.scanning:
             return
+        noun = "photo(s) recensée(s)" if photo_mode() else "vidéo(s) examinée(s)"
         self._progress_text(f"doublons : {self._thousands(seen)}",
                             f"Recherche de doublons : {self._thousands(seen)} "
-                            "vidéo(s) examinée(s)…")
+                            f"{noun}…")
+        self.progress.show()
+
+    def _photo_dupes_reading(self, done: int, total: int) -> None:
+        """Les empreintes des photos nouvelles : « doublons : photos 120 / 3 400 »."""
+        if self.scanning:
+            return
+        self.progress.setRange(0, max(1, total))
+        self.progress.setValue(done)
+        self._progress_text(
+            f"doublons : photos {self._thousands(done)} / {self._thousands(total)}",
+            f"Recherche de doublons : empreinte de {self._thousands(done)} photo(s) "
+            f"nouvelle(s) ou modifiée(s) sur {self._thousands(total)}. Les autres ont "
+            "déjà la leur.")
         self.progress.show()
 
     def on_dupes_found(self, groups: list) -> None:
@@ -114,6 +133,10 @@ class DupesMixin:
             groups = self._only_in_collection(groups)
         groups = self._one_spelling(groups)
         by_image = getattr(self, "_dupes_by_image", False)
+        unreadable = int(getattr(scan, "unreadable", 0) or 0)
+        missed = (f" {unreadable} photo(s) illisible(s), retentée(s) à la prochaine "
+                  "recherche." if unreadable and isinstance(scan, PhotoDuplicateScan)
+                  else "")
         if not groups:
             # Le verdict complet remplace ce qu'une etape avait cru voir.
             self._keep_found_dupes(None, by_image)
@@ -121,13 +144,13 @@ class DupesMixin:
                 "Aucun doublon trouvé." + (
                     " Par image, seules les vidéos qui ont déjà leur vignette "
                     "sont comparées : « État des vignettes » dit combien."
-                    if by_image else ""),
+                    if by_image else "") + missed,
                 "info")
             return
         self._keep_found_dupes(groups, by_image)
         self.show_banner(
             self._dupes_summary(groups, by_image) + ". Cliquez ici pour les "
-            "afficher — ou plus tard par « ⋯ › Doublons ».", "done",
+            "afficher — ou plus tard par « ⋯ › Doublons »." + missed, "done",
             action=self.show_found_dupes, seconds=15)
 
     def _interim_dupes_found(self, scan, groups: list) -> None:
@@ -533,6 +556,7 @@ class DupesMixin:
             return
         self._interim_began = now
         self._interim_next = now + self.INTERIM_EVERY_S
+        self._dupes_photos = False
         self._dupes_by_image = True
         self._dupes_from_sigs = True
         self._dupes_stopped = False
@@ -586,8 +610,11 @@ class DupesMixin:
 
         Sonde d'abord les videos qui n'en ont pas encore (seulement celles-la :
         la seconde fois, c'est presque immediat), puis compare, tout seul.
-        Recliquer arrete ce qui tourne.
+        Recliquer arrete ce qui tourne. Les photos ont leur propre recherche
+        (`find_photo_dupes`).
         """
+        if photo_mode():
+            return self.find_photo_dupes()
         if self.sig_scan is not None:
             # L'arrete -- et compare ce qui est deja releve.
             self._dupes_after_sigs = True
@@ -601,6 +628,31 @@ class DupesMixin:
             return self.setFocus()
         self._dupes_after_sigs = True
         self.scan_signatures()
+
+    def find_photo_dupes(self) -> None:
+        """Les doublons de photos, d'un trait : copies exactes et meme image
+        sous un autre poids (redimensionnee, recompressee, convertie).
+
+        Seules les photos nouvelles ou modifiees sont lues -- leur vignette
+        quand elle est faite --, les autres ont leur empreinte dans l'index
+        des photos. Recliquer arrete.
+        """
+        if self.dupes is not None:
+            self._stop_dupes("photos")
+            return
+        if self.root is None or not self._sigs_can_be_kept():
+            return
+        top = self.top_root()
+        self._dupes_photos = True
+        self._dupes_by_image = False
+        self._dupes_from_sigs = False
+        self.dupes = PhotoDuplicateScan(top, self.cfg["thumb_width"],
+                                        self.cfg["skip_hidden"], self)
+        self.dupes.reading.connect(self._photo_dupes_reading)
+        self._start_dupes(
+            f"Doublons de photos sous {top} : copies exactes et mêmes images "
+            "sous un autre poids. Seules les photos nouvelles ou modifiées sont "
+            "lues. Recliquer arrête.")
 
     def _sigs_can_be_kept(self) -> bool:
         """Faux, et le dit, quand l'index ne peut rien retenir.
@@ -670,6 +722,7 @@ class DupesMixin:
         if self.root is None:
             return
         top = self.top_root()
+        self._dupes_photos = False
         self._dupes_by_image = True
         self._dupes_from_sigs = True
         self.dupes = SignatureGroupScan(top, self)
@@ -682,8 +735,10 @@ class DupesMixin:
         comparees a toute la collection, en fond et sans bandeau. Rien ne se
         dit s'il n'y a rien ; sinon un bandeau ouvre leur comparaison. Il
         attend qu'une premiere recherche de doublons ait releve la
-        collection : sans elle, tout serait « nouveau »."""
+        collection : sans elle, tout serait « nouveau ». Pas pour les photos :
+        leur recherche ne relit deja que les nouvelles."""
         if (self._closing or self.root is None or not self.cfg["dupes_watch"]
+                or photo_mode()
                 or self.sig_scan is not None or self.dupes is not None
                 or INDEX.db is None):
             return

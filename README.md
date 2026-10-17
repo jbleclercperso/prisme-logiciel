@@ -38,6 +38,9 @@ ffmpeg.
 - **Verticales / Horizontales** : les photos dont on ignore encore le format
   sont mesurées en tâche de fond, par lots (seul l'en-tête est lu), et la liste
   se complète à mesure.
+- **Les doublons** : « ⋯ › Collection › Chercher les doublons » trouve aussi les
+  photos en double, copies exactes comme images réenregistrées (voir
+  [Doublons](#doublons)).
 
 Destinations, notes, touches et corbeille marchent comme pour les vidéos.
 
@@ -316,6 +319,38 @@ la liste (rien ne bouge sur le disque).
   parcourt le disque (`videosorter/roots.py`) : l'analyse, les vignettes, les
   doublons, les empreintes, les plans et les titres la traitent comme n'importe
   quelle racine.
+
+## Doublons
+
+« ⋯ › Collection › Chercher les doublons » : une seule commande, pour la
+collection ouverte (vidéos ou photos).
+
+- **Vidéos** : quatre images de chaque vidéo, prises aux mêmes fractions de sa
+  durée, forment son empreinte. Elle reconnaît une copie exacte comme un
+  réencodage, un recadrage ou un renommage ; la durée sert de garde-fou. La
+  première fois est longue (plusieurs heures sur une grande collection, Prisme
+  le dit avant de commencer) ; ensuite seules les vidéos nouvelles sont
+  relevées, et celles qui arrivent sont vérifiées toutes seules.
+- **Photos** (mode Photos) : les copies exactes — même taille à l'octet près,
+  puis le contenu vérifié — et **la même photo sous un autre poids** :
+  redimensionnée, recompressée, convertie (JPEG, HEIC, PNG, WebP…). Deux
+  empreintes d'image (pHash et dHash) et le format (largeur sur hauteur) la
+  reconnaissent ; l'orientation EXIF est respectée, une photo rangée couchée
+  retrouve sa copie debout. Les photos sont lues par Qt — leur vignette quand
+  elle est déjà faite, sur le disque local —, seul le HEIC passe par ffmpeg.
+  Chaque empreinte reste dans l'index des photos avec la taille et la date du
+  fichier : la recherche suivante ne relit que les photos nouvelles ou
+  modifiées. Deux photos qui se ressemblent sans être tout à fait la même
+  image (une rafale, deux retouches) forment un groupe « à comparer ».
+
+La revue est la même pour les deux : chaque groupe le meilleur exemplaire en
+tête, marqué « ✓ à garder » — la plus grande définition, puis le plus gros
+fichier —, les autres cochés d'office, sauf dans un groupe « à comparer ». Une
+photo s'y montre en une seule grande image, avec ses dimensions (« 4032×3024 »).
+« Pas des doublons » retire un groupe pour de bon ; la suppression passe par la
+corbeille de séance (`Ctrl+Z` la reprend). Le dernier résultat reste dans
+« ⋯ › Collection › Afficher les doublons trouvés », d'une séance à l'autre, un
+pour chaque collection.
 
 ## Réparer des vidéos abîmées
 
@@ -1030,6 +1065,15 @@ Le lecteur flottant (passage de relais au même instant, gestes, touches,
 ouverture automatique), le ⌸ du mur et la touche « Suppr » ; puis le mode
 photo (lancement sur les vidéos, bascule, index et réglages séparés,
 vignettes sans ffmpeg, diaporama, mur, feuilletage, mesure du format).
+
+```bash
+python tests/test_photo_dupes.py
+```
+
+Les doublons de photos : copie exacte, réduite, PNG, WebP et photo redressée
+par l'EXIF réunies dans un groupe sûr, le meilleur en tête ; deux BMP de même
+taille mais d'images différentes séparés ; rien de relu la seconde fois ;
+« Pas des doublons » retenu.
 
 ```bash
 python tests/test_network.py

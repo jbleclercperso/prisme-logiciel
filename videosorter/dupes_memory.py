@@ -439,17 +439,21 @@ class FoundDupes:
     qui sera supprime. A l'affichage, ce qui a ete ecarte, range ou declare
     « pas des doublons » depuis en est retire, comme pour un resultat frais.
     Chez soi, comme les « pas des doublons » : un cache partage servirait
-    les doublons d'une machine a l'autre.
+    les doublons d'une machine a l'autre. Un fichier par collection : les
+    doublons de photos ne reviennent pas parmi les videos.
     """
 
     FILE = "doublons-trouves.json"
+    PHOTO_FILE = "doublons-trouves-photos.json"
 
     def __init__(self, path: Path | None = None):
         self._path = Path(path) if path else None
 
     @property
     def path(self) -> Path:
-        return self._path or (config.PRIVATE_DIR / self.FILE)
+        if self._path:
+            return self._path
+        return config.PRIVATE_DIR / (self.PHOTO_FILE if config.photo_mode() else self.FILE)
 
     def save(self, groups: list, by_image: bool, partial: bool = False,
              root: str = "") -> bool:

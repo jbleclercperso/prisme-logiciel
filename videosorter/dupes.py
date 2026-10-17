@@ -36,7 +36,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from .config import VIDEO_EXTS
+from .config import PHOTO_EXTS, VIDEO_EXTS, is_photo
 from .scan import _is_hidden, human_duration, human_resolution, human_size
 
 # En deça, deux fichiers de même taille ne prouvent rien : les vidéos minuscules
@@ -48,8 +48,12 @@ MIN_SIZE = 1024 * 1024
 # Parcours
 # ---------------------------------------------------------------------------
 
-def _walk(root, skip_hidden: bool = True, should_stop=None, on_count=None):
+def _walk(root, skip_hidden: bool = True, should_stop=None, on_count=None,
+          exts=None):
     """(chemin, stat) de chaque video sous `root`, dossier par dossier.
+
+    `exts` : les extensions retenues, celles du mode en cours par defaut
+    (`VIDEO_EXTS`, que le mode Photos remplit de celles des photos).
 
     `should_stop` est consulte a chaque dossier : sur le partage, un
     parcours complet prend des minutes, et « recliquer arrete » doit valoir
@@ -58,6 +62,7 @@ def _walk(root, skip_hidden: bool = True, should_stop=None, on_count=None):
     l'attente du recensement ne se voyait pas.
     """
     from . import roots
+    wanted = VIDEO_EXTS if exts is None else exts
     stack = roots.starts(root)
     seen = 0
     last = time.monotonic()
@@ -78,7 +83,7 @@ def _walk(root, skip_hidden: bool = True, should_stop=None, on_count=None):
                 if skip_hidden and _is_hidden(entry):
                     continue
                 dot = entry.name.rfind(".")
-                if dot <= 0 or entry.name[dot:].lower() not in VIDEO_EXTS:
+                if dot <= 0 or entry.name[dot:].lower() not in wanted:
                     continue
                 stat = entry.stat(follow_symlinks=False)
             except OSError:
@@ -102,10 +107,10 @@ def walk_sized(root: Path, skip_hidden: bool = True, should_stop=None,
 
 
 def walk_stamped(root: Path, skip_hidden: bool = True, should_stop=None,
-                 on_count=None):
+                 on_count=None, exts=None):
     """(chemin, taille, date) de chaque video. L'enumeration les donne toutes
     les trois sans une seule lecture de plus."""
-    for path, stat in _walk(root, skip_hidden, should_stop, on_count):
+    for path, stat in _walk(root, skip_hidden, should_stop, on_count, exts):
         yield Path(path), stat.st_size, stat.st_mtime
 
 
@@ -220,6 +225,10 @@ class DupeGroup(tuple):
         self.sizes = sizes
         self.durations = durations
         self.heights = [fact[1] for fact in facts]
+        # La largeur, que l'index ne donne qu'a travers les pixels : une
+        # photo se decrit par ses deux dimensions, pas par « 1080p ».
+        self.widths = [fact[0] // fact[1] if fact[1] else 0 for fact in facts]
+        self.photo = bool(paths) and all(is_photo(path) for path in paths)
         self.sure = bool(sure)
         self.gain = gain
         return self
@@ -249,6 +258,11 @@ class DupeGroup(tuple):
                          [self.sizes[i] for i in indices],
                          [self.durations[i] for i in indices], self.sure)
 
+    def dimensions(self, at: int) -> str:
+        """« 4032×3024 », ou rien si l'index ne les connait pas."""
+        width, height = self.widths[at], self.heights[at]
+        return f"{width}×{height}" if width and height else ""
+
     def gap(self, path) -> str:
         """Ce qui distingue cet exemplaire du meilleur, en quelques mots."""
         wanted = os.path.normcase(str(path))
@@ -260,7 +274,11 @@ class DupeGroup(tuple):
             return "à garder"
         parts = []
         best, this = self.heights[0], self.heights[at]
-        if best and this and best != this:
+        if self.photo:
+            first, other = self.dimensions(0), self.dimensions(at)
+            if first and other and first != other:
+                parts.append(f"{other} au lieu de {first}")
+        elif best and this and best != this:
             parts.append(f"{human_resolution(this)} au lieu de "
                          f"{human_resolution(best)}")
         weight = self.sizes[at] - self.sizes[0]
@@ -944,7 +962,8 @@ def _duration_of(path) -> float:
     return float((INDEX.probe(path) or {}).get("duration") or 0.0)
 
 
-def _group_links(paths, sizes, durations, links, slack, ignored, trust) -> list:
+def _group_links(paths, sizes, durations, links, slack, ignored, trust,
+                 timed: bool = True) -> list:
     """Reunit les videos liees en groupes, apres les derniers garde-fous.
 
     Un lien est refuse si les deux durees sont connues et trop differentes,
@@ -959,7 +978,8 @@ def _group_links(paths, sizes, durations, links, slack, ignored, trust) -> list:
     premiere, mais ce groupe devient alors « a comparer ».
 
     Un groupe n'est « sur » que si chacun de ses liens au centre l'est :
-    durees connues des deux cotes et accord complet.
+    durees connues des deux cotes et accord complet. Sans duree a connaitre
+    (`timed` faux : des photos), l'accord suffit.
     """
     from .dupes_memory import pair_test
     refused = pair_test(ignored)
@@ -970,7 +990,7 @@ def _group_links(paths, sizes, durations, links, slack, ignored, trust) -> list:
             continue
         if refused(paths[lo], paths[hi]):
             continue
-        firm = bool(strong and first and second)
+        firm = bool(strong and (not timed or (first and second)))
         near.setdefault(lo, {})[hi] = firm
         near.setdefault(hi, {})[lo] = firm
     centers = sorted(near, key=lambda video: (-len(near[video]), video))
@@ -1588,5 +1608,412 @@ def present_only(groups: list, should_stop=None) -> list:
                              [group.sizes[at] for at in kept],
                              [group.durations[at] for at in kept],
                              sure=group.sure and not doubtful))
+    out.sort(key=lambda group: (-group.gain, str(group[1][0]).lower()))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Les photos : la meme image sous un autre poids
+# ---------------------------------------------------------------------------
+#
+# Une copie exacte se trouve comme une video : meme taille a l'octet pres,
+# puis trois blocs relus. Une photo redimensionnee, recompressee ou
+# convertie (JPEG, HEIC, PNG, WebP…) n'a plus ni sa taille ni ses octets,
+# mais la meme image : deux empreintes la reconnaissent, prises sur l'image
+# redressee selon son EXIF. L'empreinte des basses frequences (pHash) range
+# les candidates sous ses cles, celle des gradients (dHash) et le format
+# (largeur sur hauteur) confirment : deux photos d'une meme rafale se
+# ressemblent, rarement a ce point.
+#
+# Chaque photo n'est lue qu'une fois : ses empreintes restent dans l'index
+# des photos, avec sa taille et sa date, comme celles des videos. Et quand sa
+# vignette est deja faite, c'est elle qu'on lit, sur le disque local, plutot
+# que la photo entiere sur le partage.
+
+# En deca, ce n'est plus une photo mais une icone, une miniature : deux
+# icones de meme taille ne disent rien.
+PHOTO_MIN_SIZE = 4 * 1024
+# La methode, inscrite avec chaque empreinte (voir `SIG_METHOD`) : celles
+# que l'ancienne recherche avait tirees par ffmpeg sont refaites une fois.
+PHOTO_METHOD = "p1"
+# La photo est decodee pour tenir dans ce carre : un JPEG se lit alors au
+# huitieme, bien plus vite qu'en entier, et l'empreinte n'en voit pas plus.
+PHOTO_LOOK = 256
+# pHash : rapprochees a six bits pres (le plus que les cles de `_combos`
+# permettent sans tout comparer a tout), la meme photo a trois.
+PHOTO_NEAR = 6
+PHOTO_FIRM = 3
+# dHash : au-dela de tant de bits, ce n'est plus la meme image ; en dessous
+# de tant, c'est la meme, et le groupe est sur.
+PHOTO_DNEAR = 12
+PHOTO_DFIRM = 6
+# Le format, a tant pres : un redimensionnement le garde, un recadrage non.
+PHOTO_RATIO_SLACK = 0.03
+# Photos lues de front sur le partage.
+PHOTO_WORKERS = 4
+
+_PHASH_COS: list = []
+
+
+def _phash_image(image) -> int | None:
+    """Empreinte 64 bits des basses frequences d'une image (pHash).
+
+    L'image reduite a 32 x 32 en gris, sa transformee en cosinus, dont on
+    garde le coin 8 x 8 : chaque bit dit si un coefficient depasse la
+    mediane. Insensible a la taille, a la compression et au format. Une
+    image plate n'a pas d'empreinte (None).
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
+    if not _PHASH_COS:
+        import math
+        _PHASH_COS.extend([math.cos(math.pi * (2 * x + 1) * u / 64) for x in range(32)]
+                          for u in range(8))
+    table = _PHASH_COS
+    small = image.convertToFormat(QImage.Format.Format_Grayscale8).scaled(
+        32, 32, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    stride = small.bytesPerLine()
+    raw = bytes(small.constBits())
+    # Les lignes d'abord (huit frequences chacune), puis les colonnes.
+    rows = [[sum(c * p for c, p in zip(cos, raw[y * stride:y * stride + 32]))
+             for cos in table] for y in range(32)]
+    coeffs = [sum(table[v][y] * rows[y][u] for y in range(32))
+              for v in range(8) for u in range(8)]
+    # Le premier coefficient n'est que la luminosite moyenne : hors mediane.
+    median = sorted(coeffs[1:])[31]
+    value = 0
+    for coeff in coeffs:
+        value = (value << 1) | (1 if coeff > median else 0)
+    bits = _bits(value)
+    if bits < 4 or bits > 60:
+        return None
+    return value
+
+
+def _opaque(image):
+    """Une image transparente posee sur le fond des vignettes : comparee a sa
+    vignette (ou a sa copie en JPEG), elle doit donner la meme empreinte."""
+    if not image.hasAlphaChannel():
+        return image
+    from PySide6.QtGui import QColor, QImage, QPainter
+    flat = QImage(image.size(), QImage.Format_RGB32)
+    flat.fill(QColor("#14161a"))
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, image)
+    painter.end()
+    return flat
+
+
+def _photo_image(photo: Path, width: int = 0) -> tuple:
+    """(image redressee, echec) d'une photo, pour son empreinte.
+
+    Sa vignette d'abord, si elle est deja faite : elle est sur le disque
+    local, et Qt l'a deja redressee. Sinon la photo elle-meme, par Qt,
+    decodee a petite taille et redressee selon l'EXIF ; ses dimensions sont
+    retenues au passage, l'en-tete est deja lu. Le HEIC, que Qt ne lit pas,
+    passe par ffmpeg. `echec` est vrai quand rien n'a pu la lire : elle sera
+    retentee a la prochaine recherche.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QImageIOHandler, QImageReader
+    from . import media
+    from .index import INDEX
+    if width:
+        thumb = media.cached_thumb(photo, 0.0, width)
+        if thumb is not None:
+            image = QImage(str(thumb))
+            if not image.isNull():
+                return image, False
+    if media.CLOSING:
+        return None, True
+    with media._Reading(photo):
+        if photo.suffix.lower() not in (".heic", ".heif"):
+            reader = QImageReader(str(photo))
+            reader.setAutoTransform(True)
+            size = reader.size()
+            if size.isValid():
+                if INDEX.probe(photo) is None:
+                    wide, tall = size.width(), size.height()
+                    if (reader.transformation()
+                            & QImageIOHandler.Transformation.TransformationRotate90):
+                        wide, tall = tall, wide
+                    INDEX.put_probe(photo, media._stamp_of(photo), {
+                        "duration": 0.0, "width": wide, "height": tall,
+                        "codec": bytes(reader.format()).decode("ascii", "replace"),
+                        "ok": wide > 0})
+                if max(size.width(), size.height()) > PHOTO_LOOK:
+                    reader.setScaledSize(size.scaled(PHOTO_LOOK, PHOTO_LOOK,
+                                                     Qt.KeepAspectRatio))
+                image = reader.read()
+                if not image.isNull():
+                    return image, False
+        # HEIC, ou ce que Qt n'a pas su lire : ffmpeg, a partir de sa seule image.
+        image, _broken = _grab(photo, 0.0, PHOTO_LOOK)
+    return image, image is None
+
+
+def photo_look(photo, width: int = 0) -> tuple:
+    """([pHash, dHash, format], echec) d'une photo.
+
+    Le format est la largeur sur la hauteur, en millioniemes. Une image
+    plate rend une liste vide : rien a comparer, mais rien a relire non
+    plus. Voir `_photo_image` pour la lecture et `echec`.
+    """
+    image, broken = _photo_image(Path(photo), width)
+    if image is None:
+        return [], broken
+    image = _opaque(image)
+    first, second = _phash_image(image), _dhash_image(image)
+    if first is None or second is None or not image.height():
+        return [], False
+    return [first, second, round(image.width() * 1_000_000 / image.height())], False
+
+
+def _same_ratio(first: int, second: int) -> bool:
+    """Vrai si deux formats (en millioniemes) sont ceux d'une meme image."""
+    if not first or not second:
+        return True
+    return abs(first - second) <= PHOTO_RATIO_SLACK * max(first, second)
+
+
+def group_photos(entries: list, ignored=None, should_stop=None) -> list:
+    """Groupes de photos qui montrent la meme image.
+
+    `entries` : (chemin, taille, [pHash, dHash, format]). Deux photos sont
+    rapprochees par leur pHash (a `PHOTO_NEAR` bits pres, sous les cles de
+    `_links`), puis gardees si leur dHash et leur format s'accordent. Un
+    lien est « sur » quand les deux empreintes sont presque identiques :
+    c'est la meme photo, autrement enregistree. Les autres liens ne
+    reunissent que des photos sans groupe sur, en groupes « a comparer » ou
+    rien n'est coche d'office.
+    """
+    paths, sizes, first, second, ratios = [], [], [], [], []
+    for entry in entries:
+        values = list(entry[2] or ())
+        if len(values) < 3 or not values[0]:
+            continue
+        paths.append(entry[0])
+        sizes.append(int(entry[1] or 0))
+        first.append(int(values[0]))
+        second.append(int(values[1]))
+        ratios.append(int(values[2]))
+    count = len(paths)
+    pace = _Pace(should_stop)
+    try:
+        links = _links(first, list(range(count)), [1] * count, PHOTO_NEAR, 1, pace)
+    except _Stopped:
+        return []
+    kept = []
+    for lo, hi, _strong in links:
+        near = _bits(second[lo] ^ second[hi])
+        if near > PHOTO_DNEAR or not _same_ratio(ratios[lo], ratios[hi]):
+            continue
+        firm = _bits(first[lo] ^ first[hi]) <= PHOTO_FIRM and near <= PHOTO_DFIRM
+        kept.append((lo, hi, firm))
+    # Les memes photos d'abord, en groupes surs. Une voisine seulement
+    # ressemblante (la photo suivante d'une rafale) tirait sinon une vraie
+    # paire dans un groupe « a comparer », ou plus rien n'etait coche. Les
+    # ressemblances ne reunissent ensuite que les photos restees seules.
+    zeros = [0.0] * count
+    sure = _group_links(paths, sizes, zeros, [link for link in kept if link[2]],
+                        0.0, ignored, trust=True, timed=False)
+    placed = {os.path.normcase(str(path)) for group in sure for path in group.paths}
+    loose = [link for link in kept if not link[2]
+             and os.path.normcase(str(paths[link[0]])) not in placed
+             and os.path.normcase(str(paths[link[1]])) not in placed]
+    doubtful = _group_links(paths, sizes, zeros, loose, 0.0, ignored,
+                            trust=True, timed=False)
+    out = sure + doubtful
+    out.sort(key=lambda group: (-group.gain, str(group[1][0]).lower()))
+    return out
+
+
+def merge_groups(exact: list, looks: list) -> list:
+    """Les copies exactes rejoignent le groupe ou leur image les a deja mises.
+
+    Deux copies exactes ont la meme empreinte : elles sont presque toujours
+    deja ensemble. Celles qui n'ont pas d'empreinte (image plate, illisible
+    pour Qt et ffmpeg) forment leur propre groupe ; celles dont un seul
+    membre est deja groupe y amenent les autres.
+    """
+    out = list(looks)
+    home: dict = {}
+    for number, group in enumerate(out):
+        for path in group.paths:
+            home.setdefault(os.path.normcase(str(path)), number)
+    for group in exact:
+        keys = [os.path.normcase(str(path)) for path in group.paths]
+        found = sorted({home[key] for key in keys if key in home})
+        if not found:
+            for key in keys:
+                home[key] = len(out)
+            out.append(group)
+            continue
+        missing = [at for at, key in enumerate(keys) if key not in home]
+        if not missing:
+            continue
+        target = out[found[0]]
+        out[found[0]] = DupeGroup(
+            list(target.paths) + [group.paths[at] for at in missing],
+            list(target.sizes) + [group.sizes[at] for at in missing],
+            sure=target.sure and group.sure)
+        for at in missing:
+            home[keys[at]] = found[0]
+    out.sort(key=lambda group: (-group.gain, str(group[1][0]).lower()))
+    return out
+
+
+def _photo_held(path: str, base: str) -> str | None:
+    """Le chemin sous lequel l'empreinte de cette photo est retenue, si elle
+    vaut encore pour le fichier tel que le parcours le voit (`base` :
+    « date|taille ») ; None s'il faut la refaire."""
+    from .index import INDEX
+    key, stamp = path, INDEX.sig_stamp(path)
+    if stamp is None:
+        key = INDEX.sig_spelling(path)
+        if key is None:
+            return None
+        stamp = INDEX.sig_stamp(key)
+        if stamp is None:
+            return None
+    held, _bar, method = stamp.rpartition("|")
+    if method == PHOTO_METHOD and _same_stamp(held, base):
+        return key
+    return None
+
+
+class PhotoDuplicateScan(QThread):
+    """Les doublons de photos : copies exactes et memes images, en un passage.
+
+    Meme contrat que `DuplicateScan` (`progress` pendant le recensement,
+    puis `found`), plus `reading` pendant les empreintes : seules les photos
+    nouvelles ou modifiees sont lues, les autres ont la leur dans l'index.
+    """
+
+    progress = Signal(int)              # photos recensees
+    reading = Signal(int, int)          # empreintes faites, a faire
+    found = Signal(list)
+
+    def __init__(self, root: Path, width: int = 0, skip_hidden: bool = True,
+                 parent=None):
+        super().__init__(parent)
+        self.root = Path(root)
+        self.width = int(width or 0)
+        self.skip_hidden = skip_hidden
+        self.examined = 0
+        self.unreadable = 0
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def _stopped(self) -> bool:
+        from . import media
+        return self._stop or media.CLOSING
+
+    def _one(self, job):
+        """Lit une photo et retient ses empreintes. None si l'arret a ete
+        demande, -1 si elle est illisible (rien n'est retenu)."""
+        from . import media
+        from .index import INDEX
+        path, size, stamp = job
+        if self._stopped():
+            return None
+        # Ce qu'on regarde passe devant, comme pour les empreintes de videos.
+        media.wait_foreground(self._stopped)
+        if self._stopped():
+            return None
+        values, broken = photo_look(path, self.width)
+        if self._stopped():
+            return None
+        if broken:
+            return -1
+        INDEX.put_sig(path, stamp, values, size)
+        return values
+
+    def run(self) -> None:
+        from .index import INDEX
+        from .stamps import remember
+        photos = []
+        for path, size, mtime in walk_stamped(self.root, self.skip_hidden,
+                                              should_stop=self._stopped,
+                                              on_count=self.progress.emit,
+                                              exts=PHOTO_EXTS):
+            if self._stopped():
+                break
+            remember(str(path), size, mtime)
+            photos.append((path, size, mtime))
+        self.examined = len(photos)
+        if self._stopped():
+            self.found.emit([])
+            return
+        # Un instantane des empreintes : les valeurs, d'un bloc, plutot
+        # qu'une requete par photo.
+        known = {path: values for path, values, _size in INDEX.all_sigs()}
+        entries, todo = [], []
+        for path, size, mtime in photos:
+            if size < PHOTO_MIN_SIZE:
+                continue
+            base = f"{int(mtime)}|{size}"
+            held = _photo_held(str(path), base)
+            if held is None:
+                todo.append((path, size, f"{base}|{PHOTO_METHOD}"))
+            elif len(known.get(held) or ()) >= 3:
+                entries.append((path, size, list(known[held])))
+        total, done, last = len(todo), 0, 0.0
+        if todo:
+            self.reading.emit(0, total)
+            pool = ThreadPoolExecutor(max_workers=PHOTO_WORKERS)
+            try:
+                for job, outcome in zip(todo, pool.map(self._one, todo)):
+                    if outcome is None:
+                        continue
+                    done += 1
+                    if outcome == -1:
+                        self.unreadable += 1
+                    elif outcome:
+                        entries.append((job[0], job[1], outcome))
+                    now = time.monotonic()
+                    if now - last >= 0.3:
+                        self.reading.emit(done, total)
+                        last = now
+                    if self._stopped():
+                        break
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+            # Ce qui vient d'etre lu est ecrit tout de suite : un arret net
+            # juste apres ne doit pas le perdre.
+            INDEX.commit(force=True)
+            self.reading.emit(done, total)
+        if self._stopped():
+            self.found.emit([])
+            return
+        exact = confirm_by_content(
+            group_by_size([(path, size) for path, size, _m in photos],
+                          minimum=PHOTO_MIN_SIZE),
+            should_stop=self._stopped)
+        groups = merge_groups(exact, group_photos(entries,
+                                                  should_stop=self._stopped))
+        if groups and not self._stopped():
+            groups = _measured(groups)
+        self.found.emit([] if self._stopped() else groups)
+
+
+def _measured(groups: list) -> list:
+    """Les groupes reclasses une fois les dimensions de chaque membre connues.
+
+    Le meilleur exemplaire est celui qui a le plus de pixels : un membre dont
+    l'index ignore encore les dimensions (photo dont l'empreinte venait de
+    sa vignette) est mesure, son en-tete seul. Seulement les membres des
+    groupes, et non toute la collection.
+    """
+    from . import media
+    from .index import INDEX
+    unknown = sorted({str(path) for group in groups for path in group.paths
+                      if not (INDEX.probe(path) or {}).get("height")})
+    if unknown:
+        with ThreadPoolExecutor(max_workers=PHOTO_WORKERS) as pool:
+            list(pool.map(lambda path: media.probe(Path(path)), unknown))
+    out = [DupeGroup(group.paths, group.sizes, sure=group.sure) for group in groups]
     out.sort(key=lambda group: (-group.gain, str(group[1][0]).lower()))
     return out
