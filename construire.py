@@ -587,7 +587,7 @@ def send(folder: Path = SOLD_OUT) -> int:
     if done.status_code >= 300:
         print(f"La release reste en brouillon : {done.status_code} {done.text[:200]}")
         return 1
-    print(f"Prisme {told['version']} en ligne : {release['html_url'].replace('/untagged-', '/')}")
+    print(f"Prisme {told['version']} en ligne : https://github.com/{SOLD_REPO}/releases/tag/{tag}")
     return 0
 
 
