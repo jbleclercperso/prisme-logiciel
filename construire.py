@@ -7,6 +7,10 @@ se transporte aussi bien dans une archive.
 
     python construire.py              le programme seul
     python construire.py --complet    avec les vignettes deja fabriquees
+    python construire.py --edition vendue
+                                      la version vendue (edition.py) : sans
+                                      les visiteurs, avec essai et licence,
+                                      mises a jour par Internet
 
 Le résultat est dans `dist/Prisme/`. Avec `--complet`, le cache de cette
 machine y est copié dans `cache/` : le programme le trouve tout seul et
@@ -26,6 +30,48 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "dist" / "Prisme"
+
+# Deux programmes d'un seul code (videosorter/edition.py). La version perso
+# se construit depuis ce dossier, telle quelle. La version vendue, depuis une
+# copie ou EDITION dit « vendue » et ou les modules des visiteurs manquent :
+# ils ne voyagent pas chez un client, pas meme en sources.
+SOLD = "vendue"
+STAGE = HERE / "build" / "sources-vendue"
+# Ou la version vendue cherche ses mises a jour : les « releases » d'un depot
+# GitHub public qui ne porte que les programmes publies, jamais le code.
+# « latest/download » mene toujours aux fichiers de la derniere : version.json,
+# puis l'archive qu'il nomme.
+SOLD_REPO = "jbleclercperso/prisme-mises-a-jour"
+SOLD_UPDATES = f"https://github.com/{SOLD_REPO}/releases/latest/download"
+# Ou `--publier --edition vendue` prepare ce qu'il faudra envoyer.
+SOLD_OUT = HERE / "dist" / "publication-vendue"
+
+
+def stage(edition: str) -> Path:
+    """Le dossier dont on construit : celui-ci (perso), ou la copie de la
+    version vendue."""
+    if edition != SOLD:
+        return HERE
+    sys.path.insert(0, str(HERE))
+    from videosorter.edition import VISITORS_ONLY
+    shutil.rmtree(STAGE, ignore_errors=True)
+    (STAGE / "videosorter").mkdir(parents=True)
+    for name in ("main.py", "prisme.ico"):
+        shutil.copy2(HERE / name, STAGE / name)
+    for path in (HERE / "videosorter").glob("*.py"):
+        if path.stem not in VISITORS_ONLY:
+            shutil.copy2(path, STAGE / "videosorter" / path.name)
+    (STAGE / "nas").mkdir()
+    shutil.copy2(HERE / "nas" / "serveur.py", STAGE / "nas" / "serveur.py")
+    shutil.copytree(HERE / "moteur" / "reparateur", STAGE / "moteur" / "reparateur",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    place = STAGE / "videosorter" / "edition.py"
+    text = place.read_text(encoding="utf-8")
+    assert '\nEDITION = "perso"\n' in text, "edition.py : la ligne EDITION a change"
+    place.write_text(text.replace('\nEDITION = "perso"\n', f'\nEDITION = "{SOLD}"\n'),
+                     encoding="utf-8")
+    print(f"Version vendue : {len(VISITORS_ONLY)} modules des visiteurs laissés de côté.")
+    return STAGE
 
 # Les modules Qt dont l'application ne se sert pas. Sans cette liste,
 # PyInstaller emporte les outils de conception : des mégaoctets pour rien.
@@ -136,13 +182,14 @@ def prune(qt: Path) -> int:
     return saved
 
 
-def build(complete: bool = False, source: str = "") -> int:
+def build(complete: bool = False, source: str = "", edition: str = "perso") -> int:
     for folder in (HERE / "build", HERE / "dist"):
         shutil.rmtree(folder, ignore_errors=True)
+    src = stage(edition)
 
     spec = HERE / "Prisme.spec"
     spec.write_text(SPEC.format(
-        here=str(HERE).replace("\\", "\\\\"),
+        here=str(src).replace("\\", "\\\\"),
         excludes=repr(EXCLUDES),
     ), encoding="utf-8")
 
@@ -161,6 +208,9 @@ def build(complete: bool = False, source: str = "") -> int:
         "X:\\_prisme\n", encoding="utf-8")
     (OUT / "LISEZ-MOI.txt").write_text(LISEZMOI, encoding="utf-8")
     # Ou ce programme cherchera ses mises a jour : sans rien regler, il sait.
+    # La version vendue, sur Internet ; jamais sur le NAS de la maison.
+    if edition == SOLD:
+        source = SOLD_UPDATES
     if not source and PUBLICATION.is_file():
         lines = PUBLICATION.read_text(encoding="utf-8").strip().splitlines()
         source = ((lines[1].strip() if len(lines) > 1 else "")
@@ -395,9 +445,12 @@ def set_version(version: str) -> None:
     place.write_text(text, encoding="utf-8")
 
 
-def publish(version: str, notes: list, into: str = "") -> int:
+def publish(version: str, notes: list, into: str = "", edition: str = "perso") -> int:
     """Construit la version, la depose, puis l'annonce (version.json en
-    dernier : un PC qui regarde pendant la copie ne voit rien a moitie)."""
+    dernier : un PC qui regarde pendant la copie ne voit rien a moitie).
+
+    La version vendue se prepare dans dist/publication-vendue : ses propres
+    notes (rien des visiteurs), puis `--envoyer` la met en ligne (send)."""
     import hashlib
     import json
     import re
@@ -407,9 +460,12 @@ def publish(version: str, notes: list, into: str = "") -> int:
         print(f"Numéro de version invalide : {version} (attendu : 1.2.0)")
         return 2
     lines = (PUBLICATION.read_text(encoding="utf-8").strip().splitlines()
-             if PUBLICATION.is_file() else [])
-    target = Path(into or (lines[0].strip() if lines else ""))
+             if PUBLICATION.is_file() and edition != SOLD else [])
+    target = Path(into or (lines[0].strip() if lines else "")
+                  or (str(SOLD_OUT) if edition == SOLD else ""))
     readers = (lines[1].strip() if len(lines) > 1 else "") or str(target)
+    if edition == SOLD:
+        readers = SOLD_UPDATES
     if not str(target) or str(target) == ".":
         print("Où publier ? Mettez le dossier dans publication.txt, ou --vers <dossier>.")
         return 2
@@ -420,12 +476,23 @@ def publish(version: str, notes: list, into: str = "") -> int:
         before = json.loads((target / MANIFEST).read_text(encoding="utf-8"))["version"]
     except (OSError, ValueError, KeyError):
         before = ""
+    if edition == SOLD:
+        # Ce que les clients ont deja : la derniere version en ligne.
+        from videosorter.update import UpdateError, fetch_manifest
+        try:
+            before = fetch_manifest(SOLD_UPDATES)["version"]
+        except UpdateError:
+            before = ""
     if before and not newer(version, before):
         print(f"La version publiée est déjà la {before} : choisissez un numéro plus grand.")
         return 2
 
     set_version(version)
-    code = build(source=readers)
+    if edition == SOLD:
+        # Rien d'une publication precedente : seulement celle-ci.
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True)
+    code = build(source=readers, edition=edition)
     if code != 0:
         return code
     archive = HERE / "dist" / "Prisme.zip"
@@ -458,9 +525,85 @@ def publish(version: str, notes: list, into: str = "") -> int:
         for old in target.glob("Prisme-*-installation.exe"):
             if old.name != setup.name:
                 old.unlink(missing_ok=True)
+        if edition == SOLD:
+            # Un nom qui ne change pas : le lien « Télécharger » du site.
+            shutil.copyfile(setup, target / SOLD_SETUP)
+    if edition == SOLD:
+        print(f"\nPrisme {version} (version vendue) prêt dans {target}.\n"
+              "Pour le mettre en ligne : python construire.py --envoyer")
+        return 0
     print(f"\nPrisme {version} publié : les PC le verront dans les six heures, "
           "ou tout de suite par le menu : Aide, Rechercher une mise à jour.")
     return 0
+
+
+SOLD_SETUP = "Prisme-installation.exe"
+
+
+def send(folder: Path = SOLD_OUT) -> int:
+    """Met en ligne la version vendue preparee : une « release » du depot
+    SOLD_REPO, avec ses fichiers. Les clients la voient aussitot (version.json
+    est envoye en dernier).
+
+    Le jeton GitHub : la variable GITHUB_TOKEN, sinon celui que git connait
+    deja pour github.com (git credential fill), sans rien afficher."""
+    import json
+    import requests
+    try:
+        told = json.loads((folder / "version.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print(f"Rien a envoyer dans {folder} : publiez d'abord (--publier … --edition vendue).")
+        return 2
+    token = _github_token()
+    if not token:
+        print("Pas de jeton GitHub : posez GITHUB_TOKEN, ou connectez git a github.com.")
+        return 2
+    api = f"https://api.github.com/repos/{SOLD_REPO}"
+    head = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    tag = "v" + told["version"]
+    made = requests.post(api + "/releases", headers=head, timeout=60, json={
+        "tag_name": tag, "name": f"Prisme {told['version']}",
+        "body": "\n".join("- " + n for n in told.get("notes", [])),
+        "draft": True})
+    if made.status_code >= 300:
+        print(f"GitHub refuse la release {tag} : {made.status_code} {made.text[:200]}")
+        return 1
+    release = made.json()
+    upload = release["upload_url"].split("{")[0]
+    # Les gros fichiers d'abord, version.json en dernier.
+    names = [told["fichier"]] + [p.name for p in sorted(folder.glob("*.exe"))] + ["version.json"]
+    for name in names:
+        path = folder / name
+        print(f"Envoi de {name} ({path.stat().st_size / 2**20:.0f} Mo)…", flush=True)
+        with open(path, "rb") as data:
+            sent = requests.post(upload, params={"name": name}, data=data, timeout=3600,
+                                 headers={**head, "Content-Type": "application/octet-stream"})
+        if sent.status_code >= 300:
+            print(f"Envoi impossible : {name} : {sent.status_code} {sent.text[:200]}")
+            return 1
+    # Brouillon jusqu'ici : les clients ne voyaient rien a moitie envoye.
+    done = requests.patch(f"{api}/releases/{release['id']}", headers=head, timeout=60,
+                          json={"draft": False, "make_latest": "true"})
+    if done.status_code >= 300:
+        print(f"La release reste en brouillon : {done.status_code} {done.text[:200]}")
+        return 1
+    print(f"Prisme {told['version']} en ligne : {release['html_url'].replace('/untagged-', '/')}")
+    return 0
+
+
+def _github_token() -> str:
+    import os
+    if os.environ.get("GITHUB_TOKEN"):
+        return os.environ["GITHUB_TOKEN"].strip()
+    try:
+        answer = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in answer.stdout.splitlines():
+        if line.startswith("password="):
+            return line[len("password="):]
+    return ""
 
 
 def _option(name: str) -> list:
@@ -477,8 +620,14 @@ if __name__ == "__main__":
         chosen = _option("--installateur")
         from videosorter import __version__
         sys.exit(0 if installer(chosen[0] if chosen else __version__) else 1)
+    edition = (_option("--edition") or ["perso"])[0]
+    if edition not in ("perso", SOLD):
+        print(f"Édition inconnue : {edition} (perso ou {SOLD})")
+        sys.exit(2)
+    if "--envoyer" in sys.argv:
+        sys.exit(send())
     if "--publier" in sys.argv:
         chosen = _option("--publier")
         sys.exit(publish(chosen[0] if chosen else "", _option("--notes"),
-                         (_option("--vers") or [""])[0]))
-    sys.exit(build("--complet" in sys.argv))
+                         (_option("--vers") or [""])[0], edition))
+    sys.exit(build("--complet" in sys.argv, edition=edition))
