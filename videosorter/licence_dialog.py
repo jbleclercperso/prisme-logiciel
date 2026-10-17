@@ -18,7 +18,7 @@ from . import licence
 
 def describe(state: licence.Status) -> str:
     if state.mode == "dev":
-        return "Version de développement : ni essai ni licence."
+        return "Votre version personnelle : ni essai ni licence."
     if state.mode == "essai":
         return (f"Essai gratuit : encore {state.days_left} jour"
                 f"{'s' if state.days_left > 1 else ''}.")
@@ -59,7 +59,7 @@ class LicenceDialog(QDialog):
         box.addWidget(self.error)
         row = QHBoxLayout()
         buy = QPushButton("Obtenir une licence…", self)
-        buy.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(licence.SITE)))
+        buy.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(licence.BUY)))
         row.addWidget(buy)
         row.addStretch(1)
         self.leave = QPushButton("Quitter" if required else "Fermer", self)

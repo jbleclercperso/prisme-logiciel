@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from . import edition
+
 # (section, [(touche, ce qu'elle fait)])
 SHORTCUTS = [
     ("Trier", [
@@ -161,10 +163,15 @@ SHORTCUTS = [
          "l'adresse publique) et « Via le NAS » (de partout, même PC éteint) : "
          "un code à scanner et un lien à copier — l'ouvrir suffit pour entrer ; "
          "puis le mot de passe, et qui a regardé quoi. L'œil de l'en-tête "
-         "paraît quand quelqu'un regarde"),
-        ("⋯ › Visiteurs › Cachés sur le téléphone…", "cocher, dans l'arborescence, "
-                                                     "les dossiers que la page des "
-                                                     "visiteurs ne montre pas"),
+         "paraît quand quelqu'un regarde") if edition.perso() else
+        ("⋯ › Téléphone › Partage à distance",
+         "« Via le PC » (Prisme ouvert : sur le Wi-Fi, ou de n'importe où par "
+         "l'adresse publique) et « Via le NAS » (de partout, même PC éteint) : "
+         "un code à scanner avec votre téléphone, qui entre sans mot de passe"),
+        ("⋯ › " + ("Visiteurs" if edition.perso() else "Téléphone")
+         + " › Cachés sur le téléphone…", "cocher, dans l'arborescence, "
+                                          "les dossiers que la page du "
+                                          "téléphone ne montre pas"),
         ("⋯ › Réglages", "décodage vidéo, mise à l'échelle de Windows, "
                          "où sont les vignettes, journal des gels"),
     ]),

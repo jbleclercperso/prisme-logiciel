@@ -39,11 +39,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import profils
+from . import edition, profils
 from .access import JOURNAL
 from .brand_data import LETTRAGE_PNG
 from .query import parse, tester
 from .textfold import fold
+
+# La version perso sert aussi des visiteurs ; la version vendue, seulement la
+# bibliotheque de son proprietaire, sur son telephone (edition.py). Ces
+# adresses-la n'y repondent pas : profil, code, preferences, presence,
+# sondages, missions.
+VISITORS = edition.perso()
+VISITOR_ROUTES = frozenset((
+    "/api/profil", "/api/pin", "/api/pourvous", "/api/tag", "/api/ici",
+    "/api/sondages", "/api/sondage", "/api/missions", "/api/mission",
+    "/api/mission/morceau",
+))
 
 # Ce qui suit ne sert qu'a la bibliotheque du PC (`Library`) : l'index, le
 # cache des vignettes, Qt. Le serveur qui tourne sur le NAS (`nas/serveur.py`)
@@ -1036,6 +1047,8 @@ def _make_handler(server: Server):
             route = unquote(parsed.path)
             query = parse_qs(parsed.query)
             self._query = query
+            if not VISITORS and route in VISITOR_ROUTES:
+                return self._send(HTTPStatus.NOT_FOUND, "Rien ici.")
 
             if route == "/login":
                 # Le mot de passe n'est plus qu'un secours : sans lui, il n'y a
@@ -1184,6 +1197,10 @@ def _make_handler(server: Server):
             self.do_GET()
 
         def do_POST(self) -> None:         # noqa: N802
+            if not VISITORS and urlparse(self.path).path in VISITOR_ROUTES:
+                # Le corps n'est pas lu : la connexion se ferme avec la reponse.
+                self.close_connection = True
+                return self._send(HTTPStatus.NOT_FOUND, "Rien ici.")
             if urlparse(self.path).path == "/api/mission/morceau":
                 # Un morceau de video : plus gros que tout le reste, lu a part.
                 return self._mission_chunk()
@@ -1321,6 +1338,8 @@ def _make_handler(server: Server):
                 at = float(told.get("at", 0) or 0)
             except (TypeError, ValueError):
                 at = 0.0
+            if not VISITORS:
+                return self._json({"ok": True})
             server.watching(label, mark, path.name, at, bool(told.get("playing")))
             me = self._me()
             if me:
@@ -1347,6 +1366,11 @@ def _make_handler(server: Server):
             profile = profils.find(server.profiles_path, self._me(), label)
             who = f"{profile['name']} · {label}" if profile and profile.get("name") else label
             kind, text = str(told.get("kind", "")), str(told.get("text", ""))
+            if not VISITORS and (kind != "lien" or server.downloads is None):
+                # Personne ne lirait la demande : on le dit tout de suite.
+                return self._json({"ok": False, "error":
+                                   "Le téléchargement des liens n'est pas disponible."},
+                                  HTTPStatus.BAD_REQUEST)
             auto = False
             if kind == "lien" and server.downloads is not None:
                 # Le serveur telecharge lui-meme ; la video ira dans les
@@ -2450,6 +2474,11 @@ document.querySelector('form').addEventListener('submit', async (e) => {
 APP_SCRIPT = """
 'use strict';
 const $ = (id) => document.getElementById(id);
+// La version vendue n'a pas de visiteurs (edition.py) : ni accueil, ni
+// recompenses, ni code, ni sondages, ni missions, ni presence ; la page
+// cache ce qui va avec (SOLO_STYLE).
+const VISITORS = /*VISITEURS*/true;
+if (!VISITORS) document.documentElement.classList.add('solo');
 const crumb = $('crumb'), shelf = $('folders'), grid = $('grid');
 const hits = $('hits'), hitsHead = $('hitsHead'), videosHead = $('videosHead');
 const empty = $('empty'), more = $('more'), player = $('player');
@@ -3512,6 +3541,16 @@ $('askKinds').querySelectorAll('.kind').forEach((b) => {
     $('askText').focus();
   };
 });
+if (!VISITORS) {
+  // Le bouton du haut n'envoie plus qu'un lien a telecharger.
+  askKind = 'lien';
+  $('askTitle').textContent = 'Envoyer un lien';
+  $('askText').placeholder = LINK_HINT;
+  $('askText').inputMode = 'url';
+  $('askBtn').title = 'Envoyer un lien';
+  $('askBtn').setAttribute('aria-label', 'Envoyer un lien');
+  $('askBtn').querySelector('span').textContent = 'Lien';
+}
 $('fewAsk').onclick = () => {
   askOpen();
   if (fewText && !$('askText').value) $('askText').value = 'J’aimerais voir : ' + fewText;
@@ -5063,6 +5102,7 @@ function describeView() {
   return 'parcourt les dossiers';
 }
 async function presence() {
+  if (!VISITORS) return;
   clearTimeout(presenceTimer);
   if (document.hidden || !key) return;
   const view = describeView();
@@ -5080,6 +5120,11 @@ $('lockSet').onclick = () => pinSetup('set');
 $('lockClear').onclick = () => pinSetup('clear');
 
 async function welcome() {
+  if (!VISITORS) {
+    lockHide();
+    setTimeout(askInstall, cameToInstall ? 300 : 1200);
+    return;
+  }
   const d = await getJSON('/api/profil?ouverture=1');
   if (!d) { lockHide(); return; }
   profile = d.profile;
@@ -5124,6 +5169,20 @@ welcome();
 # Les preferences proposees au premier accueil (`profils.LIKES`).
 APP_SCRIPT = APP_SCRIPT.replace(
     "/*LIKES*/[]", json.dumps(list(profils.LIKES), ensure_ascii=False))
+
+# La version vendue : la page de son seul proprietaire. Ce qui ne sert qu'aux
+# visiteurs reste cache, quoi qu'en dise le code : partager une video avec
+# quelqu'un, l'accueil, les recompenses, les sondages, les missions, les
+# demandes (le bouton du haut n'envoie plus qu'un lien).
+SOLO_STYLE = """
+html.solo #share, html.solo #gift, html.solo #pollLine, html.solo #pins,
+html.solo #forYou, html.solo #few, html.solo #perks, html.solo #hello,
+html.solo #coach, html.solo #poll, html.solo #jobs, html.solo #toast,
+html.solo #askKinds { display: none !important; }
+"""
+if not VISITORS:
+    APP_SCRIPT = APP_SCRIPT.replace("/*VISITEURS*/true", "false")
+    STYLE += SOLO_STYLE
 
 # L'application sur l'ecran d'accueil : un nom, des icones, plein ecran.
 MANIFEST = {

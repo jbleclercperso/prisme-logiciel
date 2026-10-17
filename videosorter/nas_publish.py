@@ -28,7 +28,7 @@ from pathlib import Path, PureWindowsPath
 FOLDER = ".prisme-partage"
 NAS_PORT = 8714
 # Les modules que le serveur du NAS importe : rien qui tire Qt.
-PROGRAM = ("__init__.py", "web.py", "access.py", "config.py", "query.py",
+PROGRAM = ("__init__.py", "edition.py", "web.py", "access.py", "config.py", "query.py",
            "textfold.py", "brand_data.py", "demandes.py", "profils.py",
            # Les liens du telephone, telecharges par le NAS lui-meme.
            "liens.py", "downloader.py", "mediafind.py",
@@ -39,6 +39,16 @@ PROGRAM = ("__init__.py", "web.py", "access.py", "config.py", "query.py",
            # Ce que le telephone ne voit pas ; les missions video.
            "telcache.py", "missions.py")
 REPO = Path(__file__).resolve().parents[1]
+
+
+def program_files() -> tuple:
+    """PROGRAM, sans les modules des visiteurs dans la version vendue : ils
+    n'y sont pas (edition.py)."""
+    from . import edition
+    if edition.perso():
+        return PROGRAM
+    return tuple(name for name in PROGRAM
+                 if name[:-3] not in edition.VISITORS_ONLY)
 
 
 def share_root(top) -> Path | None:
@@ -398,15 +408,18 @@ def publish(library, root: Path, access: dict, tailnet: str = "",
     # -- le programme : recopie seulement s'il a change ---------------------
     program = target / "programme"
     if not _served_is_newer(program):
-        for name in PROGRAM:
+        for name in program_files():
             _copy_if_changed(REPO / "videosorter" / name, program / "videosorter" / name)
         _copy_if_changed(REPO / "nas" / "serveur.py", program / "serveur.py")
     _write_installation(target / "installation", tailnet)
     # Les sondages : ecrits sur le NAS a chaque envoi ; un NAS injoignable a
     # ce moment-la les recoit ici.
-    sync_surveys(root)
+    from . import edition
+    if edition.perso():
+        sync_surveys(root)
     sync_hidden(root)
-    sync_missions(root)
+    if edition.perso():
+        sync_missions(root)
     # L'icone de l'application, pour l'ecran d'accueil du telephone.
     for size, image in (icons or {}).items():
         try:

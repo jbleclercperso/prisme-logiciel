@@ -10,9 +10,12 @@ contenu est un petit JSON : {"plan": "mois" | "an" | "vie", "expires": <date
 d'expiration, secondes depuis 1970, 0 pour une licence a vie>, "email": …,
 "issued": …}, et la signature porte sur ces octets-la, tels quels.
 
-- **PUBLIC_KEY vide : version de developpement, sans essai ni licence.**
-  Avant de distribuer, y coller la cle publique (32 octets, en hexadecimal ou
-  en base64) donnee par le site, et regler SITE sur son adresse definitive.
+- **La version perso (edition.py) n'a ni essai ni licence** : elle est a son
+  proprietaire. Seule la version vendue compte ses quatorze jours et demande
+  une cle. PUBLIC_KEY vide fait de meme (version de developpement).
+- PUBLIC_KEY est la moitie publique de la paire dont le site garde l'autre
+  (variable PRISME_LICENCE_PRIVATE de Netlify). Changer de paire rendrait
+  muettes toutes les cles deja vendues.
 - Le debut de l'essai est note dans la configuration **et** dans le registre
   (HKCU\\Software\\Prisme) : effacer l'un ne remet pas l'essai a zero.
   Reculer l'horloge ne sert a rien non plus : on retient le plus tard deja vu.
@@ -30,8 +33,10 @@ import json
 import time
 from dataclasses import dataclass
 
-PUBLIC_KEY = ""
-SITE = "https://prisme-website.netlify.app"
+PUBLIC_KEY = "aXOVtybORQp9PC68beQLUNEZVBswCUBR9gT1bip34ss="
+SITE = "https://prisme-desktop.com"
+# Ou l'on achete : les formules du site.
+BUY = SITE + "/#tarifs"
 PREFIX = "PRISME1-"
 TRIAL_DAYS = 14
 RENEW_DAYS = 10
@@ -235,7 +240,11 @@ class Status:
 def status(cfg, now: float | None = None, public: str | None = None,
            registry: bool = True) -> Status:
     """Ou en est cette installation : licence, essai, ou essai fini."""
-    public = PUBLIC_KEY if public is None else public
+    if public is None:
+        from . import edition
+        if edition.perso():
+            return Status("dev")
+        public = PUBLIC_KEY
     if not public:
         return Status("dev")
     now = time.time() if now is None else now
