@@ -488,13 +488,13 @@ def publish(version: str, notes: list, into: str = "", edition: str = "perso") -
         return 2
 
     set_version(version)
-    if edition == SOLD:
-        # Rien d'une publication precedente : seulement celle-ci.
-        shutil.rmtree(target, ignore_errors=True)
-        target.mkdir(parents=True)
     code = build(source=readers, edition=edition)
     if code != 0:
         return code
+    if edition == SOLD:
+        # Apres la construction, qui vide dist/ : seulement cette publication.
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True)
     archive = HERE / "dist" / "Prisme.zip"
     name = f"Prisme-{version}.zip"
     print(f"Dépôt dans {target}…", flush=True)
