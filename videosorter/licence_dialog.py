@@ -10,7 +10,8 @@ import time
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
+    QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton,
+    QVBoxLayout,
 )
 
 from . import licence
@@ -46,7 +47,8 @@ class LicenceDialog(QDialog):
         box.addWidget(self.state_label)
         told = QLabel(
             "Collez ici la clé reçue par e-mail après l'achat (elle commence par "
-            "« PRISME1- »). Elle se vérifie sur cet ordinateur, sans connexion.", self)
+            "« PRISME1- »). Une licence s'active sur deux ordinateurs au plus : il faut "
+            "une connexion internet la première fois, ensuite Prisme s'en passe.", self)
         told.setWordWrap(True)
         box.addWidget(told)
         self.field = QPlainTextEdit(self)
@@ -61,6 +63,10 @@ class LicenceDialog(QDialog):
         buy = QPushButton("Obtenir une licence…", self)
         buy.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(licence.BUY)))
         row.addWidget(buy)
+        # Deux ordinateurs par licence : on libere celui-ci pour en activer un autre.
+        self.free = QPushButton("Libérer cet ordinateur", self)
+        self.free.clicked.connect(self._release)
+        row.addWidget(self.free)
         row.addStretch(1)
         self.leave = QPushButton("Quitter" if required else "Fermer", self)
         self.leave.clicked.connect(self.reject)
@@ -73,10 +79,17 @@ class LicenceDialog(QDialog):
         self._refresh()
 
     def _refresh(self) -> None:
-        self.state_label.setText(describe(licence.status(self.cfg)))
+        state = licence.status(self.cfg)
+        self.state_label.setText(describe(state))
+        self.free.setVisible(state.mode == "licence")
 
     def _validate(self) -> None:
-        said = licence.accept_key(self.cfg, self.field.toPlainText())
+        # Appel au site (quelques secondes au plus) : la souris le montre.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            said = licence.accept_key(self.cfg, self.field.toPlainText())
+        finally:
+            QApplication.restoreOverrideCursor()
         if said:
             self.error.setText(said)
             return
@@ -84,6 +97,22 @@ class LicenceDialog(QDialog):
         self._refresh()
         if licence.status(self.cfg).usable:
             self.accept()
+
+    def _release(self) -> None:
+        asked = QMessageBox.question(
+            self, "Libérer cet ordinateur",
+            "Votre licence quittera cet ordinateur : vous pourrez l'activer sur un autre "
+            "(deux au plus). Prisme repassera ici en essai, ou demandera la clé si l'essai "
+            "est terminé. Continuer ?")
+        if asked != QMessageBox.StandardButton.Yes:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            said = licence.release(self.cfg)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.error.setText(said)
+        self._refresh()
 
 
 def gate(cfg, before=None, parent=None) -> bool:

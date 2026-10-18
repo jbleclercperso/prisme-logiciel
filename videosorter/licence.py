@@ -22,6 +22,14 @@ d'expiration, secondes depuis 1970, 0 pour une licence a vie>, "email": …,
 - Un abonnement se prolonge seul : dans ses dix derniers jours, Prisme
   demande une cle plus longue au site (POST /api/licence), une fois par jour
   au plus.
+- **Deux ordinateurs au plus par licence** (decision du 18/10/2026). En
+  collant sa cle, Prisme fait activer cet ordinateur par le site
+  (POST /api/activation : la cle, une empreinte anonyme de la machine et son
+  nom). Le site refuse le troisieme. Il rend un jeton « PRISMEA1-… », signe
+  avec la meme cle que les licences, qui designe cette licence ET cet
+  ordinateur : Prisme le verifie ensuite sans connexion, et recopier ses
+  reglages sur un autre PC ne suffit pas. « Liberer cet ordinateur » (fenetre
+  de licence) le retire du compte, pour en activer un autre.
 
 La verification Ed25519 suit la RFC 8032, sans dependance.
 """
@@ -38,6 +46,8 @@ SITE = "https://prisme-desktop.com"
 # Ou l'on achete : les formules du site.
 BUY = SITE + "/#tarifs"
 PREFIX = "PRISME1-"
+ACTIVATION_PREFIX = "PRISMEA1-"
+MAX_COMPUTERS = 2
 TRIAL_DAYS = 14
 RENEW_DAYS = 10
 DAY = 86400.0
@@ -162,12 +172,13 @@ def _b64url(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def read_key(key: str, public: str | None = None) -> dict | None:
-    """Le contenu d'une cle dont la signature est bonne, ou None."""
+def read_key(key: str, public: str | None = None, prefix: str = PREFIX) -> dict | None:
+    """Le contenu d'une cle (ou, avec ACTIVATION_PREFIX, d'un jeton
+    d'activation) dont la signature est bonne, ou None."""
     text = "".join((key or "").split())
-    if not text.upper().startswith(PREFIX):
+    if not text.upper().startswith(prefix):
         return None
-    body = text[len(PREFIX):]
+    body = text[len(prefix):]
     head, _, tail = body.partition(".")
     try:
         payload, signature = _b64url(head), _b64url(tail)
@@ -187,6 +198,59 @@ def read_key(key: str, public: str | None = None) -> dict | None:
     except (TypeError, ValueError):
         return None
     return data
+
+
+# -- deux ordinateurs par licence ---------------------------------------------------
+
+def machine_id() -> str:
+    """L'empreinte anonyme de cet ordinateur : un condense de l'identifiant que
+    Windows donne a son installation (MachineGuid), jamais l'identifiant lui-meme."""
+    raw = ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
+                            winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)) as key:
+            raw = str(winreg.QueryValueEx(key, "MachineGuid")[0])
+    except (OSError, ImportError):
+        raw = ""
+    if not raw:
+        import uuid
+        raw = "node-%012x" % uuid.getnode()
+    return hashlib.sha256(("prisme:" + raw.strip().lower()).encode("utf-8")).hexdigest()[:32]
+
+
+def machine_name() -> str:
+    """Le nom de l'ordinateur, pour que le client reconnaisse ses machines."""
+    import os
+    import platform
+    return (os.environ.get("COMPUTERNAME") or platform.node() or "")[:60]
+
+
+def licence_id(data: dict) -> str:
+    """L'identifiant stable d'une licence : l'abonnement (il ne change pas quand
+    la cle se prolonge), ou le client et la date d'achat pour une licence a vie.
+    Meme calcul que licenceId() dans netlify/lib/licence.mjs du site."""
+    sub = str(data.get("subscription") or "")
+    if sub:
+        return sub
+    try:
+        issued = int(data.get("issued") or 0)
+    except (TypeError, ValueError):
+        issued = 0
+    return f"{data.get('customer') or ''}:{issued}"
+
+
+def _activated(cfg, data: dict, public: str, machine: str | None = None) -> bool:
+    """La cle est-elle activee sur CET ordinateur ?"""
+    try:
+        saved = cfg["licence_activation"]
+    except KeyError:
+        saved = ""
+    token = read_key(saved, public, ACTIVATION_PREFIX)
+    if token is None:
+        return False
+    return (token.get("lid") == licence_id(data)
+            and token.get("machine") == (machine or machine_id()))
 
 
 # -- l'essai ----------------------------------------------------------------------
@@ -238,7 +302,7 @@ class Status:
 
 
 def status(cfg, now: float | None = None, public: str | None = None,
-           registry: bool = True) -> Status:
+           registry: bool = True, machine: str | None = None) -> Status:
     """Ou en est cette installation : licence, essai, ou essai fini."""
     if public is None:
         from . import edition
@@ -255,7 +319,8 @@ def status(cfg, now: float | None = None, public: str | None = None,
         cfg.save_soon()
     now = max(now, seen)
     data = read_key(cfg["licence_key"], public)
-    if data is not None and (not data["expires"] or data["expires"] > now):
+    if (data is not None and (not data["expires"] or data["expires"] > now)
+            and _activated(cfg, data, public, machine)):
         left = int((data["expires"] - now) // DAY) if data["expires"] else 0
         return Status("licence", left, data["expires"], str(data.get("plan") or ""),
                       str(data.get("email") or ""))
@@ -266,16 +331,64 @@ def status(cfg, now: float | None = None, public: str | None = None,
     return Status("fini")
 
 
-def accept_key(cfg, key: str, now: float | None = None, public: str | None = None) -> str:
-    """Enregistre une cle si elle est bonne et encore valable. Rend "" si
-    c'est fait, sinon ce qui ne va pas."""
+def accept_key(cfg, key: str, now: float | None = None, public: str | None = None,
+               post=None, machine: str | None = None, name: str | None = None) -> str:
+    """Enregistre une cle si elle est bonne, encore valable, et si le site
+    accepte d'activer cet ordinateur (deux au plus par licence). Rend "" si
+    c'est fait, sinon ce qui ne va pas. Appel reseau (quelques secondes)."""
     now = time.time() if now is None else now
+    key = "".join((key or "").split())
     data = read_key(key, public)
     if data is None:
         return "Cette clé n'est pas valable (vérifiez qu'elle est copiée en entier)."
     if data["expires"] and data["expires"] <= now:
         return "Cette clé a expiré."
-    cfg["licence_key"] = "".join(key.split())
+    machine = machine or machine_id()
+    try:
+        answer = (post or _post)(SITE.rstrip("/") + "/api/activation",
+                                 {"key": key, "machine": machine,
+                                  "nom": machine_name() if name is None else name}, 15.0)
+    except Exception:                                   # noqa: BLE001
+        return ("Impossible de joindre le site pour activer la licence. Vérifiez la "
+                "connexion internet, puis réessayez : la première activation en a besoin, "
+                "ensuite Prisme s'en passe.")
+    answer = answer or {}
+    if answer.get("error") == "limite":
+        names = [str(n) for n in (answer.get("machines") or []) if str(n).strip()]
+        where = f" ({', '.join(names)})" if names else ""
+        return (f"Cette licence est déjà activée sur {MAX_COMPUTERS} ordinateurs{where}. "
+                "Ouvrez Prisme sur l'un d'eux, puis Licence › « Libérer cet ordinateur », "
+                "et recommencez ici. Ordinateur perdu ou réinstallé ? Écrivez-nous à "
+                "contact@prisme-desktop.com.")
+    if answer.get("error") == "expiree":
+        return "Cette clé a expiré."
+    token = str(answer.get("activation") or "")
+    got = read_key(token, public, ACTIVATION_PREFIX)
+    if got is None or got.get("lid") != licence_id(data) or got.get("machine") != machine:
+        return "L'activation n'a pas abouti. Réessayez dans un instant, ou écrivez-nous."
+    cfg["licence_key"] = key
+    cfg["licence_activation"] = token
+    cfg.save()
+    return ""
+
+
+def release(cfg, public: str | None = None, post=None, machine: str | None = None) -> str:
+    """« Liberer cet ordinateur » : le site ne le compte plus, et la licence
+    quitte cet ordinateur (on pourra l'activer sur un autre). Rend "" si c'est
+    fait, sinon ce qui ne va pas. Appel reseau."""
+    key = cfg["licence_key"]
+    if read_key(key, public) is None:
+        return "Aucune licence sur cet ordinateur."
+    try:
+        answer = (post or _post)(SITE.rstrip("/") + "/api/activation",
+                                 {"action": "liberer", "key": key,
+                                  "machine": machine or machine_id()}, 15.0)
+    except Exception:                                   # noqa: BLE001
+        return "Impossible de joindre le site. Vérifiez la connexion internet, puis réessayez."
+    if not (answer or {}).get("ok"):
+        return "Le site n'a pas pu libérer cet ordinateur. Réessayez dans un instant, ou écrivez-nous."
+    cfg["licence_key"] = ""
+    cfg["licence_activation"] = ""
     cfg.save()
     return ""
 
@@ -322,9 +435,19 @@ def renew(cfg, now: float | None = None, public: str | None = None,
 
 
 def _post(url: str, body: dict, timeout: float) -> dict:
+    import urllib.error
     import urllib.request
     request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"},
                                      method="POST")
-    with urllib.request.urlopen(request, timeout=timeout) as answer:
-        return json.loads(answer.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as answer:
+            return json.loads(answer.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # 400 « cle illisible » : la reponse dit pourquoi ; le reste (5xx) remonte.
+        if error.code < 500:
+            try:
+                return json.loads(error.read().decode("utf-8"))
+            except ValueError:
+                return {}
+        raise

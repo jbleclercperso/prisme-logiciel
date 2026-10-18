@@ -345,6 +345,7 @@ DEFAULTS = {
     "pin_salt": "", "pin_digest": "", "pin_failures": 0, "pin_wait_until": 0,
     # L'essai et la licence (licence.py).
     "licence_key": "", "trial_started": 0, "licence_seen": 0, "licence_checked": 0,
+    "licence_activation": "",   # jeton « PRISMEA1-… » : cette licence activee sur CET ordinateur
     # Le Labo IA (labo.py) : le moteur choisi, les tags retenus.
     "labo_engine": "multilingue", "labo_tags": [],
     "skip_hidden": True,

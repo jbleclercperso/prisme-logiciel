@@ -53,15 +53,38 @@ def b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def make_key(secret: bytes, **content) -> str:
+def make_key(secret: bytes, prefix: str | None = None, **content) -> str:
     payload = json.dumps(content, separators=(",", ":")).encode()
-    return L.PREFIX + b64(payload) + "." + b64(sign(secret, payload))
+    return (prefix or L.PREFIX) + b64(payload) + "." + b64(sign(secret, payload))
+
+
+def site_activation(secret: bytes, limit: int = 2):
+    """Le site, pour /api/activation : deux ordinateurs par licence, puis non."""
+    known: dict[str, list[str]] = {}
+
+    def post(url, body, timeout):
+        data = L.read_key(body["key"], public_of(secret).hex())
+        if data is None:
+            return {"error": "key"}
+        lid = L.licence_id(data)
+        machines = known.setdefault(lid, [])
+        if body.get("action") == "liberer":
+            if body["machine"] in machines:
+                machines.remove(body["machine"])
+            return {"ok": True}
+        if body["machine"] not in machines:
+            if len(machines) >= limit:
+                return {"error": "limite", "machines": [f"PC-{i + 1}" for i in range(len(machines))]}
+            machines.append(body["machine"])
+        return {"activation": make_key(secret, prefix=L.ACTIVATION_PREFIX, lid=lid,
+                                       machine=body["machine"], issued=0)}
+    return post
 
 
 class Cfg(dict):
     def __init__(self, **values):
         super().__init__(pin_salt="", pin_digest="", licence_key="", trial_started=0,
-                         licence_seen=0, licence_checked=0)
+                         licence_seen=0, licence_checked=0, licence_activation="")
         self.update(values)
 
     def save(self):
@@ -113,20 +136,56 @@ def main() -> int:
           "reculer l'horloge ne rend pas de jours")
 
     print("\n[4] La licence")
+    pc1, pc2, pc3 = "1" * 32, "2" * 32, "3" * 32
+    site = site_activation(site_secret)
     cfg = Cfg(trial_started=now - 30 * L.DAY)
-    check(L.accept_key(cfg, "PRISME1-nimportequoi", now, site_public) != "",
+    check(L.accept_key(cfg, "PRISME1-nimportequoi", now, site_public, post=site, machine=pc1) != "",
           "une fausse clé est refusée, avec une explication")
-    check(L.accept_key(cfg, year, now, site_public) == "", "une bonne clé est acceptée")
-    got = L.status(cfg, now, site_public, registry=False)
+    check(L.accept_key(cfg, year, now, site_public, post=site, machine=pc1, name="PC-1") == "",
+          "une bonne clé est acceptée, et cet ordinateur activé")
+    got = L.status(cfg, now, site_public, registry=False, machine=pc1)
     check(got.mode == "licence" and got.plan == "an" and got.days_left == 200,
           "essai fini, mais licence : Prisme s'ouvre")
-    check(L.status(cfg, now + 201 * L.DAY, site_public, registry=False).mode == "fini",
+    check(L.status(cfg, now + 201 * L.DAY, site_public, registry=False, machine=pc1).mode == "fini",
           "une licence expirée ne suffit plus")
-    cfg = Cfg(licence_key=life)
-    check(L.status(cfg, now + 5000 * L.DAY, site_public, registry=False).mode == "licence",
+    life_cfg = Cfg(trial_started=now - 30 * L.DAY)
+    check(L.accept_key(life_cfg, life, now, site_public, post=site, machine=pc1) == ""
+          and L.status(life_cfg, now + 5000 * L.DAY, site_public, registry=False,
+                       machine=pc1).mode == "licence",
           "une licence à vie ne s'arrête pas")
 
-    print("\n[5] La prolongation d'un abonnement")
+    print("\n[5] Deux ordinateurs au plus")
+    check(L.status(Cfg(**cfg), now, site_public, registry=False, machine=pc3).mode == "fini",
+          "réglages recopiés sur un autre PC : la licence n'y vaut rien")
+    check(L.status(Cfg(trial_started=now - 30 * L.DAY, licence_key=year), now, site_public,
+                   registry=False, machine=pc1).mode == "fini",
+          "une clé sans activation ne débloque rien")
+    second = Cfg(trial_started=now - 30 * L.DAY)
+    check(L.accept_key(second, year, now, site_public, post=site, machine=pc2) == ""
+          and L.status(second, now, site_public, registry=False, machine=pc2).mode == "licence",
+          "le deuxième ordinateur s'active")
+    third = Cfg(trial_started=now - 30 * L.DAY)
+    said = L.accept_key(third, year, now, site_public, post=site, machine=pc3)
+    check("2 ordinateurs" in said and "PC-1" in said and third["licence_key"] == "",
+          f"le troisième est refusé, et la clé n'est pas gardée ({said[:60]}…)")
+    check(L.accept_key(Cfg(), year, now, site_public, post=site, machine=pc1) == "",
+          "réactiver un ordinateur déjà compté ne coûte rien")
+    check(L.release(second, site_public, post=site, machine=pc2) == ""
+          and second["licence_key"] == "" and second["licence_activation"] == "",
+          "« Libérer cet ordinateur » retire la licence de ce PC")
+    check(L.accept_key(third, year, now, site_public, post=site, machine=pc3) == "",
+          "une place libérée, le troisième s'active")
+    offline = Cfg(trial_started=now - 30 * L.DAY)
+    said = L.accept_key(offline, year, now, site_public, machine=pc2,
+                        post=lambda *a: (_ for _ in ()).throw(OSError()))
+    check("connexion" in said and offline["licence_key"] == "",
+          "sans internet, la première activation explique pourquoi elle attend")
+    other = make_key(site_secret, prefix=L.ACTIVATION_PREFIX, lid="autre", machine=pc1, issued=0)
+    check(L.status(Cfg(licence_key=year, licence_activation=other), now, site_public,
+                   registry=False, machine=pc1).mode != "licence",
+          "le jeton d'une autre licence ne débloque pas celle-ci")
+
+    print("\n[6] La prolongation d'un abonnement")
     month = make_key(site_secret, plan="mois", expires=int(now + 5 * L.DAY))
     longer = make_key(site_secret, plan="mois", expires=int(now + 35 * L.DAY))
     asked = []
