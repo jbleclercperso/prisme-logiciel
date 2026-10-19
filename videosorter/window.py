@@ -1774,6 +1774,20 @@ class MainWindow(
         self.float_timer = QTimer(self)
         self.float_timer.setInterval(500)
         self.float_timer.timeout.connect(self._float_check)
+        # Les sous-titres automatiques (subtitles.py) : « CC » dans le bandeau
+        # de la fiche et du lecteur flottant, Ctrl+S partout.
+        from .subtitles import Subtitles
+        for bar in (self.single_bar, self.floating.bar):
+            bar.add_subtitles(self._subtitles_menu)
+            bar.set_subtitles(self._subtitles_mode())
+        # Lecteur flottant retreci : « CC » s'efface parmi les premiers.
+        self.floating.bar.spare.insert(2, self.floating.bar.subtitles_button)
+        self.single_subtitles = Subtitles(
+            self.single, lift=lambda: self._bar_lift(self.single_bar),
+            mode=self._subtitles_mode, active=self._sheet_on_screen)
+        self.float_subtitles = Subtitles(
+            self.floating.player, lift=lambda: self._bar_lift(self.floating.bar),
+            mode=self._subtitles_mode, active=lambda: self.floating.active)
         self.single_bar.add_stay(
             "Rester dans ce dossier : ◂ ▸ ne sortent plus du dossier de la vidéo",
             bool(self.cfg["stay_in_folder"]), self.set_stay_in_folder)
@@ -7858,12 +7872,7 @@ class MainWindow(
         self._watch_aside()
         area = self.single.video_area
         item = self.current
-        playing = (self.stack.currentIndex() == PAGE_SORT
-                   and not self.isMinimized() and area.isVisible()
-                   and self.viewer.currentWidget() is self.single
-                   and item is not None and item.kind != MODE_FOLDERS
-                   and not self.single.peeking
-                   and not self.floating.active)
+        playing = self._sheet_on_screen()
         if not playing:
             self.single_bar.hide()
             self.single.marks.hide()
@@ -7902,6 +7911,100 @@ class MainWindow(
             self.single.marks.place_on(area)
         if self.banner.isVisible():
             self._place_banner()
+
+    def _sheet_on_screen(self) -> bool:
+        """Une video est-elle sur la fiche, visible ?"""
+        item = self.current
+        return (self.stack.currentIndex() == PAGE_SORT
+                and not self.isMinimized() and self.single.video_area.isVisible()
+                and self.viewer.currentWidget() is self.single
+                and item is not None and item.kind != MODE_FOLDERS
+                and not self.single.peeking
+                and not self.floating.active)
+
+    @staticmethod
+    def _bar_lift(bar) -> int:
+        """La place a laisser sous les sous-titres : le bandeau s'il est la,
+        sinon le trait fin."""
+        return bar.height() if bar.isVisible() else 10
+
+    # -- les sous-titres automatiques ----------------------------------------------
+    def _subtitles_mode(self) -> str:
+        mode = self.cfg["subtitles"] or "off"
+        return mode if mode in ("off", "orig", "fr") else "off"
+
+    def _subtitles_menu(self, button) -> None:
+        from .subtitles import LABELS, MODES
+        menu = QMenu(button.window())
+        current = self._subtitles_mode()
+        for mode in MODES:
+            action = menu.addAction(LABELS[mode])
+            action.setCheckable(True)
+            action.setChecked(mode == current)
+            action.triggered.connect(lambda _c=False, m=mode: self.set_subtitles(m))
+        menu.addSeparator()
+        note = menu.addAction("Calculés sur ce PC, rien n'est envoyé — Ctrl+S pour changer")
+        note.setEnabled(False)
+        menu.exec(button.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+
+    def cycle_subtitles(self) -> None:
+        from .subtitles import MODES
+        current = self._subtitles_mode()
+        self.set_subtitles(MODES[(MODES.index(current) + 1) % len(MODES)])
+
+    def set_subtitles(self, mode: str) -> None:
+        """Coupes, dans la langue parlee, ou en francais -- pour tous les
+        lecteurs. La premiere fois, ce qui manque se telecharge."""
+        from . import subtitles
+        if mode != "off":
+            if not subtitles.available():
+                self.show_banner("Les sous-titres automatiques utilisent les paquets du Labo IA "
+                                 "(torch, transformers) : installez-les depuis ⋯ › Collection › "
+                                 "Labo IA, puis réessayez.", "warn")
+                return
+            needed = subtitles.missing(mode)
+            if needed:
+                if getattr(self, "_subtitles_preparing", False):
+                    self.show_banner("Sous-titres : téléchargement déjà en cours…", "info")
+                    return
+                lines = "\n".join(f"  • {what} ({size})" for what, size in needed)
+                answer = QMessageBox.question(
+                    self, "Sous-titres automatiques",
+                    "Première fois : Prisme télécharge, une seule fois :\n\n" + lines
+                    + "\n\nEnsuite tout se calcule sur ce PC : rien n'est envoyé nulle part. "
+                    "Télécharger maintenant ?")
+                if answer != QMessageBox.Yes:
+                    return
+                self._subtitles_preparing = True
+                self.show_banner("Sous-titres : téléchargement des modèles… (quelques minutes, "
+                                 "une seule fois)", "info")
+                from .tunnel import Chore
+
+                def work():
+                    try:
+                        subtitles.prepare(mode)
+                        return ("ok", "")
+                    except Exception as exc:                # noqa: BLE001
+                        return ("error", f"{type(exc).__name__} : {exc}")
+
+                def then(result):
+                    self._subtitles_preparing = False
+                    if result[0] != "ok":
+                        self.show_banner(f"Sous-titres : téléchargement impossible "
+                                         f"({result[1]}). Réessayez plus tard.", "warn")
+                        return
+                    self.set_subtitles(mode)
+                Chore(work, self, fallback=("error", "interrompu"), then=then).start()
+                return
+        self.cfg["subtitles"] = mode
+        self.cfg.save_soon()
+        for bar in (self.single_bar, self.floating.bar):
+            bar.set_subtitles(mode)
+        self.show_banner({"off": "Sous-titres coupés.",
+                          "orig": "Sous-titres dans la langue parlée : ils arrivent en "
+                                  "quelques secondes, puis suivent la lecture.",
+                          "fr": "Sous-titres en français : ils arrivent en quelques secondes, "
+                                "puis suivent la lecture."}[mode], "info")
 
     def _watch_needed(self) -> bool:
         """Une image joue-t-elle a l'ecran, a cote ou sur la fiche ?"""
@@ -11616,6 +11719,8 @@ class MainWindow(
                 return self.open_floating()
             if key == Qt.Key_M:
                 return self.toggle_mute()
+            if key == Qt.Key_S:
+                return self.cycle_subtitles()
             if key == Qt.Key_U:
                 return self.toggle_ultra()
             if key == Qt.Key_O:
@@ -12072,6 +12177,8 @@ class MainWindow(
         COVERS.save(force=True)
         from .voice import RECOGNIZER
         RECOGNIZER.close()
+        from . import subtitles
+        subtitles.close()
         # Des telechargements en cours : on demande, ils reprendront a la
         # prochaine ouverture. Fermer Prisme les coupait sans rien dire.
         web = getattr(self, "_web_window", None)

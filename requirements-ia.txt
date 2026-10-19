@@ -7,3 +7,6 @@ torchvision
 open_clip_torch
 transformers
 numpy
+# Les sous-titres traduits (subtitles.py) : le decoupeur du modele de traduction.
+# Installe tout seul au premier usage ; ici pour un Labo installe a la main.
+sentencepiece

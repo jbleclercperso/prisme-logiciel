@@ -239,6 +239,16 @@ def run(argv: list) -> int:
         assert gain_db > 12, f"remonté de {gain_db:.0f} dB seulement"
         return f"son remonté de {gain_db:.0f} dB (au plus {MAX_GAIN_DB:.0f})"
 
+    @_check("sous-titres automatiques")
+    def _subtitles():
+        from . import subtitles
+        if not subtitles.available():
+            return "attendent le Labo IA (torch, transformers)"
+        left = subtitles.missing("fr")
+        if left:
+            return "à télécharger au premier usage : " + ", ".join(what for what, _ in left)
+        return "prêts (Whisper, traduction anglais vers français)"
+
     from . import ia, iapython
 
     @_check("Labo IA : son Python")
