@@ -2040,13 +2040,15 @@ class MainWindow(
                 self.show_banner(self._opening_text, "quiet", seconds=60)
 
         QTimer.singleShot(300, tell)
-        from .nasreach import server_of
+        from .nasreach import is_tailscale, server_of
         server = server_of(path)
         remembered = dict(self.cfg["nas_addresses"] or {}).get(server.lower(), "")
 
         def reached(result) -> None:
             state, ip = result
-            if ip and server:
+            # L'adresse Tailscale ne remplace pas celle de la maison : c'est
+            # elle qu'on retrouvera au retour, plus rapide.
+            if ip and server and not is_tailscale(ip):
                 # On retient l'adresse du NAS, pour le retrouver tout de suite
                 # le jour (ou le lancement suivant) ou un VPN cachera son nom.
                 known = dict(self.cfg["nas_addresses"] or {})
@@ -2104,21 +2106,44 @@ class MainWindow(
         souvent) : proposer d'ajouter la ligne au fichier `hosts` de Windows."""
         from . import nasreach
         name = nasreach.server_of(path)
-        box = QMessageBox(QMessageBox.Question, "Le NAS est caché", "", parent=self)
+        far = nasreach.is_tailscale(ip)
+        back = not far and nasreach.is_tailscale(nasreach.hosts_line(name))
+        box = QMessageBox(QMessageBox.Question,
+                          "Le NAS, loin de la maison" if far
+                          else "De retour à la maison" if back
+                          else "Le NAS est caché", "", parent=self)
         fix = box.addButton("Réparer", QMessageBox.AcceptRole)
         box.addButton("Plus tard", QMessageBox.RejectRole)
         box.setDefaultButton(fix)
-        box.setText(
-            f"Le NAS « {name} » est bien là (il répond à l'adresse {ip}), mais "
-            f"son nom ne répond plus : un VPN, le plus souvent, remplace le "
-            f"serveur de noms de votre box par le sien, qui ne connaît pas les "
-            f"appareils de la maison.\n\n"
-            f"Prisme peut le réparer : il indique à Windows que « {name} » est "
-            f"à l'adresse {ip}. Windows va vous demander l'autorisation "
-            f"(répondez « Oui »). Rien d'autre ne change.\n\nRéparer maintenant ?")
+        if far:
+            said = (f"Vous n'êtes pas sur le réseau de la maison : le NAS "
+                    f"« {name} » ne répond pas à son adresse habituelle, mais "
+                    f"il répond par Tailscale (adresse {ip}).\n\n"
+                    f"Prisme peut passer par Tailscale : il indique à Windows "
+                    f"que « {name} » est à l'adresse {ip}. De retour à la "
+                    f"maison, il vous proposera de revenir à l'adresse locale, "
+                    f"plus rapide.")
+        elif back:
+            said = (f"Le NAS « {name} » répond de nouveau sur le réseau de la "
+                    f"maison (adresse {ip}) : Prisme peut cesser de passer par "
+                    f"Tailscale, c'est plus rapide.")
+        else:
+            said = (f"Le NAS « {name} » est bien là (il répond à l'adresse "
+                    f"{ip}), mais son nom ne répond plus : un VPN, le plus "
+                    f"souvent, remplace le serveur de noms de votre box par le "
+                    f"sien, qui ne connaît pas les appareils de la maison.\n\n"
+                    f"Prisme peut le réparer : il indique à Windows que "
+                    f"« {name} » est à l'adresse {ip}.")
+        box.setText(f"{said} Windows va vous demander l'autorisation (répondez "
+                    f"« Oui »). Rien d'autre ne change.\n\nRéparer maintenant ?")
         box.exec()
         if box.clickedButton() is not fix:
+            if back:
+                self.start_root(path, mode, new_origin=True)   # Tailscale marche encore
+                return
             self.show_banner(
+                f"« {name} » reste introuvable d'ici. Acceptez la réparation "
+                f"au prochain lancement." if far else
                 f"« {name} » reste introuvable par son nom tant que le VPN est "
                 f"actif. Coupez-le, ou acceptez la réparation au prochain "
                 f"lancement.", "error", seconds=10)
@@ -2135,8 +2160,11 @@ class MainWindow(
                     f"{nasreach.hosts_path()}.", "error",
                     seconds=20)
                 return
-            self.show_banner(f"Réparé : « {name} » est de nouveau trouvable, même "
-                             f"avec le VPN.", "info", seconds=6)
+            self.show_banner(
+                f"« {name} » passe désormais par Tailscale." if far else
+                f"« {name} » repasse par le réseau de la maison." if back else
+                f"Réparé : « {name} » est de nouveau trouvable, même avec le VPN.",
+                "info", seconds=6)
             self.open_root_async(path, mode)
 
         Chore(lambda: nasreach.repair(name, ip), self,

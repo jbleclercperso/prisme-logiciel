@@ -10,9 +10,15 @@ Ici : un diagnostic en quelques secondes, avant de toucher au NAS, et une
 reparation en un clic -- la ligne « adresse  nom » ajoutee au fichier `hosts`
 de Windows, avec l'autorisation de l'utilisateur (une seule demande Windows).
 Les chemins de la collection ne changent pas : rien a reindexer.
+
+Loin de la maison, le NAS ne repond plus a son adresse du reseau local ; mais
+s'il est dans Tailscale (« prisme-nas », voir nas_publish), son partage
+repond a son adresse Tailscale. La meme reparation y renvoie son nom -- et,
+de retour a la maison, vers l'adresse locale, plus rapide.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import socket
@@ -26,6 +32,7 @@ NAME_WAIT = 2.5          # secondes pour que le nom du NAS reponde vite
 SLOW_WAIT = 12.0         # au plus, pour le trouver quand meme (reseau de la maison)
 PORT_WAIT = 2.5          # secondes pour que son partage (SMB) reponde
 MARK = "# Prisme"
+TAILSCALE_NAME = "prisme-nas"   # le nom du NAS dans Tailscale (nas_publish)
 
 
 def hosts_path() -> Path:
@@ -75,12 +82,29 @@ def answers(ip: str, seconds: float = PORT_WAIT) -> bool:
         return False
 
 
+def is_tailscale(ip: str) -> bool:
+    """Une adresse Tailscale (100.64.0.0/10) ?"""
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
+def tailscale_address() -> str:
+    """L'adresse Tailscale du NAS, si son partage y repond ; sinon ""."""
+    forced = os.environ.get("PRISME_TAILSCALE_NAS", "").strip()   # essais
+    ip = forced or address_of(TAILSCALE_NAME)
+    return ip if ip and is_tailscale(ip) and answers(ip) else ""
+
+
 def diagnose(path, remembered: str = "") -> tuple:
     """(etat, adresse) pour une racine :
 
     - « ok » : le nom du NAS repond (adresse : la sienne, a retenir) ;
     - « cache » : le nom ne repond plus, mais le NAS, si (a son nom « .local »
       ou a l'adresse retenue) -- un VPN, le plus souvent : a reparer ;
+      « cache » aussi quand il ne repond plus qu'a son adresse Tailscale (loin
+      de la maison), ou, de retour, de nouveau a l'adresse locale retenue ;
     - « absent » : le NAS ne repond pas du tout (eteint, autre reseau) ;
     - « local » : pas un chemin reseau, rien a diagnostiquer.
     """
@@ -102,10 +126,23 @@ def diagnose(path, remembered: str = "") -> tuple:
     for thread in lookups:
         thread.start()
     lookups[0].join(NAME_WAIT)
-    if found.get("name"):
-        return "ok", found["name"]                      # le nom repond, et vite
-    if remembered and answers(remembered):
-        return "cache", remembered                      # l'adresse retenue suffit
+    home = remembered if remembered and not is_tailscale(remembered) else ""
+    named = found.get("name")
+    if named and is_tailscale(named):
+        # Le nom mene par Tailscale : de retour a la maison, l'adresse locale
+        # est bien plus rapide (Tailscale passe par le processeur du NAS).
+        if home and answers(home):
+            return "cache", home
+        if answers(named):
+            return "ok", named
+    elif named:
+        if answers(named):
+            return "ok", named                          # le nom repond, et vite
+        # Le nom donne l'adresse de la maison, muette d'ici : loin de chez soi.
+        far = tailscale_address()
+        return ("cache", far) if far else ("absent", "")
+    if home and answers(home):
+        return "cache", home                            # l'adresse retenue suffit
     deadline = time.monotonic() + SLOW_WAIT
     while time.monotonic() < deadline and not (found.get("name") or found.get("local")):
         if all(not t.is_alive() for t in lookups):
@@ -114,7 +151,8 @@ def diagnose(path, remembered: str = "") -> tuple:
     ip = found.get("name") or found.get("local") or ""
     if ip and answers(ip):
         return "cache", ip                              # lent, ou cache : a reparer
-    return "absent", ""
+    far = tailscale_address()
+    return ("cache", far) if far else ("absent", "")
 
 
 def hosts_line(name: str) -> str:
@@ -141,7 +179,9 @@ def fixed_text(text: str, name: str, ip: str) -> str:
         kept.append(line)
     while kept and not kept[-1].strip():
         kept.pop()
-    kept.append(f"{ip}\t{name}\t{MARK} : le NAS, trouvable meme derriere un VPN")
+    why = ("loin de la maison, par Tailscale" if is_tailscale(ip)
+           else "trouvable meme derriere un VPN")
+    kept.append(f"{ip}\t{name}\t{MARK} : le NAS, {why}")
     return "\r\n".join(kept) + "\r\n"
 
 

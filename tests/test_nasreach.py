@@ -18,6 +18,7 @@ os.environ.setdefault("PRISME_SANDBOX",
                       os.path.join(tempfile.gettempdir(), "prisme-tests-nas"))
 FAKE_HOSTS = Path(tempfile.gettempdir()) / "prisme-tests-nas-hosts"
 os.environ["PRISME_HOSTS_FILE"] = str(FAKE_HOSTS)
+os.environ["PRISME_TAILSCALE_NAS"] = "aucun"   # jamais le vrai NAS par Tailscale
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -70,6 +71,22 @@ def main() -> int:
     check(state == "cache" and ip == "127.0.0.1",
           f"« caché », avec l'adresse où il répond ({state}, {ip})")
     nasreach.answers = real
+
+    print("\n[3b] Loin de la maison : le NAS par Tailscale")
+    nasreach.answers = lambda ip, seconds=2.5: ip == "100.100.7.7"
+    os.environ["PRISME_TAILSCALE_NAS"] = "100.100.7.7"
+    state, ip = nasreach.diagnose(r"\\nas-introuvable-prisme.invalid\Volume 3",
+                                  remembered="192.168.1.250")
+    check(state == "cache" and ip == "100.100.7.7",
+          f"l'adresse locale muette, Tailscale répond ({state}, {ip})")
+    os.environ["PRISME_TAILSCALE_NAS"] = "192.168.1.250"
+    check(nasreach.tailscale_address() == "", "une adresse hors Tailscale n'est pas prise")
+    os.environ["PRISME_TAILSCALE_NAS"] = "aucun"
+    nasreach.answers = real
+    check(nasreach.is_tailscale("100.70.52.118") and not nasreach.is_tailscale("192.168.1.70")
+          and not nasreach.is_tailscale(""), "reconnaître une adresse Tailscale")
+    check("par Tailscale" in nasreach.fixed_text("", "as1104t", "100.70.52.118"),
+          "la ligne du fichier hosts dit pourquoi")
 
     print("\n[4] La réparation, dans un faux fichier hosts")
     FAKE_HOSTS.write_text("# fichier hosts\r\n127.0.0.1 localhost\r\n"
