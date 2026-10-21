@@ -253,14 +253,35 @@ def _within(key: str, places: set) -> bool:
     return False
 
 
-def _reach_state(path, remembered: str = "") -> tuple:
+def _union_nas(known: dict | None = None) -> tuple:
+    """(nom, adresse retenue) du NAS a diagnostiquer pour « Toutes les
+    racines » : un NAS muet, ou que le fichier `hosts` fait passer par
+    Tailscale (de retour a la maison, l'adresse locale est plus rapide).
+    Rend aussi les racines qui repondent ; ("", "") pour le NAS s'il n'y a
+    rien a diagnostiquer."""
+    from . import nasreach, roots
+    found = roots.check_all()
+    for member in roots.roots():
+        name = nasreach.server_of(member)
+        if name and (str(member) not in found
+                     or nasreach.is_tailscale(nasreach.hosts_line(name))):
+            return member, dict(known or {}).get(name.lower(), ""), found
+    return "", "", found
+
+
+def _reach_state(path, remembered: str = "", known: dict | None = None) -> tuple:
     """(etat, adresse du NAS) : d'abord le diagnostic de `nasreach`, en
     quelques secondes -- le nom du NAS repond-il ? -- puis seulement le
     dossier. Derriere un VPN, Windows cherchait le nom pendant des minutes,
     boutons de l'accueil grises : « cache » le dit tout de suite."""
     from . import nasreach, roots
     if roots.is_union(path):
-        return ("ok" if roots.check_all() else "injoignable"), ""
+        member, home, found = _union_nas(known)
+        if member:
+            state, ip = nasreach.diagnose(member, home)
+            if state == "cache":
+                return "cache", ip
+        return ("ok" if found else "injoignable"), ""
     state, ip = nasreach.diagnose(path, remembered)
     if state == "cache":
         return "cache", ip
@@ -2058,7 +2079,8 @@ class MainWindow(
                     self.cfg.save_soon()
             self._launch_into(path, state, serial, mode, launch, nas_ip=ip)
 
-        Chore(lambda: _reach_state(path, remembered), self,
+        known_now = dict(self.cfg["nas_addresses"] or {})
+        Chore(lambda: _reach_state(path, remembered, known_now), self,
               fallback=("injoignable", ""), then=reached).start()
 
     def _fill_recent_menu(self) -> None:
@@ -2104,8 +2126,11 @@ class MainWindow(
     def _offer_nas_repair(self, path, ip: str, mode: str) -> None:
         """Le NAS repond a son adresse, plus a son nom (un VPN, le plus
         souvent) : proposer d'ajouter la ligne au fichier `hosts` de Windows."""
-        from . import nasreach
+        from . import nasreach, roots
         name = nasreach.server_of(path)
+        if not name and roots.is_union(path):
+            # « Toutes les racines » : le NAS est celui de ses racines.
+            name = next((n for n in map(nasreach.server_of, roots.roots()) if n), "")
         far = nasreach.is_tailscale(ip)
         back = not far and nasreach.is_tailscale(nasreach.hosts_line(name))
         box = QMessageBox(QMessageBox.Question,
