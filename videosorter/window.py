@@ -8812,7 +8812,9 @@ class MainWindow(
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        if self.banner.isVisible():
+        # Rouverte agrandie, la fenetre bouge avant d'avoir son bandeau :
+        # Prisme ne s'ouvrait plus du tout.
+        if hasattr(self, "banner") and self.banner.isVisible():
             self._place_banner()
 
     def on_video_finished(self) -> None:
