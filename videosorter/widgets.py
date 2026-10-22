@@ -1847,6 +1847,36 @@ class OverBar(FloatGuard, QWidget):
         self.ultra = box
         return box
 
+    SUBTITLE_LOOK = {
+        "off": ("CC", "rgba(255,255,255,0.45)", "Sous-titres automatiques : coupés   (Ctrl+S)"),
+        "orig": ("CC", "#ffffff", "Sous-titres automatiques : langue parlée   (Ctrl+S)"),
+        "fr": ("FR", "#f5c542", "Sous-titres automatiques : traduits en français   (Ctrl+S)"),
+    }
+
+    def add_subtitles(self, slot) -> QPushButton:
+        """« CC » : les sous-titres automatiques -- coupes, dans la langue
+        parlee, ou traduits en francais. Un clic ouvre le choix."""
+        button = QPushButton("CC", self.skin)
+        button.setObjectName("overGesture")
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setFixedSize(32, 28)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(lambda _checked=False: slot(button))
+        self.buttons.insertWidget(self._front(), button)
+        self.subtitles_button = button
+        self.set_subtitles("off")
+        return button
+
+    def set_subtitles(self, mode: str) -> None:
+        button = getattr(self, "subtitles_button", None)
+        if button is None:
+            return
+        text, color, tip = self.SUBTITLE_LOOK.get(mode, self.SUBTITLE_LOOK["off"])
+        button.setText(text)
+        button.setToolTip(tip)
+        button.setStyleSheet(f"QPushButton {{ color: {color}; font-weight: 700;"
+                             " font-size: 11px; letter-spacing: 0.5px; }")
+
     def add_speed(self, seconds: int, slot) -> "SpeedDial":
         """La duree du diaporama, reglable a la molette, devant les gestes.
         Cachee tant qu'on ne regarde pas des photos."""
