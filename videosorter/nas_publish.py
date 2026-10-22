@@ -64,7 +64,9 @@ def share_root(top) -> Path | None:
         # Au demarrage, la verification d'acces des racines n'est pas encore
         # finie : on prend la racine cochee qui est sur un partage. Sans cela,
         # « Toutes les racines » ignorait le NAS (visiteurs, demandes, fiches).
-        for member in roots.chosen_on():
+        # Puis n'importe laquelle, meme decochee : decocher le NAS cache ses
+        # videos, pas ses visiteurs -- l'onglet restait vide.
+        for member in roots.chosen_on() + roots.roots():
             found = share_root(member)
             if found is not None:
                 return found
