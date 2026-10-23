@@ -7,7 +7,7 @@ dist/
 # fichiers de travail, journaux
 *.log
 1/
-Prisme/
+/Prisme/
 SERSJBWAT*
 publication.txt
 # autres projets ranges dans ce dossier (hors Prisme)
@@ -19,3 +19,10 @@ reparateur/
 # session Telegram (compte perso, ne pas publier)
 *.session
 *.session-journal
+
+# Prisme TV : la clé de signature et ses mots de passe ne vont JAMAIS dans ce dépôt public
+# (copie de sauvegarde sur le NAS : Dev/fichiers/cles/prisme-tv/)
+tv/*.keystore
+tv/signature.properties
+tv/.gradle/
+tv/app/build/

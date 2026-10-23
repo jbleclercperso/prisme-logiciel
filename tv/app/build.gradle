@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'app.prisme.tv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.prisme.tv'
+        // Fire OS 5 (les premiers Fire TV Stick) est un Android 5.1.
+        minSdk 22
+        targetSdk 34
+        // Chaque construction sur GitHub porte un numéro plus grand que la
+        // précédente : la télé accepte la nouvelle version par-dessus.
+        versionCode((System.getenv('GITHUB_RUN_NUMBER') ?: '1') as int)
+        versionName '1.0'
+    }
+
+    // Une seule signature : chaque nouvelle version s'installe par-dessus
+    // l'ancienne, appairage compris. Ce dépôt est public : la clé
+    // (tv/prisme-tv.keystore) et ses mots de passe (tv/signature.properties)
+    // restent hors de git. Copie de sauvegarde sur le NAS, dans
+    // Dev/fichiers/cles/prisme-tv/. Sur GitHub, ils viennent des secrets
+    // (voir .github/workflows/prisme-tv.yml). Sans eux, l'APK n'est pas signé.
+    def proprietes = new Properties()
+    def fichierSignature = rootProject.file('signature.properties')
+    if (fichierSignature.exists()) fichierSignature.withInputStream { proprietes.load(it) }
+    def secret = { String cle, String env -> proprietes.getProperty(cle) ?: System.getenv(env) }
+    def cle = rootProject.file('prisme-tv.keystore')
+    def signe = cle.exists() && secret('storePassword', 'PRISME_TV_STORE_PASSWORD')
+
+    signingConfigs {
+        if (signe) {
+            prisme {
+                storeFile cle
+                storePassword secret('storePassword', 'PRISME_TV_STORE_PASSWORD')
+                keyAlias secret('keyAlias', 'PRISME_TV_KEY_ALIAS')
+                keyPassword secret('keyPassword', 'PRISME_TV_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (signe) signingConfig signingConfigs.prisme
+        }
+        debug {
+            if (signe) signingConfig signingConfigs.prisme
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

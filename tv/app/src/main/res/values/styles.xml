@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="fond">#0b0d10</color>
+    <style name="Prisme" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/fond</item>
+        <item name="android:colorAccent">#4f8bf0</item>
+    </style>
+</resources>

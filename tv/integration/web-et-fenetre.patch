@@ -1,0 +1,246 @@
+diff --git a/web.py b/web.py
+index 92e7866..d2a0502 100644
+--- a/web.py
++++ b/web.py
+@@ -1244,6 +1244,28 @@ h1 { font-size: 17px; margin: 0; }
+   font-weight: 600; border: 0; }
+ #install .go { background: #2f6fed; color: #fff; }
+ #install .quiet { background: #252c36; color: #e9eef4; }
++/* Prisme TV : lu de loin, conduit a la telecommande. Ce qui a le focus se
++   voit du canape ; la barre du lecteur s'efface quand on ne s'en sert pas. */
++html.tv body { font-size: 17px; }
++html.tv header { flex-direction: row; align-items: center; gap: 18px;
++  padding: 14px 40px; }
++html.tv .top { flex: 1; gap: 14px; }
++html.tv #q { max-width: 360px; }
++html.tv main { padding: 20px 40px 40px; }
++html.tv .grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 18px; }
++html.tv .card { outline: none; transition: transform .15s, box-shadow .15s, border-color .15s; }
++html.tv .card:focus { transform: scale(1.06); border-color: var(--accent); position: relative;
++  z-index: 1; box-shadow: 0 0 0 3px var(--accent), 0 12px 30px rgba(0,0,0,.6); }
++html.tv .label { font-size: 15px; }
++html.tv button:focus, html.tv #q:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
++html.tv #full, html.tv #install { display: none !important; }
++html.tv #obot { font-size: 15px; gap: 8px; padding: 12px 28px 20px; opacity: 0;
++  transition: opacity .3s; }
++html.tv #player.tvbar #obot { opacity: 1; }
++html.tv .ic { width: 50px; height: 50px; }
++html.tv .ic svg { width: 28px; height: 28px; }
++html.tv .ic:focus { background: rgba(255,255,255,.2); outline: 3px solid var(--accent); }
++html.tv #video:focus { outline: none; }
+ """
+ 
+ LOGIN_SCRIPT = """
+@@ -1274,6 +1296,8 @@ const hits = $('hits'), hitsHead = $('hitsHead'), videosHead = $('videosHead');
+ const empty = $('empty'), more = $('more'), player = $('player');
+ const video = $('video');
+ const PAGE = 300;
++// Prisme TV (Android TV, Fire TV) ouvre cette page en se nommant « PrismeTV ».
++const tv = /PrismeTV/.test(navigator.userAgent);
+ 
+ // -- la cle du lien : gardee par le telephone, jointe a chaque demande -------
+ // Le lien d'invitation mene ici avec « #cle=… » : on la retient, et l'adresse
+@@ -1373,6 +1397,7 @@ function card(c) {
+     el.appendChild(note);
+   }
+   el.onclick = c.go;
++  if (tv) el.tabIndex = 0;
+   return el;
+ }
+ 
+@@ -1928,7 +1953,7 @@ addEventListener('appinstalled', () => {
+ });
+ function askInstall() {
+   // Deja une application, pas encore de cle, ou « ne plus demander » : rien.
+-  if (installed || !key) return;
++  if (installed || !key || tv) return;
+   let said = '';
+   try { said = localStorage.getItem('prisme-icone') || ''; } catch (_) {}
+   if (said === 'jamais' || said === 'posee') return;
+@@ -1968,6 +1993,105 @@ $('installYes').onclick = async () => {
+   $('installYes').onclick = () => { $('install').hidden = true; };
+ };
+ setTimeout(askInstall, 1200);
++
++// -- la tele : une telecommande, pas de doigt ------------------------------
++// Les fleches vont a la carte voisine dans leur direction ; OK ouvre ; dans
++// le lecteur, OK met en pause, gauche et droite reculent ou avancent de dix
++// secondes, haut montre la barre. « Retour » est pose par l'application
++// Android, qui appelle prismeBack() : vrai si la page a su revenir en arriere.
++if (tv) {
++  document.documentElement.classList.add('tv');
++  video.tabIndex = -1;
++  const visible = (el) => el.offsetParent !== null || el === video;
++  const browsing = () => Array.from(document.querySelectorAll(
++    'header button, #q, main .card')).filter(visible);
++  const barButtons = () => Array.from($('obot').querySelectorAll('button')).filter(visible);
++  // La premiere carte a l'ecran : la grille des dossiers, cachee, garde les
++  // siennes pour le retour.
++  const firstCard = () => Array.from(document.querySelectorAll('main .card')).find(visible);
++  function nearest(from, all, dir) {
++    const a = from.getBoundingClientRect();
++    const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
++    let best = null, bestScore = Infinity;
++    for (const el of all) {
++      if (el === from) continue;
++      const b = el.getBoundingClientRect();
++      const dx = b.left + b.width / 2 - ax, dy = b.top + b.height / 2 - ay;
++      let ahead, aside;
++      if (dir === 'ArrowRight') { if (b.left < a.right - 4) continue; ahead = dx; aside = dy; }
++      else if (dir === 'ArrowLeft') { if (b.right > a.left + 4) continue; ahead = -dx; aside = dy; }
++      else if (dir === 'ArrowDown') { if (b.top < a.bottom - 4) continue; ahead = dy; aside = dx; }
++      else { if (b.bottom > a.top + 4) continue; ahead = -dy; aside = dx; }
++      const score = ahead + Math.abs(aside) * 2;
++      if (score < bestScore) { bestScore = score; best = el; }
++    }
++    return best;
++  }
++  function go(el) {
++    if (!el) return;
++    el.focus({preventScroll: true});
++    el.scrollIntoView({block: 'nearest', inline: 'nearest'});
++    if (el.matches('main .card')) topUp();
++  }
++  let barTimer = 0;
++  function showBar() {
++    player.classList.add('tvbar');
++    clearTimeout(barTimer);
++    barTimer = setTimeout(() => {
++      if (!$('obot').contains(document.activeElement)) player.classList.remove('tvbar');
++    }, 4000);
++  }
++  const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
++  addEventListener('keydown', (e) => {
++    const k = e.key, here = document.activeElement;
++    if (player.style.display === 'block') {
++      showBar();
++      const inBar = $('obot').contains(here);
++      let done = true;
++      if (k === 'MediaPlayPause' || ((k === 'Enter' || k === ' ') && !inBar)) toggle();
++      else if (k === 'MediaFastForward') seek(30);
++      else if (k === 'MediaRewind') seek(-30);
++      else if (k === 'MediaTrackNext') step(1);
++      else if (k === 'MediaTrackPrevious') step(-1);
++      else if (k === 'ArrowUp' && !inBar) go($('next'));
++      else if (k === 'ArrowDown' && inBar) { here.blur(); video.focus(); }
++      else if ((k === 'ArrowLeft' || k === 'ArrowRight') && inBar) go(nearest(here, barButtons(), k));
++      else if (k === 'ArrowLeft') seek(-10);
++      else if (k === 'ArrowRight') seek(10);
++      else done = false;
++      if (done) { e.preventDefault(); e.stopImmediatePropagation(); }
++      return;
++    }
++    if (here === $('q') && (k === 'ArrowLeft' || k === 'ArrowRight')) return;
++    if (ARROWS.includes(k)) {
++      e.preventDefault();
++      const all = browsing();
++      if (!all.includes(here)) go(firstCard() || all[0]);
++      else go(nearest(here, all, k));
++    } else if (k === 'Enter' && here && here.matches('main .card')) {
++      e.preventDefault();
++      here.click();
++    }
++  }, true);
++  // Une nouvelle grille : le focus va a sa premiere carte.
++  new MutationObserver(() => {
++    const here = document.activeElement;
++    if (player.style.display === 'block') return;
++    if (!here || here === document.body || !here.isConnected || !visible(here)) {
++      const first = firstCard();
++      if (first) first.focus({preventScroll: true});
++    }
++  }).observe(document.querySelector('main'), {childList: true, subtree: true});
++  window.prismeBack = () => {
++    if (player.style.display === 'block') { history.back(); return true; }
++    if (document.activeElement === $('q') && $('q').value) {
++      $('q').value = ''; $('q').blur(); return true;
++    }
++    const s = history.state;
++    if (s && s.v && s.v !== 'folders') { history.back(); return true; }
++    return false;
++  };
++}
+ """
+ 
+ 
+diff --git a/window.py b/window.py
+index d153f9b..eb324ac 100644
+--- a/window.py
++++ b/window.py
+@@ -56,6 +56,7 @@ from .perf import LOG as STALL_LOG, WATCH, mark
+ from .quiet import QUIET_TITLE, QuietPage
+ from .licence import Licence
+ from .licence_dialog import LicenceDialog
++from .tvlink import TvBeacon
+ # Le dialogue du partage et la recherche sur le web s'importent a leur
+ # premiere ouverture : la seconde tirait requests, bs4 et robotparser au
+ # lancement -- pres d'une seconde avant la fenetre, plusieurs a froid --
+@@ -724,6 +725,12 @@ class MainWindow(QMainWindow):
+         self.licence_answered.connect(self._licence_answered)
+         self._show_licence_chip()
+         QTimer.singleShot(0, self._licence_gate)
++        # Prisme TV : la tele cherche Prisme sur le Wi-Fi, et demande l'acces.
++        # Elle n'obtient une reponse que si le partage est ouvert a la maison.
++        self._tv_pending: set = set()
++        self.tv_beacon = TvBeacon(self._tv_port, parent=self)
++        self.tv_beacon.asked.connect(self._tv_asks)
++        self.tv_beacon.start()
+ 
+     # ------------------------------------------------------------------
+     # Licence
+@@ -779,6 +786,47 @@ class MainWindow(QMainWindow):
+     def _licence_answered(self, outcome: str) -> None:
+         self._show_licence_chip()
+ 
++    # ------------------------------------------------------------------
++    # Prisme TV
++    # ------------------------------------------------------------------
++    def _tv_port(self) -> int:
++        """Le port du partage, si une tele de la maison peut le joindre."""
++        server = self.share_server
++        if server is None or not self.cfg["share_lan"]:
++            return 0
++        return int(server.port or 0)
++
++    def _tv_asks(self, device: str, nonce: str, ip: str) -> None:
++        """Une tele demande l'acces : la question, sur le PC, a qui est devant."""
++        if nonce in self._tv_pending:
++            return
++        # En repli, rien ne doit s'afficher : la tele attend, et renoncera.
++        if self._quiet or self._closing:
++            self.tv_beacon.answer(nonce, False)
++            return
++        self._tv_pending.add(nonce)
++        try:
++            box = QMessageBox(self)
++            box.setWindowTitle("Prisme TV")
++            box.setIcon(QMessageBox.Question)
++            box.setText(f"« {device} » demande à regarder votre bibliothèque.")
++            box.setInformativeText(
++                f"Une télé du réseau de la maison ({ip}) veut se relier à Prisme. "
++                "Autorisée, elle s'ouvrira ensuite directement, sans mot de passe, "
++                "tant que le lien d'invitation reste le même : « Nouveau lien », "
++                "dans Partage à distance, la déconnecte.")
++            allow = box.addButton("Autoriser cette télé", QMessageBox.AcceptRole)
++            box.addButton("Refuser", QMessageBox.RejectRole)
++            box.setDefaultButton(allow)
++            box.exec()
++            if box.clickedButton() is allow:
++                from .web import INVITE_PATH
++                self.tv_beacon.answer(nonce, True, INVITE_PATH + self.share_invite())
++            else:
++                self.tv_beacon.answer(nonce, False)
++        finally:
++            self._tv_pending.discard(nonce)
++
+     @staticmethod
+     def _window_floor() -> tuple:
+         """La plus petite taille ou la fenetre reste utilisable, ecran compris."""
+@@ -11696,6 +11744,7 @@ class MainWindow(QMainWindow):
+         self._quiet_keys.arm(False)
+         if self.global_quiet is not None:
+             self.global_quiet.stop()
++        self.tv_beacon.stop()
+         # Ce qui est local et rapide d'abord : reglages et favoris ne doivent
+         # jamais dependre d'un NAS qui repond.
+         self.cfg["window"] = self._geometry_to_keep()

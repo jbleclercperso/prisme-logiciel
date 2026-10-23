@@ -1,0 +1,66 @@
+# Construit l'application Prisme TV (Android TV, Fire TV) à chaque changement
+# du dossier tv/, et la dépose :
+# - dans les « Artifacts » de l'exécution (onglet Actions › Prisme TV) ;
+# - sur la branche « apk » du dépôt, seule, sous le nom Prisme-TV.apk : c'est
+#   de là qu'elle est recopiée sur le site (telechargements/), d'où la télé
+#   la télécharge.
+name: Prisme TV
+
+#
+# Dépôt public : la clé de signature vient des secrets du dépôt
+# (PRISME_TV_KEYSTORE_B64 = la clé en base64, PRISME_TV_STORE_PASSWORD,
+# PRISME_TV_KEY_PASSWORD, PRISME_TV_KEY_ALIAS). Lancement à la main seulement, tant que ces
+# secrets ne sont pas en place (Actions › Prisme TV › Run workflow).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Poser la clé de signature (depuis les secrets)
+        env:
+          CLE: ${{ secrets.PRISME_TV_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$CLE" ]; then echo "::error::Secret PRISME_TV_KEYSTORE_B64 absent : APK non signé, construction arrêtée."; exit 1; fi
+          echo "$CLE" | base64 -d > tv/prisme-tv.keystore
+
+      - name: Construire l'APK
+        env:
+          PRISME_TV_STORE_PASSWORD: ${{ secrets.PRISME_TV_STORE_PASSWORD }}
+          PRISME_TV_KEY_PASSWORD: ${{ secrets.PRISME_TV_KEY_PASSWORD }}
+          PRISME_TV_KEY_ALIAS: ${{ secrets.PRISME_TV_KEY_ALIAS }}
+        run: gradle -p tv assembleRelease --no-daemon --stacktrace
+
+      - name: Nommer l'APK
+        run: cp tv/app/build/outputs/apk/release/app-release.apk "Prisme-TV-${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Prisme-TV
+          path: Prisme-TV-*.apk
+          if-no-files-found: error
+
+      - name: Publier sur la branche « apk »
+        run: |
+          mkdir "$RUNNER_TEMP/apk" && cd "$RUNNER_TEMP/apk"
+          cp "$GITHUB_WORKSPACE"/Prisme-TV-*.apk Prisme-TV.apk
+          echo "${{ github.run_number }} ${{ github.sha }}" > VERSION
+          git init -q -b apk
+          git -c user.name="Prisme TV" -c user.email="actions@github.com" add .
+          git -c user.name="Prisme TV" -c user.email="actions@github.com" commit -qm "Prisme TV, construction ${{ github.run_number }}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" apk
