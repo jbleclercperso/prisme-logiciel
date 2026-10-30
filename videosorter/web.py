@@ -1966,6 +1966,28 @@ h1 { font-size: 17px; margin: 0; }
   font-weight: 600; border: 0; }
 #install .go { background: #2f6fed; color: #fff; }
 #install .quiet { background: #252c36; color: #e9eef4; }
+/* Prisme TV : lu de loin, conduit a la telecommande. Ce qui a le focus se
+   voit du canape ; la barre du lecteur s'efface quand on ne s'en sert pas. */
+html.tv body { font-size: 17px; }
+html.tv header { flex-direction: row; align-items: center; gap: 18px;
+  padding: 14px 40px; }
+html.tv .top { flex: 1; gap: 14px; }
+html.tv #q { max-width: 360px; }
+html.tv main { padding: 20px 40px 40px; }
+html.tv .grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 18px; }
+html.tv .card { outline: none; transition: transform .15s, box-shadow .15s, border-color .15s; }
+html.tv .card:focus { transform: scale(1.06); border-color: var(--accent); position: relative;
+  z-index: 1; box-shadow: 0 0 0 3px var(--accent), 0 12px 30px rgba(0,0,0,.6); }
+html.tv .label { font-size: 15px; }
+html.tv button:focus, html.tv #q:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
+html.tv #full, html.tv #install { display: none !important; }
+html.tv #obot { font-size: 15px; gap: 8px; padding: 12px 28px 20px; opacity: 0;
+  transition: opacity .3s; }
+html.tv #player.tvbar #obot { opacity: 1; }
+html.tv .ic { width: 50px; height: 50px; }
+html.tv .ic svg { width: 28px; height: 28px; }
+html.tv .ic:focus { background: rgba(255,255,255,.2); outline: 3px solid var(--accent); }
+html.tv #video:focus { outline: none; }
 .searchrow { display: flex; gap: 8px; align-items: stretch; }
 .searchrow #q { flex: 1; min-width: 0; }
 .searchrow .ask { display: inline-flex; align-items: center; gap: 6px; flex: none;
@@ -2498,6 +2520,8 @@ const hits = $('hits'), hitsHead = $('hitsHead'), videosHead = $('videosHead');
 const empty = $('empty'), more = $('more'), player = $('player');
 const video = $('video');
 const PAGE = 300;
+// Prisme TV (Android TV, Fire TV) ouvre cette page en se nommant « PrismeTV ».
+const tv = /PrismeTV/.test(navigator.userAgent);
 
 // -- la cle du lien : gardee par le telephone, jointe a chaque demande -------
 // Le lien d'invitation mene ici avec « #cle=… » : on la retient, et l'adresse
@@ -2635,6 +2659,7 @@ function card(c) {
     el.appendChild(note);
   }
   el.onclick = c.go;
+  if (tv) el.tabIndex = 0;
   return el;
 }
 
@@ -3479,7 +3504,7 @@ async function doInstall(ui) {
 
 function askInstall() {
   // Deja une application, pas encore de cle, ou « ne plus demander » : rien.
-  if (installed || !key) return;
+  if (installed || !key || tv) return;
   let said = '';
   try { said = localStorage.getItem('prisme-icone') || ''; } catch (_) {}
   if ((said === 'jamais' || said === 'posee') && !cameToInstall) return;
@@ -3519,6 +3544,105 @@ let askKind = 'demande';
 const ASK_HINT = $('askText').placeholder;
 const LINK_HINT = 'Collez ici le lien de la vidéo (https://…) : elle arrivera dans ' +
                   'vos favoris sous 24 heures.';
+
+// -- la tele : une telecommande, pas de doigt ------------------------------
+// Les fleches vont a la carte voisine dans leur direction ; OK ouvre ; dans
+// le lecteur, OK met en pause, gauche et droite reculent ou avancent de dix
+// secondes, haut montre la barre. « Retour » est pose par l'application
+// Android, qui appelle prismeBack() : vrai si la page a su revenir en arriere.
+if (tv) {
+  document.documentElement.classList.add('tv');
+  video.tabIndex = -1;
+  const visible = (el) => el.offsetParent !== null || el === video;
+  const browsing = () => Array.from(document.querySelectorAll(
+    'header button, #q, main .card')).filter(visible);
+  const barButtons = () => Array.from($('obot').querySelectorAll('button')).filter(visible);
+  // La premiere carte a l'ecran : la grille des dossiers, cachee, garde les
+  // siennes pour le retour.
+  const firstCard = () => Array.from(document.querySelectorAll('main .card')).find(visible);
+  function nearest(from, all, dir) {
+    const a = from.getBoundingClientRect();
+    const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+    let best = null, bestScore = Infinity;
+    for (const el of all) {
+      if (el === from) continue;
+      const b = el.getBoundingClientRect();
+      const dx = b.left + b.width / 2 - ax, dy = b.top + b.height / 2 - ay;
+      let ahead, aside;
+      if (dir === 'ArrowRight') { if (b.left < a.right - 4) continue; ahead = dx; aside = dy; }
+      else if (dir === 'ArrowLeft') { if (b.right > a.left + 4) continue; ahead = -dx; aside = dy; }
+      else if (dir === 'ArrowDown') { if (b.top < a.bottom - 4) continue; ahead = dy; aside = dx; }
+      else { if (b.bottom > a.top + 4) continue; ahead = -dy; aside = dx; }
+      const score = ahead + Math.abs(aside) * 2;
+      if (score < bestScore) { bestScore = score; best = el; }
+    }
+    return best;
+  }
+  function go(el) {
+    if (!el) return;
+    el.focus({preventScroll: true});
+    el.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    if (el.matches('main .card')) topUp();
+  }
+  let barTimer = 0;
+  function showBar() {
+    player.classList.add('tvbar');
+    clearTimeout(barTimer);
+    barTimer = setTimeout(() => {
+      if (!$('obot').contains(document.activeElement)) player.classList.remove('tvbar');
+    }, 4000);
+  }
+  const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  addEventListener('keydown', (e) => {
+    const k = e.key, here = document.activeElement;
+    if (player.style.display === 'block') {
+      showBar();
+      const inBar = $('obot').contains(here);
+      let done = true;
+      if (k === 'MediaPlayPause' || ((k === 'Enter' || k === ' ') && !inBar)) toggle();
+      else if (k === 'MediaFastForward') seek(30);
+      else if (k === 'MediaRewind') seek(-30);
+      else if (k === 'MediaTrackNext') step(1);
+      else if (k === 'MediaTrackPrevious') step(-1);
+      else if (k === 'ArrowUp' && !inBar) go($('next'));
+      else if (k === 'ArrowDown' && inBar) { here.blur(); video.focus(); }
+      else if ((k === 'ArrowLeft' || k === 'ArrowRight') && inBar) go(nearest(here, barButtons(), k));
+      else if (k === 'ArrowLeft') seek(-10);
+      else if (k === 'ArrowRight') seek(10);
+      else done = false;
+      if (done) { e.preventDefault(); e.stopImmediatePropagation(); }
+      return;
+    }
+    if (here === $('q') && (k === 'ArrowLeft' || k === 'ArrowRight')) return;
+    if (ARROWS.includes(k)) {
+      e.preventDefault();
+      const all = browsing();
+      if (!all.includes(here)) go(firstCard() || all[0]);
+      else go(nearest(here, all, k));
+    } else if (k === 'Enter' && here && here.matches('main .card')) {
+      e.preventDefault();
+      here.click();
+    }
+  }, true);
+  // Une nouvelle grille : le focus va a sa premiere carte.
+  new MutationObserver(() => {
+    const here = document.activeElement;
+    if (player.style.display === 'block') return;
+    if (!here || here === document.body || !here.isConnected || !visible(here)) {
+      const first = firstCard();
+      if (first) first.focus({preventScroll: true});
+    }
+  }).observe(document.querySelector('main'), {childList: true, subtree: true});
+  window.prismeBack = () => {
+    if (player.style.display === 'block') { history.back(); return true; }
+    if (document.activeElement === $('q') && $('q').value) {
+      $('q').value = ''; $('q').blur(); return true;
+    }
+    const s = history.state;
+    if (s && s.v && s.v !== 'folders') { history.back(); return true; }
+    return false;
+  };
+}
 // Les feuilles du bas : chacune ouvre une entree d'historique, pour que
 // « Retour » (Android) la baisse au lieu de quitter Prisme.
 const SHEETS = ['ask', 'perks', 'install'];

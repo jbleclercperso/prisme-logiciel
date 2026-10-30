@@ -56,6 +56,7 @@ from .win_dupes import DupesMixin
 from .win_phone import PhoneMixin
 from .win_rename import RenameMixin
 from .win_roots import RootsMixin
+from .tvlink import TvBeacon
 from .win_share import ShareMixin
 from .win_solos import SolosMixin
 from .win_tags import TagsMixin, PINNED_LOOSE, PINNED_UNREAD
@@ -760,6 +761,47 @@ class MainWindow(
         # pose : rien de la collection ne parait avant le bon code.
         self._show_trial()
         self.lock_now()
+
+    # ------------------------------------------------------------------
+    # Prisme TV
+    # ------------------------------------------------------------------
+    def _tv_port(self) -> int:
+        """Le port du partage, si une tele de la maison peut le joindre."""
+        server = self.share_server
+        if server is None or not self.cfg["share_lan"]:
+            return 0
+        return int(server.port or 0)
+
+    def _tv_asks(self, device: str, nonce: str, ip: str) -> None:
+        """Une tele demande l'acces : la question, sur le PC, a qui est devant."""
+        if nonce in self._tv_pending:
+            return
+        # En repli, rien ne doit s'afficher : la tele attend, et renoncera.
+        if self._quiet or self._closing:
+            self.tv_beacon.answer(nonce, False)
+            return
+        self._tv_pending.add(nonce)
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle("Prisme TV")
+            box.setIcon(QMessageBox.Question)
+            box.setText(f"« {device} » demande à regarder votre bibliothèque.")
+            box.setInformativeText(
+                f"Une télé du réseau de la maison ({ip}) veut se relier à Prisme. "
+                "Autorisée, elle s'ouvrira ensuite directement, sans mot de passe, "
+                "tant que le lien d'invitation reste le même : « Nouveau lien », "
+                "dans Partage à distance, la déconnecte.")
+            allow = box.addButton("Autoriser cette télé", QMessageBox.AcceptRole)
+            box.addButton("Refuser", QMessageBox.RejectRole)
+            box.setDefaultButton(allow)
+            box.exec()
+            if box.clickedButton() is allow:
+                from .web import INVITE_PATH
+                self.tv_beacon.answer(nonce, True, INVITE_PATH + self.share_invite())
+            else:
+                self.tv_beacon.answer(nonce, False)
+        finally:
+            self._tv_pending.discard(nonce)
 
     @staticmethod
     def _window_floor() -> tuple:
@@ -1722,6 +1764,12 @@ class MainWindow(
         self._wall_unsure: list = []
         self.wall_prober = None
         self.share_server = None
+        # Prisme TV : la tele cherche Prisme sur le Wi-Fi, et demande l'acces.
+        # Elle n'obtient une reponse que si le partage est ouvert a la maison.
+        self._tv_pending: set = set()
+        self.tv_beacon = TvBeacon(self._tv_port, parent=self)
+        self.tv_beacon.asked.connect(self._tv_asks)
+        self.tv_beacon.start()
         self.tunnel = None
         self.tunnel_address = ""
         self.tunnel_trouble = ""
@@ -12259,6 +12307,7 @@ class MainWindow(
         self._quiet_keys.arm(False)
         if self.global_quiet is not None:
             self.global_quiet.stop()
+        self.tv_beacon.stop()
         # Ce qui est local et rapide d'abord : reglages et favoris ne doivent
         # jamais dependre d'un NAS qui repond.
         self.cfg["window"] = self._geometry_to_keep()

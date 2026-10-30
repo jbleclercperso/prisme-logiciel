@@ -85,9 +85,10 @@ Prisme TV vivait sur une branche de l'ancien dépôt privé « VideoSorter ». L
   (`tv/prisme-tv.keystore`) et ses mots de passe (`tv/signature.properties`) n'y sont **jamais** envoyés
   (`.gitignore`). Ils sont sur ce PC et en copie sur le NAS, dans `Dev/fichiers/cles/prisme-tv/`.
   **Sans cette clé, impossible d'installer une mise à jour par-dessus l'appli déjà sur la télé.**
-- `tv/pc/tvlink.py` : la partie PC qui répond aux télés du réseau (« Autoriser cette télé »).
-- `tv/integration/web-et-fenetre.patch` : le mode télé de la page de partage et le bouton d'accord dans la
-  fenêtre, écrits pour l'ancien code. **Pas encore reportés** dans le Prisme actuel : c'est la prochaine étape
-  pour que Prisme TV marche de bout en bout.
+- `videosorter/tvlink.py` (copie de `tv/pc/tvlink.py`) : la partie PC qui répond aux télés du réseau
+  (« Autoriser cette télé »), branchée dans `window.py`.
+- Le mode télé de la page de partage (`PrismeTV` dans `web.py` : focus à la télécommande, lecteur) et la
+  question d'accord dans la fenêtre sont **reportés dans le Prisme actuel** (30/10/2026).
+  `tv/integration/web-et-fenetre.patch` n'est plus qu'un témoin de l'ancien code.
 - `.github/workflows/prisme-tv.yml` : construction sur GitHub, à la main, une fois les secrets du dépôt en
   place (`PRISME_TV_KEYSTORE_B64`, `PRISME_TV_STORE_PASSWORD`, `PRISME_TV_KEY_PASSWORD`).
