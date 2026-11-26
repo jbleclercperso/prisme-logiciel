@@ -247,6 +247,24 @@ class Listener:
         self.stream.close()
 
 
+def decode_file(path: str):
+    """Décode un fichier audio (mp3, ogg, wav...) en float32 mono 16 kHz."""
+    import av
+    import numpy as np
+    chunks = []
+    with av.open(path) as container:
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SR)
+        for frame in container.decode(audio=0):
+            chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(frame)]
+        try:
+            chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(None)]
+        except Exception:
+            pass
+    if not chunks:
+        return np.zeros(0, dtype="float32")
+    return np.concatenate(chunks).astype("float32") / 32768.0
+
+
 def list_microphones() -> str:
     import sounddevice as sd
     lines = []

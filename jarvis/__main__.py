@@ -156,8 +156,8 @@ def run_voice(core: Core, stop: threading.Event) -> None:
     core.default = voice
     from . import telegram
     if telegram._bot is not None:           # les messages vocaux Telegram passent par le même Whisper
-        from faster_whisper import decode_audio
-        telegram._bot.transcribe = lambda path: listener.transcribe(decode_audio(path, sampling_rate=16000))
+        from .voice import decode_file
+        telegram._bot.transcribe = lambda path: listener.transcribe(decode_file(path))
     follow = float(vcfg.get("suivi_secondes", 6))
     voice.say(f"{name} en ligne. Dites « Hey Jarvis », ou appuyez sur {vcfg.get('raccourci', 'ctrl+alt+j')}.")
     announce_missed(core)

@@ -125,7 +125,7 @@ def t_powershell():
     need_win()
     from .tools.system import _powershell
     out = _powershell("Write-Output ('é' + (2+3))")
-    assert "5" in out, out
+    assert "é5" in out, repr(out)
     return f"sortie : {out}"
 
 
@@ -238,7 +238,8 @@ def t_tts_fichier():
 
 
 def t_whisper():
-    from faster_whisper import WhisperModel, decode_audio
+    from faster_whisper import WhisperModel
+    from .voice import decode_file
     cfg = tools.runtime.config["voix"]
     name = os.environ.get("JARVIS_WHISPER", cfg["whisper_modele"])
     t0 = time.time()
@@ -247,7 +248,7 @@ def t_whisper():
     load = time.time() - t0
     if "fr" not in _audio:
         raise Skip(f"modèle {name} chargé en {load:.0f}s, mais pas d'audio de test (synthèse en échec)")
-    audio = decode_audio(_audio["fr"], sampling_rate=16000)
+    audio = decode_file(_audio["fr"])
     t0 = time.time()
     segments, _ = model.transcribe(audio, language="fr", beam_size=5, vad_filter=True)
     text = " ".join(s.text.strip() for s in segments)
@@ -271,10 +272,10 @@ def t_reveil():
     best = -1.0
     try:
         import edge_tts
-        from faster_whisper import decode_audio
+        from .voice import decode_file
         path = os.path.join(tempfile.mkdtemp(prefix="jarvis_wake_"), "hey.mp3")
         asyncio.run(edge_tts.Communicate("Hey Jarvis!", "en-US-GuyNeural").save(path))
-        pcm = (decode_audio(path, sampling_rate=16000) * 32767).astype(np.int16)
+        pcm = (decode_file(path) * 32767).astype(np.int16)
         pcm = np.concatenate([np.zeros(16000, np.int16), pcm, np.zeros(16000, np.int16)])
         model.reset()
         for i in range(0, len(pcm) - 1280, 1280):

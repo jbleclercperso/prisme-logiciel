@@ -43,6 +43,7 @@ def _press(vk: int, times: int = 1) -> None:
 
 def _powershell(cmd: str, timeout: int = 60) -> str:
     exe = "powershell" if IS_WIN else "pwsh"
+    cmd = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + cmd      # accents corrects
     r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", cmd],
                        capture_output=True, text=True, timeout=timeout,
                        encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
