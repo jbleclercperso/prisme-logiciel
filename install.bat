@@ -12,6 +12,7 @@ pip install -r requirements-voix.txt || echo [!] Une partie de la voix n'a pas p
 if not exist .env copy .env.example .env >nul
 echo.
 echo === Termine. ===
+powershell -NoProfile -ExecutionPolicy Bypass -File outils\raccourci.ps1
 python -m jarvis --connexion
 python -m jarvis --diagnostic
 echo.

@@ -121,9 +121,12 @@ Tout le reste (voix, outils, mémoire) est identique. La reconnaissance vocale t
 avec `tts: sapi`, la synthèse aussi : Jarvis fonctionne alors entièrement hors-ligne. Limites en local :
 pas d'analyse des captures d'écran ni de recherche Internet intégrée, et des enchaînements d'actions moins fiables.
 
-### Démarrage automatique
+### Lancement, démarrage automatique, mise à jour
 
-Double-cliquer sur `demarrage-auto.bat`.
+- `install.bat` crée un raccourci **Jarvis** sur le Bureau (lancement sans fenêtre noire).
+- `demarrage-auto.bat` : Jarvis démarre avec Windows.
+- `Mise-a-jour.bat` : récupère la dernière version, si le dossier a été installé avec git :
+  `git clone -b ccr-4ebd9c8f-428bf3 https://github.com/jbleclercperso/prisme-logiciel Jarvis`
 
 ## Dépannage
 

@@ -23,6 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-voix.txt
+      - name: Raccourci du Bureau
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File outils\raccourci.ps1
+          if (-not (Test-Path "$([Environment]::GetFolderPath('Desktop'))\Jarvis.lnk")) { throw "raccourci absent" }
+      - name: Lancement sans console (pythonw)
+        run: |
+          $p = Start-Process pythonw -ArgumentList '-m','jarvis','--diagnostic' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "pythonw a echoue : $($p.ExitCode)" }
       - name: Tests unitaires
         run: python tests/test_core.py
       - name: Diagnostic
