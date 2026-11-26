@@ -67,12 +67,38 @@ def ollama_tools() -> list[dict]:
             for t in sorted(TOOLS.values(), key=lambda t: t.name)]
 
 
+def _coerce(value: Any, spec: dict) -> Any:
+    """Les modèles envoient parfois 'true' ou '3' en texte : on remet le type annoncé par le schéma."""
+    kind = spec.get("type")
+    if isinstance(value, str):
+        v = value.strip()
+        if kind == "boolean":
+            return v.lower() in ("true", "1", "oui", "yes", "vrai")
+        if kind == "integer" and re.fullmatch(r"-?\d+(\.0+)?", v):
+            return int(float(v))
+        if kind == "number" and re.fullmatch(r"-?\d+([.,]\d+)?", v):
+            return float(v.replace(",", "."))
+        if kind == "array":
+            import json
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else [parsed]
+            except ValueError:
+                return [x.strip() for x in v.split(",") if x.strip()]
+    if kind == "integer" and isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
 def execute(name: str, args: dict | None) -> Any:
     """Exécute un outil. Renvoie du texte, ou {"text":..., "image_b64":..., "media_type":...}."""
     t = TOOLS.get(name)
     if t is None:
         return f"ERREUR : outil inconnu '{name}'."
-    args = args or {}
+    args = {k: _coerce(v, t.params.get(k) or {}) for k, v in (args or {}).items() if v is not None}
+    unknown = [k for k in args if k not in t.params]
+    if unknown:
+        return f"ERREUR : paramètres inconnus pour {name} : {', '.join(unknown)}. Attendus : {', '.join(t.params) or 'aucun'}."
     missing = [r for r in t.required if r not in args]
     if missing:
         return f"ERREUR : paramètres manquants : {', '.join(missing)}."

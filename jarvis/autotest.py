@@ -193,6 +193,43 @@ def t_bloc_notes():
         tools.runtime.confirm = saved
 
 
+def t_souris():
+    need_win()
+    import pyautogui
+    from .tools import system
+    call("capture_ecran")
+    call("souris", action="deplacer", x=300, y=200)
+    x, y = pyautogui.position()
+    want = (int(300 * system.SCREEN_SCALE), int(200 * system.SCREEN_SCALE))
+    assert abs(x - want[0]) <= 2 and abs(y - want[1]) <= 2, f"souris en {x},{y}, attendu {want}"
+    call("souris", action="defiler", quantite=-2)
+    return f"pointeur placé en {x},{y} (échelle {system.SCREEN_SCALE:.2f})"
+
+
+def t_reglages():
+    need_win()
+    from .tools.system import _powershell
+    key = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+    read = lambda: _powershell(f"(Get-ItemProperty -Path '{key}').AppsUseLightTheme").strip()  # noqa: E731
+    before = read()
+    call("reglage_windows", reglage="mode_sombre", valeur="oui")
+    dark = read()
+    call("reglage_windows", reglage="mode_sombre", valeur="oui" if before == "0" else "non")
+    assert dark == "0", f"mode sombre non appliqué (valeur {dark!r})"
+    call("notification", titre="Jarvis", message="Autotest")
+    return f"mode sombre appliqué puis remis (valeur d'origine {before or 'absente'}) ; notification envoyée"
+
+
+def t_perso():
+    import datetime as dt
+    day = (dt.date.today() + dt.timedelta(days=400)).isoformat()
+    out = call("agenda", action="ajouter", titre="Autotest Jarvis", date=day, heure="09:30")
+    assert "09:30" in out
+    assert "Autotest Jarvis" in call("agenda", action="lister", date=day)
+    call("agenda", action="supprimer", titre="Autotest Jarvis")
+    return "rendez-vous ajouté, relu, supprimé"
+
+
 def t_volume():
     need_win()
     call("volume", action="niveau", niveau=30)
@@ -383,7 +420,10 @@ def run(config: dict, audio: bool = True) -> int:
     step("Presse-papiers", t_presse_papiers)
     step("Capture d'écran", t_capture)
     step("Bloc-notes : ouvrir, taper, relire, fermer", t_bloc_notes)
+    step("Souris (coordonnées de capture)", t_souris)
+    step("Réglages Windows et notification", t_reglages)
     step("Volume et touches multimédia", t_volume)
+    step("Agenda", t_perso)
     step("Réseau", t_reseau)
     step("Météo (Internet)", t_meteo, optional=True)
     step("Minuteur", t_rappels)

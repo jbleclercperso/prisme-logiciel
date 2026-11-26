@@ -55,8 +55,8 @@ async def _run(m: dict) -> None:
 
 
 def _thread(m: dict) -> None:
-    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):      # forfait, jamais l'API
-        os.environ.pop(var, None)
+    from ..brain import isolate_env
+    isolate_env()                                                   # forfait, jamais l'API
     loop = asyncio.new_event_loop()
     m["loop"] = loop
     try:

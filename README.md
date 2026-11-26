@@ -39,7 +39,7 @@ Exemples de demandes :
 - « Minuteur de dix minutes pour les pâtes », « Rappelle-moi à 17 h 30 d'appeler le garage »
 - « Retiens que l'adresse de Paul est paul@exemple.fr », « État du PC ? », « Verrouille la session »
 
-## Ce que Jarvis sait faire (50 outils)
+## Ce que Jarvis sait faire (53 outils)
 
 - **Applications** : lancer (raccourcis du menu Démarrer, applis du Store, alias de `config.yaml`), fermer, gérer les fenêtres
 - **Fichiers** : lister, lire (txt, pdf, docx…), écrire, chercher, copier, déplacer, supprimer (corbeille), ouvrir
@@ -52,6 +52,10 @@ Exemples de demandes :
 - **Réglages Windows** : luminosité, mode sombre, fond d'écran, Wi-Fi, corbeille, pages des Paramètres
 - **Logiciels** : chercher, installer, désinstaller, mettre à jour (winget)
 - **Divers** : état du réseau, téléchargement d'un fichier, zip / dézip, impression, notifications, liste de tâches
+- **Agenda, contacts, tâches** : « ajoute dentiste jeudi à 14 h 30 », « qu'est-ce que j'ai demain ? » ; il
+  prévient 15 minutes avant chaque rendez-vous
+- **Mémoire des échanges** : la conversation reprend après un redémarrage, et il retrouve dans son historique
+  ce qui a été dit ou fait les jours précédents
 - **Routines** : « quand je dis mode travail, ouvre Outlook, Chrome et mets le volume à 20 » : il retient et rejoue
 - **Mémoire** : retient durablement ce que vous lui dites (stocké dans `data/memoire.json`)
 - **Minuteurs et rappels** vocaux, conservés même si Jarvis est relancé

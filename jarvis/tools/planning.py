@@ -129,6 +129,9 @@ def start(core) -> None:
                 for item in due():
                     answer = core.ask(f"[Instruction planifiée « {item['nom']} »] {item['instruction']}")
                     core.notify(answer)
+                from .perso import agenda_due
+                for alert in agenda_due():
+                    core.notify(alert)
                 if runtime.config.get("surveillance", True):
                     for alert in _watch():
                         core.notify(alert)

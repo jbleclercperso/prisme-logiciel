@@ -26,6 +26,8 @@ def beep(freq: int = 880, ms: int = 120) -> None:
 
 def clean_for_speech(text: str) -> str:
     text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"(?im)^\s*sources?\s*:.*\Z", " ", text, flags=re.S)      # la liste des sources ne se lit pas
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)                    # [titre](lien) -> titre
     text = re.sub(r"https?://\S+", "le lien", text)
     text = re.sub(r"[*_#`>|]+", "", text)
     text = re.sub(r"^\s*[-•]\s+", "", text, flags=re.M)

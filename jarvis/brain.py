@@ -25,6 +25,9 @@ une ou deux phrases suffisent pour confirmer une action. Pas de listes à puces,
 d'URL lues en entier. Si l'utilisateur demande un contenu long (un texte, un résumé détaillé), propose de \
 l'écrire dans un fichier ou de le taper à l'écran plutôt que de tout réciter.
 
+Quand tu cherches sur Internet, donne la réponse et cite la source en trois mots au plus (« selon \
+python.org ») : jamais de liste de sources ni de liens, sauf si l'utilisateur les demande.
+
 Tu agis réellement sur l'ordinateur grâce à tes outils : agis d'abord, puis rends compte de ce qui a été \
 fait. N'affirme jamais qu'une action est faite sans avoir reçu le résultat de l'outil ; si un outil échoue, \
 dis-le simplement et propose une alternative. Quand une demande nécessite plusieurs étapes, enchaîne-les \
@@ -38,6 +41,10 @@ l'intention la plus probable (noms de logiciels, de fichiers ou de personnes éc
 Pour agir dans un logiciel sans outil dédié, pilote-le comme un humain : capture_ecran pour voir, puis \
 souris, raccourci_clavier et taper_texte, et une nouvelle capture pour vérifier le résultat. Préfère toujours \
 un outil direct ou un raccourci clavier quand il existe : c'est plus rapide et plus fiable que la souris.
+
+Tu tiens son agenda, son carnet de contacts et sa liste de tâches avec les outils du même nom. Avant \
+d'écrire à quelqu'un dont il ne donne que le prénom, cherche l'adresse dans les contacts. Si une demande \
+fait référence à un échange passé dont tu n'as pas le souvenir, consulte l'outil historique.
 
 Si l'utilisateur définit une routine (« quand je dis mode travail, ouvre ceci et cela »), enregistre-la avec \
 memoriser, puis exécute-la quand il la demande.
@@ -248,6 +255,17 @@ class OllamaBrain(Brain):
             return f"Je n'arrive pas à joindre l'IA locale Ollama : {e}"
 
 # --------------------------------------------------------------------------- Forfait Claude
+def isolate_env() -> None:
+    """Prépare l'environnement avant de lancer Claude Code pour Jarvis.
+
+    - sans clé API : sinon l'usage serait facturé à l'API au lieu du forfait ;
+    - sans identifiant de session hérité : si Jarvis est lancé depuis un terminal Claude Code,
+      il ne doit pas écrire dans la conversation de ce terminal."""
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        os.environ.pop(var, None)
+
+
 def claude_cli() -> str | None:
     """Chemin du programme Claude Code : celui livré avec le SDK, sinon celui installé sur le PC."""
     import shutil
@@ -274,22 +292,48 @@ class ForfaitBrain(Brain):
         import threading
         import claude_agent_sdk as sdk
         self.sdk, self.asyncio = sdk, asyncio
-        # Une clé API présente dans l'environnement ferait facturer l'API au lieu du forfait.
-        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
-            os.environ.pop(var, None)
-        self.session_id = None
-        self.options = self._build_options()
+        isolate_env()
+        self.session_id = self._saved_session()
+        self.options = self._build_options(resume=self.session_id)
         self.client = None
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.asyncio.run_coroutine_threadsafe(self._connect(), self.loop)   # démarre Claude en avance
 
+    @staticmethod
+    def _session_file():
+        from . import config
+        return config.DATA / "session.json"
+
+    def _saved_session(self) -> str | None:
+        """Reprend la conversation précédente si Jarvis a été relancé il y a moins de 12 heures."""
+        import json
+        import time
+        try:
+            data = json.loads(self._session_file().read_text(encoding="utf-8"))
+            if time.time() - data["quand"] < 12 * 3600:
+                return data["id"]
+        except (OSError, ValueError, KeyError):
+            pass
+        return None
+
+    def _save_session(self) -> None:
+        import json
+        import time
+        try:
+            self._session_file().parent.mkdir(exist_ok=True)
+            self._session_file().write_text(json.dumps({"id": self.session_id, "quand": time.time()}))
+        except OSError:
+            pass
+
     def _build_options(self, resume: str | None = None):
         sdk = self.sdk
         c = self.config["cerveau"]
         web = self.BUILTINS if c.get("recherche_web", True) else []
+        import uuid
         return sdk.ClaudeAgentOptions(
             resume=resume,
+            session_id=None if resume else str(uuid.uuid4()),   # conversation propre à Jarvis
             system_prompt=self.system,
             model=c.get("modele_forfait", "sonnet"),
             effort=c.get("effort", "low"),
@@ -340,8 +384,17 @@ class ForfaitBrain(Brain):
     async def _ask(self, text: str) -> str:
         sdk = self.sdk
         if self.client is None:
-            self.client = sdk.ClaudeSDKClient(self.options)
-            await self.client.connect()
+            client = sdk.ClaudeSDKClient(self.options)
+            try:
+                await client.connect()
+            except Exception:
+                if not self.options.resume:
+                    raise
+                self.session_id = None              # conversation précédente introuvable : on repart à neuf
+                self.options = self._build_options()
+                client = sdk.ClaudeSDKClient(self.options)
+                await client.connect()
+            self.client = client
         await self.client.query(stamp(text))
         parts, final, acted = [], None, False
         async for msg in self.client.receive_response():
@@ -354,6 +407,7 @@ class ForfaitBrain(Brain):
                     parts = texts               # on ne garde que le dernier message parlé
             elif isinstance(msg, sdk.ResultMessage):
                 self.session_id = msg.session_id or self.session_id
+                self._save_session()
                 if msg.is_error:
                     final = final or self._error(f"{msg.subtype} {msg.result or ''} {msg.errors or ''}")
                 elif msg.result:
@@ -396,6 +450,10 @@ class ForfaitBrain(Brain):
     def reset(self) -> None:
         self._drop()
         self.session_id = None
+        try:
+            self._session_file().unlink()
+        except OSError:
+            pass
         self.options = self._build_options()
 
 

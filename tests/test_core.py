@@ -11,6 +11,8 @@ os.environ["HOME"] = os.environ["USERPROFILE"] = str(tmp)
 
 from jarvis import config as cfgmod  # noqa: E402
 cfgmod.DATA = tmp / "data"
+from jarvis import core as _coremod  # noqa: E402
+_coremod.DATA = tmp / "data"
 from jarvis import tools  # noqa: E402
 from jarvis.tools import extras, files, system  # noqa: E402
 extras.MEMORY_FILE = tmp / "data" / "memoire.json"
@@ -73,6 +75,45 @@ def test_confirmation_and_errors():
     assert tools.execute("inconnu", {}).startswith("ERREUR")
     assert "manquants" in tools.execute("copier", {"source": "x"})
     tools.runtime.confirm = lambda q: True
+
+
+def test_argument_coercion():
+    from jarvis.tools.registry import _coerce
+    assert _coerce("False", {"type": "boolean"}) is False and _coerce("true", {"type": "boolean"}) is True
+    assert _coerce("3", {"type": "integer"}) == 3 and _coerce(4.0, {"type": "integer"}) == 4
+    assert _coerce("a.pdf, b.pdf", {"type": "array"}) == ["a.pdf", "b.pdf"]
+    assert _coerce("30", {"type": "string"}) == "30"
+    assert "inconnus" in tools.execute("lire_memoire", {"truc": 1})
+    from jarvis.voice import clean_for_speech
+    spoken = clean_for_speech("La version est 3.15, selon python.org.\nSources : [a](https://a.fr), [b](https://b.fr)")
+    assert spoken == "La version est 3.15, selon python.org."
+    assert clean_for_speech("Voir [le site](https://x.fr) **ici**") == "Voir le site ici"
+
+
+def test_agenda_contacts_history():
+    import datetime as dt
+    from jarvis.tools import perso
+    cfgmod.DATA = tmp / "data"
+    tomorrow = dt.date.today() + dt.timedelta(days=1)
+    out = tools.execute("agenda", {"action": "ajouter", "titre": "Dentiste", "date": tomorrow.isoformat(),
+                                   "heure": "14h30", "lieu": "Lyon", "rappel_minutes": "20"})
+    assert "14:30" in out and "Lyon" in out, out
+    assert "Dentiste" in tools.execute("agenda", {"action": "lister", "date": "demain"})
+    assert "Aucun" in tools.execute("agenda", {"action": "lister", "date": "aujourd'hui"})
+    assert "Dentiste" in tools.execute("agenda", {"action": "lister", "date": "semaine"})
+    at = dt.datetime.combine(tomorrow, dt.time(14, 15))
+    assert perso.agenda_due(at.replace(hour=13)) == []
+    due = perso.agenda_due(at)
+    assert len(due) == 1 and "dans 15 minutes" in due[0] and perso.agenda_due(at) == []
+    assert "1 rendez-vous" in tools.execute("agenda", {"action": "supprimer", "titre": "dentiste"})
+    tools.execute("contacts", {"action": "ajouter", "nom": "Paul Martin", "email": "paul@exemple.fr"})
+    tools.execute("contacts", {"action": "ajouter", "nom": "paul martin", "telephone": "0601020304"})
+    found = tools.execute("contacts", {"action": "chercher", "nom": "paul"})
+    assert "paul@exemple.fr" in found and "0601020304" in found and found.count("\n") == 0
+    from jarvis.core import journal
+    journal("vous", "range la facture EDF dans Documents")
+    assert "facture EDF" in tools.execute("historique", {"recherche": "facture"})
+    assert "Rien" in tools.execute("historique", {"recherche": "xyzzy"})
 
 
 def test_powershell_blocklist():
