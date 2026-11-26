@@ -364,6 +364,9 @@ def t_fenetre():
     w.events.put(("etat", "écoute"))
     w.root.after(600, w.root.destroy)
     w.run()
+    del w
+    import gc
+    gc.collect()
     return "fenêtre affichée puis refermée"
 
 

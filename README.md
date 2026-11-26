@@ -39,7 +39,7 @@ Exemples de demandes :
 - « Minuteur de dix minutes pour les pâtes », « Rappelle-moi à 17 h 30 d'appeler le garage »
 - « Retiens que l'adresse de Paul est paul@exemple.fr », « État du PC ? », « Verrouille la session »
 
-## Ce que Jarvis sait faire (plus de 50 outils)
+## Ce que Jarvis sait faire (50 outils)
 
 - **Applications** : lancer (raccourcis du menu Démarrer, applis du Store, alias de `config.yaml`), fermer, gérer les fenêtres
 - **Fichiers** : lister, lire (txt, pdf, docx…), écrire, chercher, copier, déplacer, supprimer (corbeille), ouvrir

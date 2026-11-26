@@ -218,7 +218,7 @@ def run_app(core: Core) -> None:
         except Exception as e:
             core.emit("notification", f"La voix s'est arrêtée : {type(e).__name__}: {e}")
             return
-        window.root.after(0, window.root.destroy)       # « au revoir Jarvis » ferme aussi la fenêtre
+        window.events.put(("fermer", ""))               # « au revoir Jarvis » ferme aussi la fenêtre
 
     threading.Thread(target=voice_thread, daemon=True).start()
     window.run()

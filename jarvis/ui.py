@@ -14,7 +14,9 @@ class Window:
         self.tk, self.core, self.on_quit = tk, core, on_quit
         self.events: queue.Queue = queue.Queue()
         self.pending_confirm: queue.Queue | None = None
-        core.observers.append(lambda kind, text: self.events.put((kind, text)))
+        events = self.events                    # l'observateur ne retient pas la fenêtre elle-même
+        self._observer = lambda kind, text: events.put((kind, text))
+        core.observers.append(self._observer)
 
         root = self.root = tk.Tk()
         root.title(title)
@@ -70,6 +72,9 @@ class Window:
                 if kind == "etat":
                     self.dot.itemconfigure(self.dot_id, fill=COLORS.get(text, COLORS["repos"]))
                     self.state.configure(text={"repos": "en veille"}.get(text, text))
+                elif kind == "fermer":
+                    self.root.destroy()
+                    return
                 elif kind == "boutons":
                     self.confirm_bar.pack(fill="x", padx=12, pady=2, before=self.entry.master)
                 elif kind in ("vous", "jarvis", "outil", "notification", "question"):
@@ -117,7 +122,19 @@ class Window:
     def quit(self) -> None:
         if self.on_quit:
             self.on_quit()
-        self.root.destroy()
+        root = self.__dict__.get("root")
+        if root is not None:
+            root.destroy()
 
     def run(self) -> None:
-        self.root.mainloop()
+        """Boucle d'affichage. À la sortie, libère les objets Tk ici même, dans le fil principal :
+        s'ils étaient détruits plus tard par un autre fil, Tcl ferait planter tout le programme."""
+        import gc
+        try:
+            self.root.mainloop()
+        finally:
+            if self._observer in self.core.observers:
+                self.core.observers.remove(self._observer)
+            for name in ("dot", "state", "log", "confirm_bar", "entry", "root", "tk"):
+                self.__dict__.pop(name, None)
+            gc.collect()
