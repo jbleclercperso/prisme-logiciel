@@ -66,6 +66,9 @@ class Brain:
     def reset(self) -> None:
         raise NotImplementedError
 
+    def reload_tools(self) -> None:
+        """Appelé quand la liste des outils a changé (extension ajoutée ou retirée)."""
+
 
 # --------------------------------------------------------------------------- Claude
 FALLBACK_MODELS = ("claude-opus-5", "claude-sonnet-5-5", "claude-fable-5", "claude-mythos-5")
@@ -88,6 +91,10 @@ class ClaudeBrain(Brain):
 
     def reset(self) -> None:
         self.messages = []
+
+    def reload_tools(self) -> None:
+        extra = [t for t in self.tools if t.get("name") == "web_search"]
+        self.tools = tools.anthropic_tools() + extra
 
     def _create(self):
         kwargs = dict(
@@ -206,6 +213,9 @@ class OllamaBrain(Brain):
     def reset(self) -> None:
         self.messages = [{"role": "system", "content": self.system}]
 
+    def reload_tools(self) -> None:
+        self.tools = tools.ollama_tools()
+
     def ask(self, text: str) -> str:
         import requests
         if len(self.messages) > MAX_MESSAGES:
@@ -267,9 +277,19 @@ class ForfaitBrain(Brain):
         # Une clé API présente dans l'environnement ferait facturer l'API au lieu du forfait.
         for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
             os.environ.pop(var, None)
-        c = config["cerveau"]
+        self.session_id = None
+        self.options = self._build_options()
+        self.client = None
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        self.asyncio.run_coroutine_threadsafe(self._connect(), self.loop)   # démarre Claude en avance
+
+    def _build_options(self, resume: str | None = None):
+        sdk = self.sdk
+        c = self.config["cerveau"]
         web = self.BUILTINS if c.get("recherche_web", True) else []
-        self.options = sdk.ClaudeAgentOptions(
+        return sdk.ClaudeAgentOptions(
+            resume=resume,
             system_prompt=self.system,
             model=c.get("modele_forfait", "sonnet"),
             effort=c.get("effort", "low"),
@@ -280,10 +300,11 @@ class ForfaitBrain(Brain):
             max_turns=MAX_STEPS,
             cwd=os.path.expanduser("~"),
         )
-        self.client = None
-        self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.loop.run_forever, daemon=True).start()
-        self.asyncio.run_coroutine_threadsafe(self._connect(), self.loop)   # démarre Claude en avance
+
+    def reload_tools(self) -> None:
+        """Nouveaux outils : on relance Claude Code en reprenant la même conversation."""
+        self._drop()
+        self.options = self._build_options(resume=self.session_id)
 
     async def _connect(self) -> None:
         if self.client is None:
@@ -322,20 +343,27 @@ class ForfaitBrain(Brain):
             self.client = sdk.ClaudeSDKClient(self.options)
             await self.client.connect()
         await self.client.query(stamp(text))
-        parts, final = [], None
+        parts, final, acted = [], None, False
         async for msg in self.client.receive_response():
             if isinstance(msg, sdk.AssistantMessage):
                 if msg.error:
                     final = self._error(str(msg.error))
+                acted = acted or any(isinstance(b, sdk.ToolUseBlock) for b in msg.content)
                 texts = [b.text for b in msg.content if isinstance(b, sdk.TextBlock)]
                 if texts:
                     parts = texts               # on ne garde que le dernier message parlé
             elif isinstance(msg, sdk.ResultMessage):
+                self.session_id = msg.session_id or self.session_id
                 if msg.is_error:
                     final = final or self._error(f"{msg.subtype} {msg.result or ''} {msg.errors or ''}")
                 elif msg.result:
                     final = final or msg.result
-        return (final or " ".join(parts)).strip() or "C'est fait."
+        answer = (final or " ".join(parts)).strip()
+        if answer:
+            return answer
+        if acted:
+            return "C'est fait."
+        raise RuntimeError("aucune réponse de Claude Code")     # ne jamais annoncer un succès sans preuve
 
     @staticmethod
     def _error(detail: str) -> str:
@@ -367,6 +395,8 @@ class ForfaitBrain(Brain):
 
     def reset(self) -> None:
         self._drop()
+        self.session_id = None
+        self.options = self._build_options()
 
 
 def make_brain(config: dict, on_tool=None) -> Brain:

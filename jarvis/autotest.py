@@ -308,6 +308,39 @@ def t_parole():
     return "phrase prononcée (vérifiez que vous l'avez entendue)"
 
 
+def t_extension():
+    from .tools import extensions, registry
+    saved = tools.runtime.confirm
+    tools.runtime.confirm = lambda q: True
+    code = ('from jarvis.tools.registry import tool\n\n'
+            '@tool("autotest_double", "Double un nombre.", {"n": {"type": "integer"}}, ["n"])\n'
+            'def autotest_double(n: int) -> str:\n    return str(n * 2)\n')
+    try:
+        call("creer_extension", nom="autotest_tmp", code=code)
+        assert call("autotest_double", n=21) == "42"
+        call("extensions", action="supprimer", nom="autotest_tmp")
+        assert "autotest_double" not in tools.TOOLS
+    finally:
+        tools.runtime.confirm = saved
+        registry.dirty = False
+    return "extension créée, exécutée puis supprimée"
+
+
+def t_fenetre():
+    need_win()
+    from .ui import Window
+
+    class Fake:
+        observers: list = []
+        config = tools.runtime.config
+    w = Window(Fake(), "Jarvis")
+    w.events.put(("jarvis", "Bonjour Monsieur."))
+    w.events.put(("etat", "écoute"))
+    w.root.after(600, w.root.destroy)
+    w.run()
+    return "fenêtre affichée puis refermée"
+
+
 def run(config: dict, audio: bool = True) -> int:
     tools.runtime.config = config
     print(f"Autotest Jarvis {__version__} — Python {sys.version.split()[0]} sur {sys.platform}\n")
@@ -325,6 +358,8 @@ def run(config: dict, audio: bool = True) -> int:
     step("Réseau", t_reseau)
     step("Météo (Internet)", t_meteo, optional=True)
     step("Minuteur", t_rappels)
+    step("Extensions (outil créé à chaud)", t_extension)
+    step("Fenêtre flottante", t_fenetre)
     step("Synthèse vocale (fichier)", t_tts_fichier)
     step("Reconnaissance vocale Whisper", t_whisper)
     step("Mot de réveil « Hey Jarvis »", t_reveil)

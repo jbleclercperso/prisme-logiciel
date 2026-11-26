@@ -1,4 +1,4 @@
-"""Point d'entrée : python -m jarvis [--texte] [--diagnostic] [--micros]"""
+"""Point d'entrée : python -m jarvis [--texte] [--diagnostic] [--autotest] [--connexion] [--micros]"""
 from __future__ import annotations
 
 import argparse
@@ -6,55 +6,18 @@ import importlib
 import os
 import re
 import sys
-import unicodedata
+import threading
 
 from . import __version__, tools
-from .brain import make_brain
 from .config import load_config
+from .core import NON, OUI, Channel, Core, plain
 
-OUI = re.compile(r"\b(oui|ouais|yes|ok|okay|d'accord|vas-y|vas y|confirme|affirmatif|absolument|bien sur|fais-le|fais le)\b")
-NON = re.compile(r"\b(non|no|annule|stop|surtout pas|negatif|laisse tomber)\b")
 QUIT = re.compile(r"^(au revoir|arrete-toi|arrete toi|eteins-toi|eteins toi|quitte|quitter|exit|quit)( jarvis)?[ .!]*$")
 SLEEP = re.compile(r"^(merci|c'est tout|ce sera tout|rien|non merci|stop|silence|tais-toi)( jarvis)?[ .!]*$")
 NEW = re.compile(r"^(nouvelle conversation|oublie la conversation|on recommence)[ .!]*$")
 
 
-def plain(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
-    return s.lower().strip()
-
-
-def journal(kind: str, text: str) -> None:
-    """Trace des échanges dans data/journal.log (utile pour comprendre un raté après coup)."""
-    import time
-    from .config import DATA
-    try:
-        DATA.mkdir(exist_ok=True)
-        with open(DATA / "journal.log", "a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{kind}] {text}\n")
-    except OSError:
-        pass
-
-
-def show_tool(name: str, args: dict) -> None:
-    short = ", ".join(f"{k}={str(v)[:60]!r}" for k, v in (args or {}).items())
-    print(f"   ⚙ {name}({short})")
-    journal("outil", f"{name}({short})")
-
-
-def ask(brain, text: str) -> str:
-    journal("vous", text)
-    answer = brain.ask(text)
-    journal("jarvis", answer)
-    return answer
-
-
-def announce_missed() -> None:
-    from .tools.extras import restore_reminders
-    for item in restore_reminders():
-        tools.runtime.notify(f"Rappel manqué pendant que j'étais éteint : {item}")
-
-
+# --------------------------------------------------------------------------- compte Claude
 def _cli_env() -> dict:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)      # sinon Claude Code facturerait l'API au lieu du forfait
@@ -99,9 +62,10 @@ def diagnostic(config: dict) -> None:
     elif kind == "api":
         print(f"  Clé API : {'présente' if os.environ.get('ANTHROPIC_API_KEY') else 'ABSENTE (remplir .env)'}")
     print(f"  E-mail : {'configuré' if os.environ.get('JARVIS_EMAIL_PASSWORD') else 'non configuré (brouillons mailto)'}")
+    print(f"  Telegram : {'configuré' if os.environ.get('JARVIS_TELEGRAM_TOKEN') else 'non configuré'}")
     print(f"  Outils disponibles : {len(tools.TOOLS)}")
     mods = ["claude_agent_sdk", "psutil", "pyautogui", "pyperclip", "PIL", "pygetwindow", "send2trash", "pypdf",
-            "sounddevice", "faster_whisper", "openwakeword", "edge_tts", "pygame", "pyttsx3", "keyboard"]
+            "tkinter", "sounddevice", "faster_whisper", "openwakeword", "edge_tts", "pygame", "pyttsx3", "keyboard"]
     for m in mods:
         try:
             importlib.import_module(m)
@@ -110,12 +74,31 @@ def diagnostic(config: dict) -> None:
             print(f"  [--] {m} : {type(e).__name__}: {str(e)[:80]}")
 
 
-def run_text(config: dict, brain) -> None:
-    name = config["assistant"]["nom"]
-    tools.runtime.confirm = lambda q: bool(OUI.search(plain(input(f"   ❓ {q} (oui/non) > "))))
-    tools.runtime.notify = lambda msg: print(f"\n🔔 {name} : {msg}")
+# --------------------------------------------------------------------------- démarrage commun
+def boot(config: dict) -> Core:
+    """Crée le coeur et lance les services de fond (extensions, rappels, planning, Telegram)."""
+    from . import telegram                  # avant le coeur : déclare l'outil envoyer_sur_telephone
+    from .tools import extensions, planning
+    for err in extensions.load_all():
+        print(f"[!] {err}")
+    core = Core(config)
+    planning.start(core)
+    if telegram.start(core):
+        print("Telegram : bot actif, Jarvis est joignable depuis le téléphone.")
+    return core
+
+
+def announce_missed(core: Core) -> None:
+    from .tools.extras import restore_reminders
+    for item in restore_reminders():
+        core.notify(f"Rappel manqué pendant que j'étais éteint : {item}")
+
+
+# --------------------------------------------------------------------------- mode texte
+def run_text(core: Core) -> None:
+    name = core.config["assistant"]["nom"]
     print(f"{name} est prêt (mode texte). Tapez votre demande, ou 'quitter'.")
-    announce_missed()
+    announce_missed(core)
     while True:
         try:
             text = input("\nVous > ").strip()
@@ -126,61 +109,82 @@ def run_text(config: dict, brain) -> None:
         if QUIT.match(plain(text)):
             break
         if NEW.match(plain(text)):
-            brain.reset()
+            core.reset()
             print("Conversation réinitialisée.")
             continue
-        print(f"{name} > {ask(brain, text)}")
+        print(f"{name} > {core.ask(text)}")
 
 
-def run_voice(config: dict, brain) -> None:
-    from .voice import Listener, Speaker, beep
-    name, vcfg = config["assistant"]["nom"], config["voix"]
-    speaker = Speaker(vcfg)
-    listener = Listener(vcfg, speaker)
+# --------------------------------------------------------------------------- mode voix
+class VoiceChannel(Channel):
+    name = "voix"
 
-    def say(text: str) -> None:
-        print(f"{name} > {text}")
-        speaker.say(text)
+    def __init__(self, core: Core, speaker, listener, beep):
+        self.core, self.speaker, self.listener, self.beep = core, speaker, listener, beep
 
-    def confirm(question: str) -> bool:
-        say(question + " Oui ou non ?")
+    def say(self, text: str) -> None:
+        print(f"{self.core.config['assistant']['nom']} > {text}")
+        self.core.emit("etat", "parle")
+        self.speaker.say(text)
+        self.core.emit("etat", "repos")
+
+    def confirm(self, question: str) -> bool:
+        self.say(question + " Oui ou non ?")
         for _ in range(2):
-            beep(660)
-            answer = plain(listener.listen(start_timeout=8))
+            self.beep(660)
+            self.core.emit("etat", "écoute")
+            answer = plain(self.listener.listen(start_timeout=8))
             print(f"   (réponse : {answer or '...'})")
             if NON.search(answer):
                 return False
             if OUI.search(answer):
                 return True
-            say("Je n'ai pas compris. Oui ou non ?")
+            self.say("Je n'ai pas compris. Oui ou non ?")
         return False
 
-    tools.runtime.confirm = confirm
-    tools.runtime.notify = say
+    def notify(self, message: str) -> None:
+        self.say(message)
+
+
+def run_voice(core: Core, stop: threading.Event) -> None:
+    from .voice import Listener, Speaker, beep
+    config = core.config
+    name, vcfg = config["assistant"]["nom"], config["voix"]
+    speaker = Speaker(vcfg)
+    listener = Listener(vcfg, speaker)
+    voice = VoiceChannel(core, speaker, listener, beep)
+    core.default = voice
+    from . import telegram
+    if telegram._bot is not None:           # les messages vocaux Telegram passent par le même Whisper
+        from faster_whisper import decode_audio
+        telegram._bot.transcribe = lambda path: listener.transcribe(decode_audio(path, sampling_rate=16000))
     follow = float(vcfg.get("suivi_secondes", 6))
-    announce_missed()
-    say(f"{name} en ligne. Dites « Hey Jarvis », ou appuyez sur {vcfg.get('raccourci', 'ctrl+alt+j')}.")
+    voice.say(f"{name} en ligne. Dites « Hey Jarvis », ou appuyez sur {vcfg.get('raccourci', 'ctrl+alt+j')}.")
+    announce_missed(core)
     try:
-        while True:
+        while not stop.is_set():
             listener.wait_for_wake()
             beep(880)
             timeout = 6.0
-            while True:                     # conversation : on enchaîne sans mot de réveil
+            while not stop.is_set():        # conversation : on enchaîne sans mot de réveil
+                core.emit("etat", "écoute")
                 text = listener.listen(start_timeout=timeout)
+                core.emit("etat", "repos")
                 if not text:
                     break
                 print(f"\nVous > {text}")
                 p = plain(text)
                 if QUIT.match(p):
-                    say(f"Au revoir, {config['assistant']['appellation']}.")
+                    voice.say(f"Au revoir, {config['assistant']['appellation']}.")
+                    stop.set()
                     return
                 if SLEEP.match(p):
                     break
                 if NEW.match(p):
-                    brain.reset()
-                    say("Très bien, on repart de zéro.")
+                    core.reset()
+                    voice.say("Très bien, on repart de zéro.")
                     continue
-                say(ask(brain, text))
+                voice.say(core.ask(text, channel=voice))
                 if follow <= 0:
                     break
                 timeout = follow
@@ -192,6 +196,35 @@ def run_voice(config: dict, brain) -> None:
         listener.close()
 
 
+def run_app(core: Core) -> None:
+    """Voix + fenêtre flottante. Sans affichage possible, la voix tourne seule."""
+    stop = threading.Event()
+    window = None
+    if core.config.get("interface", True):
+        try:
+            from .ui import Window
+            window = Window(core, core.config["assistant"]["nom"], on_quit=stop.set)
+        except Exception as e:
+            print(f"[interface] fenêtre indisponible ({type(e).__name__}: {e}), Jarvis continue sans.")
+    if window is None:
+        return run_voice(core, stop)
+
+    def voice_thread() -> None:
+        try:
+            run_voice(core, stop)
+        except ImportError as e:
+            core.emit("notification", f"Voix indisponible ({e}). Tapez vos demandes dans cette fenêtre.")
+            return
+        except Exception as e:
+            core.emit("notification", f"La voix s'est arrêtée : {type(e).__name__}: {e}")
+            return
+        window.root.after(0, window.root.destroy)       # « au revoir Jarvis » ferme aussi la fenêtre
+
+    threading.Thread(target=voice_thread, daemon=True).start()
+    window.run()
+    stop.set()
+
+
 def main() -> None:
     if sys.platform == "win32":
         for stream in (sys.stdout, sys.stderr):
@@ -200,7 +233,7 @@ def main() -> None:
             except Exception:
                 pass
     ap = argparse.ArgumentParser(prog="jarvis", description="Jarvis, assistant vocal pour Windows")
-    ap.add_argument("--texte", action="store_true", help="mode clavier (sans micro)")
+    ap.add_argument("--texte", action="store_true", help="mode clavier dans la console (sans micro)")
     ap.add_argument("--diagnostic", action="store_true", help="vérifie l'installation")
     ap.add_argument("--connexion", action="store_true", help="connecte Jarvis à votre compte Claude (forfait)")
     ap.add_argument("--autotest", action="store_true", help="teste chaque fonction sur ce PC et écrit un rapport")
@@ -224,20 +257,19 @@ def main() -> None:
     if config["cerveau"]["fournisseur"] == "forfait" and not logged_in():
         login()
     try:
-        brain = make_brain(config, on_tool=show_tool)
+        core = boot(config)
     except RuntimeError as e:
         sys.exit(f"\n[!] {e}")
     if args.commande:
-        tools.runtime.confirm = lambda q: bool(OUI.search(plain(input(f"   ❓ {q} (oui/non) > "))))
-        return print(brain.ask(args.commande))
+        return print(core.ask(args.commande))
     if args.texte:
-        return run_text(config, brain)
+        return run_text(core)
     try:
-        run_voice(config, brain)
+        run_app(core)
     except ImportError as e:
         print(f"\n[!] Module voix manquant ({e}). Relancez install.bat, ou utilisez Jarvis-texte.bat.")
         print("    Passage en mode texte.\n")
-        run_text(config, brain)
+        run_text(core)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,14 @@ voix:
   silence_fin: 1.0             # secondes de silence qui terminent votre phrase
   micro: null                  # null = micro par defaut, sinon numero (voir: python -m jarvis --micros)
 
+interface: true                # petite fenetre flottante (etat, echanges, saisie clavier)
+surveillance: true             # previent si la batterie est faible ou un disque presque plein
+
+missions:                      # travaux longs confies a un agent de fond
+  modele: sonnet               # sonnet | opus | haiku
+  terminal: false              # true = l'agent peut aussi lancer des commandes (plus puissant, moins encadre)
+  etapes_max: 80
+
 securite:
   confirmations: true          # demander "oui/non" avant : suppression, e-mail, PowerShell, extinction
 

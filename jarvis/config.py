@@ -34,6 +34,9 @@ DEFAULTS = {
         "micro": None,
     },
     "securite": {"confirmations": True},
+    "interface": True,
+    "surveillance": True,
+    "missions": {"modele": "sonnet", "terminal": False, "etapes_max": 80},
     "applications": {},
 }
 

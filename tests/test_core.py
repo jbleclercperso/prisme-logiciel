@@ -204,6 +204,115 @@ def test_forfait_is_default_and_wraps_all_tools():
     assert "connecté" in brain._error("authentication_failed") and "forfait" in brain._error("rate_limit")
 
 
+def test_extensions_hot_load():
+    from jarvis.tools import extensions, registry
+    extensions.EXT_DIR = tmp / "extensions"
+    assert extensions.load_all() == []
+    code = ('from jarvis.tools.registry import tool\n'
+            '@tool("triple", "Triple.", {"n": {"type": "integer"}}, ["n"])\n'
+            'def triple(n):\n    return str(n * 3)\n')
+    assert "installée" in tools.execute("creer_extension", {"nom": "Calcul", "code": code})
+    assert registry.dirty and tools.execute("triple", {"n": 4}) == "12"
+    assert tools.execute("creer_extension", {"nom": "x", "code": "def ("}).startswith("ERREUR")
+    assert tools.execute("creer_extension", {"nom": "y", "code": "raise ValueError('boum')"}).startswith("ERREUR")
+    assert not (tmp / "extensions" / "y.py").exists()
+    full = ('from jarvis.tools.registry import tool\n'
+            '@tool("carre", "Carré.", {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]})\n'
+            'def carre(n):\n    return str(n * n)\n')
+    assert "installée" in tools.execute("creer_extension", {"nom": "carre", "code": full})   # schéma complet déplié
+    assert tools.TOOLS["carre"].params == {"n": {"type": "integer"}} and tools.TOOLS["carre"].required == ["n"]
+    bad = 'from jarvis.tools.registry import tool\n@tool("k o", "x", {"n": "entier"})\ndef k(n):\n    return ""\n'
+    assert tools.execute("creer_extension", {"nom": "bad", "code": bad}).startswith("ERREUR")
+    tools.execute("extensions", {"action": "supprimer", "nom": "carre"})
+    assert "triple" in tools.execute("extensions", {"action": "lister"})
+    tools.execute("extensions", {"action": "supprimer", "nom": "calcul"})
+    assert "triple" not in tools.TOOLS
+    registry.dirty = False
+
+
+def test_planning_due():
+    import datetime as dt
+    from jarvis.tools import planning
+    cfgmod.DATA = tmp / "data"
+    out = tools.execute("planifier", {"nom": "Briefing", "heure": "8h05", "jours": "en semaine",
+                                      "instruction": "Donne la météo."})
+    assert "08:05" in out and "lundi" in out and "samedi" not in out
+    monday = dt.datetime(2026, 11, 23, 8, 6)
+    assert planning.due(monday.replace(minute=4)) == []
+    assert [i["nom"] for i in planning.due(monday)] == ["Briefing"]
+    assert planning.due(monday) == []                                   # une seule fois par jour
+    assert planning.due(dt.datetime(2026, 11, 28, 8, 6)) == []          # samedi
+    assert planning.due(dt.datetime(2026, 11, 24, 9, 30)) == []         # trop tard : on ne rattrape pas
+    assert "1 planification" in tools.execute("planning", {"action": "supprimer", "nom": "brief"})
+
+
+class FakeBrain:
+    def __init__(self): self.asked, self.reloaded = [], 0
+    def ask(self, text): self.asked.append(text); return "réponse à " + text
+    def reset(self): pass
+    def reload_tools(self): self.reloaded += 1
+
+
+def make_core():
+    from jarvis import core as coremod
+    from jarvis.tools import registry
+    saved = coremod.make_brain
+    coremod.make_brain = lambda config, on_tool=None: FakeBrain()
+    try:
+        return coremod.Core(CONFIG)
+    finally:
+        coremod.make_brain = saved
+
+
+def test_core_channels_and_reload():
+    from jarvis.core import Channel
+    from jarvis.tools import registry
+    core = make_core()
+    seen = []
+    core.observers.append(lambda k, t: seen.append((k, t)))
+
+    class Chan(Channel):
+        def __init__(self): self.q, self.n = [], []
+        def confirm(self, question): self.q.append(question); return True
+        def notify(self, message): self.n.append(message)
+    main, other = Chan(), Chan()
+    core.default = main
+    registry.dirty = True
+    assert core.ask("bonjour") == "réponse à bonjour" and core.brain.reloaded == 1 and not registry.dirty
+    assert ("vous", "bonjour") in seen and ("jarvis", "réponse à bonjour") in seen
+    core.channel = other                         # pendant une demande venue d'un autre canal
+    assert tools.runtime.confirm("ok ?") and other.q == ["ok ?"] and main.q == []
+    core.channel = None
+    core.extra_notifiers.append(other)
+    tools.runtime.notify("ding")
+    assert main.n == ["ding"] and other.n == ["ding"]
+
+
+def test_telegram_bot():
+    from jarvis import telegram
+    core = make_core()
+    bot = telegram.TelegramBot(core, "TOKEN", "")
+    sent = []
+    bot.call = lambda method, **kw: sent.append((method, kw)) or {}
+    bot.handle({"chat": {"id": 42}, "text": "salut"})
+    assert "42" in sent[-1][1]["text"] and core.brain.asked == []        # pas encore appairé
+    bot.chat_id = "42"
+    bot.handle({"chat": {"id": 999}, "text": "intrus"})                   # inconnu : ignoré
+    assert core.brain.asked == []
+    bot._answer("ouvre chrome")
+    assert core.brain.asked == ["ouvre chrome"] and sent[-1][1]["text"] == "réponse à ouvre chrome"
+    import threading
+    res = []
+    t = threading.Thread(target=lambda: res.append(bot.confirm("Supprimer ?")))
+    t.start()
+    bot.waiting.wait(2)
+    bot.handle({"chat": {"id": 42}, "text": "Oui vas-y"})
+    t.join(3)
+    assert res == [True]
+    telegram._bot = None
+    assert tools.execute("envoyer_sur_telephone", {"message": "x"}).startswith("ERREUR")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

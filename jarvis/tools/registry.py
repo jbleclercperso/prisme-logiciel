@@ -1,6 +1,7 @@
 """Registre des outils que le cerveau (Claude ou IA locale) peut appeler."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -19,18 +20,34 @@ class Tool:
 class Runtime:
     """Ponts vers l'interface (voix ou texte), renseignés au démarrage."""
     config: dict = field(default_factory=dict)
+    core: Any = None                # le coeur de Jarvis (jarvis.core.Core), pour les outils qui en ont besoin
     confirm: Callable[[str], bool] = lambda question: True
     notify: Callable[[str], None] = print
 
 
 TOOLS: dict[str, Tool] = {}
 runtime = Runtime()
+dirty = False           # passe à True quand un outil est ajouté ou retiré en cours de route
 
 
 def tool(name: str, description: str, params: dict | None = None,
          required: list | None = None, confirm: Callable[[dict], str] | None = None):
+    props, req = dict(params or {}), list(required or [])
+    if props.get("type") == "object" and isinstance(props.get("properties"), dict):
+        req = req or list(props.get("required") or [])      # schéma JSON complet fourni : on le déplie
+        props = props["properties"]
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,60}", name or ""):
+        raise ValueError(f"nom d'outil invalide : {name!r} (lettres, chiffres et _ uniquement)")
+    for key, spec in props.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"outil {name} : le paramètre '{key}' doit être décrit par un dictionnaire "
+                             "JSON Schema, par exemple {\"type\": \"string\"}")
+    missing = [r for r in req if r not in props]
+    if missing:
+        raise ValueError(f"outil {name} : paramètres obligatoires non déclarés : {missing}")
+
     def deco(func):
-        TOOLS[name] = Tool(name, description, params or {}, required or [], func, confirm)
+        TOOLS[name] = Tool(name, description, props, req, func, confirm)
         return func
     return deco
 
