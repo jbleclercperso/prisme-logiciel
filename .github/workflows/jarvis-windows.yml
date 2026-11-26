@@ -3,6 +3,8 @@ on:
   push:
     branches: ["ccr-**"]
   workflow_dispatch:
+permissions:
+  contents: write
 concurrency:
   group: jarvis-windows
   cancel-in-progress: true
@@ -39,12 +41,19 @@ jobs:
         run: python -m jarvis --autotest --sans-audio
       - name: Aperçu de l'interface
         if: always()
-        run: python outils/apercu_interface.py apercu
-      - uses: actions/upload-artifact@v4
+        run: python outils/apercu_interface.py docs/apercu
+      - name: Déposer l'aperçu sur la branche
         if: always()
-        with:
-          name: apercu-interface
-          path: apercu/
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -f docs/apercu
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Aperçu de l'interface sous Windows [skip ci]"
+            git push
+          }
+          exit 0
       - name: Rapport
         if: always()
         run: if (Test-Path data/autotest.txt) { Get-Content data/autotest.txt -Encoding utf8 }
