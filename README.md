@@ -22,7 +22,8 @@ Au premier lancement vocal, Jarvis télécharge le modèle de reconnaissance voc
 |---|---|
 | Réveiller Jarvis | Dites **« Hey Jarvis »** (bip aigu), ou **Ctrl+Alt+J** |
 | Enchaîner | Après sa réponse, il écoute encore 6 s sans mot de réveil (bip court) |
-| Le faire taire / finir | « Merci Jarvis » |
+| Lui couper la parole | **Ctrl+Alt+J** pendant qu'il parle |
+| Finir l'échange | « Merci Jarvis » |
 | Repartir de zéro | « Nouvelle conversation » |
 | Le quitter | « Au revoir Jarvis » |
 
@@ -38,7 +39,7 @@ Exemples de demandes :
 - « Minuteur de dix minutes pour les pâtes », « Rappelle-moi à 17 h 30 d'appeler le garage »
 - « Retiens que l'adresse de Paul est paul@exemple.fr », « État du PC ? », « Verrouille la session »
 
-## Ce que Jarvis sait faire (33 outils)
+## Ce que Jarvis sait faire (42 outils)
 
 - **Applications** : lancer (raccourcis du menu Démarrer, applis du Store, alias de `config.yaml`), fermer, gérer les fenêtres
 - **Fichiers** : lister, lire (txt, pdf, docx…), écrire, chercher, copier, déplacer, supprimer (corbeille), ouvrir
@@ -46,8 +47,14 @@ Exemples de demandes :
 - **E-mail** : envoyer avec pièces jointes, lire la boîte de réception
 - **PC** : volume, lecture multimédia, capture d'écran analysée par l'IA, saisie de texte, raccourcis clavier,
   presse-papiers, état du système, verrouillage / veille / redémarrage / extinction, commandes PowerShell
+- **N'importe quel logiciel** : il regarde l'écran (capture), puis clique, fait défiler, tape et vérifie,
+  comme vous le feriez à la souris (« clique sur Envoyer », « coche la case en bas »)
+- **Réglages Windows** : luminosité, mode sombre, fond d'écran, Wi-Fi, corbeille, pages des Paramètres
+- **Logiciels** : chercher, installer, désinstaller, mettre à jour (winget)
+- **Divers** : état du réseau, téléchargement d'un fichier, zip / dézip, impression, notifications, liste de tâches
+- **Routines** : « quand je dis mode travail, ouvre Outlook, Chrome et mets le volume à 20 » : il retient et rejoue
 - **Mémoire** : retient durablement ce que vous lui dites (stocké dans `data/memoire.json`)
-- **Minuteurs et rappels** vocaux
+- **Minuteurs et rappels** vocaux, conservés même si Jarvis est relancé
 
 ## Sécurité
 
@@ -91,6 +98,10 @@ Double-cliquer sur `demarrage-auto.bat`.
 - Jarvis puise dans le même quota que vos autres usages de Claude : forfait épuisé, il le dit et reprend
   quand le quota se recharge (ou passez sur `haiku`, ou sur Ollama).
 
+- **`Autotest.bat`** : teste une à une toutes les fonctions sur votre PC (Claude, fichiers, applications,
+  clavier, capture, voix, micro, haut-parleur) et écrit le rapport `data/autotest.txt`. À lancer en premier
+  si quelque chose cloche ; le rapport dit exactement quoi.
+- `data/journal.log` garde la trace de ce que Jarvis a entendu, fait et répondu.
 - `python -m jarvis --diagnostic` : état de l'installation. `python -m jarvis --micros` : liste des micros
   (reportez le numéro dans `voix.micro`).
 - Le raccourci Ctrl+Alt+J ne répond pas dans une fenêtre lancée en administrateur : lancez Jarvis en administrateur aussi.
