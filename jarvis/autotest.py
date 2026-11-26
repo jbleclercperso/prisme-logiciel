@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -389,22 +390,41 @@ def t_navigateur():
     return f"formulaire rempli et validé dans {cfg.get('canal', 'msedge')}"
 
 
-def t_fenetre():
-    need_win()
-    from .ui import Window
+def t_interface():
+    import urllib.request
+    from .hud import Hud, find_browser
 
-    class Fake:
+    class FakeCore:
         observers: list = []
         config = tools.runtime.config
-    w = Window(Fake(), "Jarvis")
-    w.events.put(("jarvis", "Bonjour Monsieur."))
-    w.events.put(("etat", "écoute"))
-    w.root.after(600, w.root.destroy)
-    w.run()
-    del w
-    import gc
-    gc.collect()
-    return "fenêtre affichée puis refermée"
+        asked: list = []
+
+        def ask(self, text, channel=None):
+            self.asked.append(text)
+
+    core = FakeCore()
+    hud = Hud(core)
+    try:
+        page = urllib.request.urlopen(hud.url, timeout=10).read().decode("utf-8")
+        assert "orb" in page and "Jarvis" in page
+        status = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{hud.port}/etat?t={hud.token}", timeout=10).read())
+        assert "cpu" in status and "agenda" in status
+        req = urllib.request.Request(f"http://127.0.0.1:{hud.port}/ask?t={hud.token}",
+                                     data=json.dumps({"text": "bonjour"}).encode(), method="POST")
+        urllib.request.urlopen(req, timeout=10).read()
+        time.sleep(0.3)
+        assert core.asked == ["bonjour"], core.asked
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{hud.port}/etat?t=faux", timeout=10)
+            raise AssertionError("une requête sans le bon jeton a été acceptée")
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+    finally:
+        hud.server.shutdown()
+    browser = find_browser()
+    if IS_WIN and not browser:
+        raise RuntimeError("ni Edge ni Chrome trouvé pour afficher la fenêtre")
+    return f"page servie, commande reçue, accès sans jeton refusé ; fenêtre via {browser}"
 
 
 def run(config: dict, audio: bool = True) -> int:
@@ -428,7 +448,7 @@ def run(config: dict, audio: bool = True) -> int:
     step("Météo (Internet)", t_meteo, optional=True)
     step("Minuteur", t_rappels)
     step("Extensions (outil créé à chaud)", t_extension)
-    step("Fenêtre flottante", t_fenetre)
+    step("Interface animée", t_interface)
     step("Navigateur piloté (formulaire)", t_navigateur)
     step("Synthèse vocale (fichier)", t_tts_fichier)
     step("Reconnaissance vocale Whisper", t_whisper)

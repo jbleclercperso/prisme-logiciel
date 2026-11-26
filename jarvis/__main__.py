@@ -10,9 +10,8 @@ import threading
 
 from . import __version__, tools
 from .config import load_config
-from .core import NON, OUI, Channel, Core, plain
+from .core import NON, OUI, QUIT, Channel, Core, plain
 
-QUIT = re.compile(r"^(au revoir|arrete-toi|arrete toi|eteins-toi|eteins toi|quitte|quitter|exit|quit)( jarvis)?[ .!]*$")
 SLEEP = re.compile(r"^(merci|c'est tout|ce sera tout|rien|non merci|stop|silence|tais-toi)( jarvis)?[ .!]*$")
 NEW = re.compile(r"^(nouvelle conversation|oublie la conversation|on recommence)[ .!]*$")
 
@@ -65,7 +64,7 @@ def diagnostic(config: dict) -> None:
     print(f"  Telegram : {'configuré' if os.environ.get('JARVIS_TELEGRAM_TOKEN') else 'non configuré'}")
     print(f"  Outils disponibles : {len(tools.TOOLS)}")
     mods = ["claude_agent_sdk", "psutil", "pyautogui", "pyperclip", "PIL", "pygetwindow", "send2trash", "pypdf",
-            "tkinter", "sounddevice", "faster_whisper", "openwakeword", "edge_tts", "pygame", "pyttsx3", "keyboard"]
+            "playwright", "sounddevice", "faster_whisper", "openwakeword", "edge_tts", "pygame", "pyttsx3", "keyboard"]
     for m in mods:
         try:
             importlib.import_module(m)
@@ -146,7 +145,7 @@ class VoiceChannel(Channel):
         self.say(message)
 
 
-def run_voice(core: Core, stop: threading.Event) -> None:
+def run_voice(core: Core, stop: threading.Event, hud=None) -> None:
     from .voice import Listener, Speaker, beep
     config = core.config
     name, vcfg = config["assistant"]["nom"], config["voix"]
@@ -154,6 +153,9 @@ def run_voice(core: Core, stop: threading.Event) -> None:
     listener = Listener(vcfg, speaker)
     voice = VoiceChannel(core, speaker, listener, beep)
     core.default = voice
+    if hud is not None:                     # bouton micro et animation du coeur lumineux
+        hud.on_mic = listener._on_hotkey
+        listener.on_level = lambda v: hud.publish("niveau", f"{v:.2f}")
     from . import telegram
     if telegram._bot is not None:           # les messages vocaux Telegram passent par le même Whisper
         from .voice import decode_file
@@ -197,32 +199,25 @@ def run_voice(core: Core, stop: threading.Event) -> None:
 
 
 def run_app(core: Core) -> None:
-    """Voix + fenêtre flottante. Sans affichage possible, la voix tourne seule."""
+    """Voix + interface animée. Si la voix est indisponible, l'interface reste utilisable au clavier."""
     stop = threading.Event()
-    window = None
+    hud = None
     if core.config.get("interface", True):
         try:
-            from .ui import Window
-            window = Window(core, core.config["assistant"]["nom"], on_quit=stop.set)
+            from .hud import Hud
+            hud = Hud(core)
+            hud.on_quit = lambda: os._exit(0)
+            hud.open_window()
+            print(f"Interface : {hud.url}")
         except Exception as e:
-            print(f"[interface] fenêtre indisponible ({type(e).__name__}: {e}), Jarvis continue sans.")
-    if window is None:
-        return run_voice(core, stop)
-
-    def voice_thread() -> None:
-        try:
-            run_voice(core, stop)
-        except ImportError as e:
-            core.emit("notification", f"Voix indisponible ({e}). Tapez vos demandes dans cette fenêtre.")
-            return
-        except Exception as e:
-            core.emit("notification", f"La voix s'est arrêtée : {type(e).__name__}: {e}")
-            return
-        window.events.put(("fermer", ""))               # « au revoir Jarvis » ferme aussi la fenêtre
-
-    threading.Thread(target=voice_thread, daemon=True).start()
-    window.run()
-    stop.set()
+            print(f"[interface] indisponible ({type(e).__name__}: {e}), Jarvis continue sans.")
+    try:
+        run_voice(core, stop, hud)
+    except ImportError as e:
+        if hud is None:
+            raise
+        core.emit("notification", f"Voix indisponible ({e}). Écrivez vos demandes dans cette fenêtre.")
+        stop.wait()
 
 
 def main() -> None:

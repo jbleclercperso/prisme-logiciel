@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis</title>
+<style>
+  :root {
+    --bg: #050b14; --panel: rgba(13, 27, 46, .72); --line: rgba(94, 200, 255, .18);
+    --ink: #d9ecff; --muted: #6f8fb0; --accent: #5ec8ff; --accent2: #7df9ff;
+    --ok: #4ade80; --warn: #fbbf24; --talk: #c084fc; --bad: #f87171;
+    --state: var(--accent);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background:
+      radial-gradient(900px 600px at 50% 18%, rgba(40, 110, 190, .22), transparent 70%),
+      linear-gradient(rgba(94,200,255,.035) 1px, transparent 1px) 0 0 / 100% 28px,
+      linear-gradient(90deg, rgba(94,200,255,.035) 1px, transparent 1px) 0 0 / 28px 100%,
+      var(--bg);
+    color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden; user-select: none;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 4px; }
+  .brand { letter-spacing: .42em; font-weight: 600; font-size: 13px; color: var(--accent2); text-shadow: 0 0 12px rgba(94,200,255,.6); }
+  .clock { text-align: right; font-variant-numeric: tabular-nums; }
+  .clock b { display: block; font-size: 20px; font-weight: 300; letter-spacing: .06em; }
+  .clock span { color: var(--muted); font-size: 11px; text-transform: capitalize; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 10px; padding: 0 14px 10px; }
+  .core { display: flex; flex-direction: column; align-items: center; }
+  .orbwrap { position: relative; width: min(300px, 62vw); aspect-ratio: 1; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .state { margin-top: -6px; font-size: 12px; letter-spacing: .34em; text-transform: uppercase; color: var(--state); text-shadow: 0 0 10px var(--state); transition: color .3s; }
+  .action { height: 18px; margin-top: 4px; font-size: 11.5px; color: var(--muted); font-family: Consolas, "Cascadia Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 92vw; }
+  .gauges { display: flex; gap: 18px; margin-top: 8px; }
+  .gauge { width: 74px; text-align: center; font-size: 10.5px; color: var(--muted); letter-spacing: .12em; }
+  .gauge i { display: block; height: 3px; border-radius: 3px; background: rgba(94,200,255,.14); margin: 5px 0 4px; overflow: hidden; }
+  .gauge i u { display: block; height: 100%; width: 0; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .6s; }
+  .gauge b { color: var(--ink); font-weight: 500; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .side { min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; backdrop-filter: blur(6px); }
+  .panel h2 { margin: 0; padding: 8px 12px 0; font-size: 10px; letter-spacing: .28em; color: var(--muted); font-weight: 600; }
+  #log { flex: 1; min-height: 80px; overflow-y: auto; padding: 8px 12px 10px; user-select: text; scrollbar-width: thin; scrollbar-color: rgba(94,200,255,.3) transparent; }
+  .msg { margin: 7px 0; animation: in .25s ease-out; }
+  .msg small { display: block; font-size: 9.5px; letter-spacing: .2em; color: var(--muted); margin-bottom: 1px; }
+  .msg.vous { text-align: right; } .msg.vous p { color: #9fd8ff; }
+  .msg p { margin: 0; display: inline-block; max-width: 92%; text-align: left; }
+  .msg.jarvis p { border-left: 2px solid var(--accent); padding-left: 9px; }
+  .msg.notification p { color: var(--warn); } .msg.notification small { color: var(--warn); }
+  .msg.outil { margin: 2px 0; } .msg.outil p { font: 11px Consolas, monospace; color: var(--muted); }
+  @keyframes in { from { opacity: 0; transform: translateY(6px); } }
+  .info { display: none; padding-bottom: 8px; }
+  .info ul { margin: 4px 0 0; padding: 0 12px; list-style: none; font-size: 12.5px; }
+  .info li { padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .info li b { color: var(--accent2); font-weight: 500; margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .info .none { color: var(--muted); }
+  footer { display: flex; gap: 8px; padding: 0 14px 14px; }
+  input { flex: 1; background: rgba(13,27,46,.9); border: 1px solid var(--line); color: var(--ink); border-radius: 22px; padding: 10px 16px; font: inherit; outline: none; }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(94,200,255,.12); }
+  button { font: inherit; color: var(--ink); background: rgba(13,27,46,.9); border: 1px solid var(--line); border-radius: 22px; padding: 0 14px; cursor: pointer; transition: .15s; }
+  button:hover { border-color: var(--accent); color: var(--accent2); }
+  #mic { width: 42px; padding: 0; font-size: 17px; }
+  #confirm { position: fixed; inset: 0; background: rgba(2,6,12,.72); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 5; }
+  #confirm .box { background: #0b1a2c; border: 1px solid var(--warn); border-radius: 14px; padding: 18px; max-width: 420px; box-shadow: 0 0 40px rgba(251,191,36,.18); }
+  #confirm h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .28em; color: var(--warn); }
+  #confirm p { margin: 0 0 16px; user-select: text; }
+  #confirm .row { display: flex; gap: 10px; justify-content: flex-end; }
+  #confirm button { padding: 8px 22px; } #yes { border-color: var(--ok); color: var(--ok); }
+  #off { position: fixed; top: 0; left: 0; right: 0; padding: 3px; text-align: center; font-size: 11px; background: var(--bad); color: #1a0505; display: none; z-index: 6; }
+  @media (min-width: 860px) {
+    main { grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.15fr); grid-template-rows: 1fr; padding: 6px 22px 14px; gap: 22px; }
+    .core { justify-content: center; } .orbwrap { width: min(420px, 38vw); }
+    .info { display: block; } footer { padding: 0 22px 18px; }
+  }
+  @media (min-height: 900px) { .info { display: block; } }
+</style>
+</head>
+<body>
+<div id="off">Connexion à Jarvis perdue — nouvelle tentative…</div>
+<header>
+  <div class="brand" id="brand">J A R V I S</div>
+  <div class="clock"><b id="time">--:--</b><span id="date"></span></div>
+</header>
+<main>
+  <section class="core">
+    <div class="orbwrap"><canvas id="orb"></canvas></div>
+    <div class="state" id="state">en veille</div>
+    <div class="action" id="action">&nbsp;</div>
+    <div class="gauges">
+      <div class="gauge">PROCESSEUR<i><u id="g-cpu"></u></i><b id="v-cpu">–</b></div>
+      <div class="gauge">MÉMOIRE<i><u id="g-ram"></u></i><b id="v-ram">–</b></div>
+      <div class="gauge" id="bat">BATTERIE<i><u id="g-bat"></u></i><b id="v-bat">–</b></div>
+    </div>
+  </section>
+  <section class="side">
+    <div class="panel" id="log"></div>
+    <div class="panel info"><h2>AGENDA</h2><ul id="agenda"><li class="none">Rien de prévu</li></ul></div>
+    <div class="panel info"><h2>À FAIRE</h2><ul id="taches"><li class="none">Aucune tâche</li></ul></div>
+  </section>
+</main>
+<footer>
+  <button id="mic" title="Parler (comme « Hey Jarvis »)">🎙</button>
+  <input id="in" placeholder="Écrire à Jarvis…" autocomplete="off">
+  <button id="send">Envoyer</button>
+</footer>
+<div id="confirm"><div class="box"><h3>CONFIRMATION</h3><p id="q"></p>
+  <div class="row"><button id="no">Non</button><button id="yes">Oui</button></div></div></div>
+<script>
+const T = new URLSearchParams(location.search).get('t') || '';
+const $ = id => document.getElementById(id);
+const post = (path, body) => fetch(path + '?t=' + T, {method: 'POST', body: JSON.stringify(body || {})});
+const STATES = {
+  repos:      {label: 'en veille',   color: '#5ec8ff', speed: .35, energy: .18},
+  'écoute':   {label: 'je vous écoute', color: '#4ade80', speed: .9, energy: .55},
+  'réfléchit':{label: 'je réfléchis', color: '#fbbf24', speed: 2.4, energy: .5},
+  parle:      {label: 'je parle',    color: '#c084fc', speed: 1.2, energy: .8},
+};
+let state = 'repos', level = 0, smooth = 0, energy = .18, hue = [94, 200, 255];
+
+function setState(s) {
+  state = STATES[s] ? s : 'repos';
+  $('state').textContent = STATES[state].label;
+  document.documentElement.style.setProperty('--state', STATES[state].color);
+}
+function add(kind, text) {
+  const names = {vous: 'VOUS', jarvis: 'JARVIS', notification: 'NOTIFICATION', outil: ''};
+  if (kind === 'outil') { $('action').textContent = '⚙ ' + text; }
+  const el = document.createElement('div');
+  el.className = 'msg ' + kind;
+  if (names[kind]) { const s = document.createElement('small'); s.textContent = names[kind]; el.appendChild(s); }
+  const p = document.createElement('p'); p.textContent = (kind === 'outil' ? '⚙ ' : '') + text; el.appendChild(p);
+  const log = $('log'); log.appendChild(el);
+  while (log.children.length > 200) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+function onEvent(kind, text) {
+  if (kind === 'etat') { setState(text); if (text === 'repos') $('action').innerHTML = '&nbsp;'; }
+  else if (kind === 'niveau') level = Math.min(1, parseFloat(text) || 0);
+  else if (kind === 'confirmer') { $('q').textContent = text; $('confirm').style.display = 'flex'; $('yes').focus(); }
+  else if (kind === 'confirme') $('confirm').style.display = 'none';
+  else if (['vous', 'jarvis', 'notification', 'outil'].includes(kind)) add(kind, text);
+}
+function connect() {
+  const es = new EventSource('/events?t=' + T);
+  es.onopen = () => { $('off').style.display = 'none'; };
+  es.onmessage = e => { const d = JSON.parse(e.data); onEvent(d.k, d.t); };
+  es.onerror = () => { $('off').style.display = 'block'; es.close(); setTimeout(connect, 2000); };
+}
+function send() { const v = $('in').value.trim(); if (!v) return; $('in').value = ''; post('/ask', {text: v}); }
+$('send').onclick = send;
+$('in').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+$('mic').onclick = () => post('/micro');
+$('yes').onclick = () => { $('confirm').style.display = 'none'; post('/confirm', {ok: true}); };
+$('no').onclick = () => { $('confirm').style.display = 'none'; post('/confirm', {ok: false}); };
+
+function tick() {
+  const n = new Date();
+  $('time').textContent = n.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'});
+  $('date').textContent = n.toLocaleDateString('fr-FR', {weekday: 'long', day: 'numeric', month: 'long'});
+}
+function list(id, items, empty) {
+  const ul = $(id); ul.textContent = '';
+  if (!items || !items.length) { const li = document.createElement('li'); li.className = 'none'; li.textContent = empty; ul.appendChild(li); return; }
+  for (const it of items.slice(0, 4)) {
+    const li = document.createElement('li');
+    if (it.quand) { const b = document.createElement('b'); b.textContent = it.quand; li.appendChild(b); }
+    li.appendChild(document.createTextNode(it.texte)); ul.appendChild(li);
+  }
+}
+async function refresh() {
+  try {
+    const d = await (await fetch('/etat?t=' + T)).json();
+    const g = (k, v) => { $('g-' + k).style.width = v + '%'; $('v-' + k).textContent = Math.round(v) + ' %'; };
+    g('cpu', d.cpu); g('ram', d.ram);
+    if (d.batterie == null) $('bat').style.display = 'none'; else g('bat', d.batterie);
+    list('agenda', d.agenda, 'Rien de prévu'); list('taches', d.taches, 'Aucune tâche');
+    if (d.nom) { $('brand').textContent = d.nom.toUpperCase().split('').join(' '); document.title = d.nom; }
+  } catch (e) {}
+}
+
+// --- le coeur lumineux -------------------------------------------------
+const cv = $('orb'), cx = cv.getContext('2d');
+function resize() { const r = cv.getBoundingClientRect(), k = devicePixelRatio || 1; cv.width = r.width * k; cv.height = r.height * k; }
+addEventListener('resize', resize); resize();
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+let t0 = performance.now(), phase = 0;
+function draw(now) {
+  const dt = Math.min(.05, (now - t0) / 1000); t0 = now;
+  const S = STATES[state], target = hex(S.color);
+  hue = hue.map((v, i) => v + (target[i] - v) * Math.min(1, dt * 5));
+  const voice = state === 'parle' ? .35 + .3 * Math.abs(Math.sin(now / 90) * Math.sin(now / 53)) : level;
+  smooth += (voice - smooth) * Math.min(1, dt * 12);
+  energy += (S.energy + smooth * .6 - energy) * Math.min(1, dt * 4);
+  phase += dt * S.speed;
+  const w = cv.width, h = cv.height, c = w / 2, R = w * .33, col = a => `rgba(${hue.map(Math.round).join(',')},${a})`;
+  cx.clearRect(0, 0, w, h);
+  let g = cx.createRadialGradient(c, c, R * .2, c, c, R * 1.5);
+  g.addColorStop(0, col(.20 + energy * .25)); g.addColorStop(1, col(0));
+  cx.fillStyle = g; cx.fillRect(0, 0, w, h);
+  cx.lineCap = 'round';
+  const rings = [[1.22, 1, 3, .5, .16], [1.08, 2.2, 2, -.8, .5], [.93, 5, 4, 1.3, .32], [.74, 1.5, 6, -2.1, .7]];
+  for (const [r, lw, n, sp, a] of rings) {
+    cx.lineWidth = lw * w / 300; cx.strokeStyle = col(a + energy * .3);
+    const seg = Math.PI * 2 / n, rad = R * r * (1 + smooth * .06);
+    for (let i = 0; i < n; i++) { cx.beginPath(); cx.arc(c, c, rad, phase * sp + i * seg, phase * sp + i * seg + seg * .72); cx.stroke(); }
+  }
+  cx.strokeStyle = col(.55);
+  for (let i = 0; i < 72; i++) {
+    const a = i / 72 * Math.PI * 2, big = i % 6 === 0, r1 = R * 1.32, r2 = r1 + (big ? 7 : 3) * w / 300;
+    cx.lineWidth = (big ? 1.4 : .8) * w / 300; cx.globalAlpha = big ? .8 : .35;
+    cx.beginPath(); cx.moveTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1); cx.lineTo(c + Math.cos(a) * r2, c + Math.sin(a) * r2); cx.stroke();
+  }
+  cx.globalAlpha = 1;
+  const bars = 64, base = R * .5;
+  cx.lineWidth = 2.2 * w / 300;
+  for (let i = 0; i < bars; i++) {
+    const a = i / bars * Math.PI * 2 - Math.PI / 2;
+    const n = .5 + .5 * Math.sin(i * .9 + now / 140) * Math.sin(i * .37 - now / 210);
+    const len = R * (.03 + (energy * .1 + smooth * .32) * n);
+    cx.strokeStyle = col(.35 + n * .55);
+    cx.beginPath(); cx.moveTo(c + Math.cos(a) * base, c + Math.sin(a) * base);
+    cx.lineTo(c + Math.cos(a) * (base + len), c + Math.sin(a) * (base + len)); cx.stroke();
+  }
+  const pulse = 1 + Math.sin(now / (state === 'repos' ? 900 : 380)) * .05 + smooth * .18;
+  g = cx.createRadialGradient(c, c, 0, c, c, R * .42 * pulse);
+  g.addColorStop(0, 'rgba(255,255,255,.95)'); g.addColorStop(.25, col(.9)); g.addColorStop(1, col(0));
+  cx.fillStyle = g; cx.beginPath(); cx.arc(c, c, R * .42 * pulse, 0, Math.PI * 2); cx.fill();
+  level *= .9;
+  requestAnimationFrame(draw);
+}
+tick(); setInterval(tick, 5000); refresh(); setInterval(refresh, 4000); connect(); requestAnimationFrame(draw);
+</script>
+</body>
+</html>

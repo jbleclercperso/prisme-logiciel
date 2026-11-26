@@ -12,6 +12,7 @@ from .config import DATA
 from .tools import registry
 
 OUI = re.compile(r"\b(oui|ouais|yes|ok|okay|d'accord|vas-y|vas y|confirme|affirmatif|absolument|bien sur|fais-le|fais le)\b")
+QUIT = re.compile(r"^(au revoir|arrete-toi|arrete toi|eteins-toi|eteins toi|quitte|quitter|exit|quit)( jarvis)?[ .!]*$")
 NON = re.compile(r"\b(non|no|annule|stop|surtout pas|negatif|laisse tomber)\b")
 
 

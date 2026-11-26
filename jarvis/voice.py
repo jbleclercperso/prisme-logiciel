@@ -111,6 +111,8 @@ class Listener:
         self.noise = 150.0                  # niveau de bruit ambiant (RMS int16), ajusté en continu
         self.hotkey = threading.Event()
         self.pending = ""                   # demande déjà entendue avec le mot de réveil
+        self.on_level = None                # fonction(niveau 0..1) : anime l'interface
+        self._loud = False
         self.stream = sd.InputStream(samplerate=SR, channels=1, dtype="int16", blocksize=FRAME,
                                      device=cfg.get("micro"), callback=self._callback)
         self.stream.start()
@@ -146,7 +148,16 @@ class Listener:
 
     def _callback(self, indata, frames, t, status) -> None:
         if not self.speaker.speaking.is_set():      # Jarvis ne s'écoute pas parler
-            self.q.put(indata[:, 0].copy())
+            frame = indata[:, 0].copy()
+            self.q.put(frame)
+            if self.on_level is not None:
+                level = min(1.0, max(0.0, self._rms(frame) - self.noise) / 2500.0)
+                if level > 0.04 or self._loud:      # rien à envoyer pendant les silences
+                    self._loud = level > 0.04
+                    try:
+                        self.on_level(level)
+                    except Exception:
+                        pass
 
     def _flush(self) -> None:
         while not self.q.empty():
