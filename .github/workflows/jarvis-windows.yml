@@ -1,0 +1,31 @@
+name: Jarvis - test Windows
+on:
+  push:
+    branches: ["ccr-**"]
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      JARVIS_CI: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installation (comme install.bat)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-voix.txt
+      - name: Tests unitaires
+        run: python tests/test_core.py
+      - name: Diagnostic
+        run: python -m jarvis --diagnostic
+      - name: Autotest sur Windows
+        run: python -m jarvis --autotest --sans-audio
+      - name: Rapport
+        if: always()
+        run: if (Test-Path data/autotest.txt) { Get-Content data/autotest.txt -Encoding utf8 }

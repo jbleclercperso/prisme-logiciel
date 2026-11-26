@@ -1,0 +1,51 @@
+# ---------------- Configuration de Jarvis ----------------
+assistant:
+  nom: Jarvis
+  appellation: Monsieur        # comment Jarvis s'adresse a vous
+  langue: fr
+
+cerveau:
+  fournisseur: forfait         # forfait (abonnement Claude, sans cle API) | ollama (IA locale) | api
+  modele_forfait: sonnet       # sonnet (equilibre) | haiku (rapide, consomme peu) | opus (le plus fort, consomme plus)
+  effort: low                  # low | medium | high  (low = reponses plus rapides)
+  recherche_web: true          # Jarvis peut chercher sur Internet
+  # Uniquement si fournisseur: api (facturation a l'usage, cle ANTHROPIC_API_KEY dans .env)
+  modele: claude-opus-5-5
+  # IA locale (Ollama, gratuit, hors-ligne) : https://ollama.com
+  ollama_url: http://localhost:11434
+  ollama_modele: qwen3:14b     # modele avec "tool calling" ; a choisir selon votre RAM/GPU
+
+voix:
+  mot_reveil: hey_jarvis       # dites "Hey Jarvis"
+  seuil_reveil: 0.5            # 0.3 = plus sensible, 0.7 = moins de faux declenchements
+  raccourci: ctrl+alt+j        # raccourci clavier pour parler sans mot de reveil
+  whisper_modele: small        # tiny | base | small | medium | large-v3 (plus gros = plus precis, plus lent)
+  whisper_device: cpu          # cpu | cuda (carte NVIDIA)
+  tts: edge                    # edge (voix neuronale, Internet) | sapi (voix Windows hors-ligne)
+  tts_voix: fr-FR-HenriNeural  # autres : fr-FR-DeniseNeural, fr-FR-RemyMultilingualNeural
+  tts_vitesse: "+8%"
+  suivi_secondes: 6            # apres une reponse, Jarvis ecoute encore X s sans mot de reveil
+  silence_fin: 1.0             # secondes de silence qui terminent votre phrase
+  micro: null                  # null = micro par defaut, sinon numero (voir: python -m jarvis --micros)
+
+securite:
+  confirmations: true          # demander "oui/non" avant : suppression, e-mail, PowerShell, extinction
+
+# Noms parles -> programme, dossier ou URL a lancer
+applications:
+  chrome: chrome
+  navigateur: chrome
+  edge: msedge
+  firefox: firefox
+  bloc-notes: notepad
+  calculatrice: calc
+  explorateur: explorer
+  terminal: wt
+  parametres: "ms-settings:"
+  word: winword
+  excel: excel
+  powerpoint: powerpnt
+  outlook: outlook
+  gmail: https://mail.google.com
+  youtube: https://www.youtube.com
+  whatsapp: https://web.whatsapp.com

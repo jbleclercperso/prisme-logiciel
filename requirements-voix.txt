@@ -1,0 +1,10 @@
+# Voix (micro, reconnaissance, synthese)
+numpy
+sounddevice>=0.4.6
+faster-whisper>=1.0
+openwakeword>=0.6
+onnxruntime
+edge-tts>=6.1
+pygame>=2.5
+pyttsx3>=2.90
+keyboard>=0.13.5
