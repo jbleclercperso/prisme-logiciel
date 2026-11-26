@@ -60,10 +60,10 @@ def _fmt(e: dict) -> str:
        "date": {"type": "string", "description": "AAAA-MM-JJ. Pour 'lister' : aujourd'hui, demain, semaine, tout ou une date."},
        "heure": {"type": "string", "description": "HH:MM, vide pour toute la journée."},
        "lieu": {"type": "string"},
-       "rappel_minutes": {"type": "integer", "description": "Prévenir combien de minutes avant (défaut 15)."}},
+       "rappel_minutes": {"type": "integer", "description": "Prévenir combien de minutes avant (défaut 60, soit une heure)."}},
       ["action"])
 def agenda(action: str, titre: str = "", date: str = "", heure: str = "", lieu: str = "",
-           rappel_minutes: int = 15) -> str:
+           rappel_minutes: int = 60) -> str:
     with _lock:
         items = _read("agenda.json")
         if action == "ajouter":
@@ -106,10 +106,11 @@ def agenda_due(now: dt.datetime | None = None) -> list[str]:
             if e.get("prevenu") or not e.get("heure"):
                 continue
             when = dt.datetime.fromisoformat(f"{e['date']}T{e['heure']}")
-            if when - dt.timedelta(minutes=e.get("rappel", 15)) <= now < when + dt.timedelta(minutes=5):
+            if when - dt.timedelta(minutes=e.get("rappel", 60)) <= now < when + dt.timedelta(minutes=5):
                 e["prevenu"] = True
                 minutes = max(0, int((when - now).total_seconds() // 60))
-                delay = f"dans {minutes} minutes" if minutes else "maintenant"
+                delay = ("maintenant" if not minutes else "dans une heure" if 55 <= minutes <= 65
+                         else f"dans {minutes} minutes")
                 out.append(f"Rendez-vous {delay} : {e['titre']}" + (f", {e['lieu']}" if e.get("lieu") else "") + ".")
         if out:
             _write("agenda.json", items)

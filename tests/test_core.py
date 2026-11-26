@@ -102,9 +102,13 @@ def test_agenda_contacts_history():
     assert "Aucun" in tools.execute("agenda", {"action": "lister", "date": "aujourd'hui"})
     assert "Dentiste" in tools.execute("agenda", {"action": "lister", "date": "semaine"})
     at = dt.datetime.combine(tomorrow, dt.time(14, 15))
-    assert perso.agenda_due(at.replace(hour=13)) == []
+    assert perso.agenda_due(at.replace(hour=13)) == []          # rappel demandé à 20 minutes : trop tôt
     due = perso.agenda_due(at)
     assert len(due) == 1 and "dans 15 minutes" in due[0] and perso.agenda_due(at) == []
+    tools.execute("agenda", {"action": "ajouter", "titre": "Garage", "date": tomorrow.isoformat(), "heure": "17:00"})
+    assert perso.agenda_due(dt.datetime.combine(tomorrow, dt.time(15, 30))) == []
+    hour = perso.agenda_due(dt.datetime.combine(tomorrow, dt.time(16, 0)))     # par défaut : une heure avant
+    assert len(hour) == 1 and "dans une heure" in hour[0] and "Garage" in hour[0]
     assert "1 rendez-vous" in tools.execute("agenda", {"action": "supprimer", "titre": "dentiste"})
     tools.execute("contacts", {"action": "ajouter", "nom": "Paul Martin", "email": "paul@exemple.fr"})
     tools.execute("contacts", {"action": "ajouter", "nom": "paul martin", "telephone": "0601020304"})

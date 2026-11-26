@@ -37,6 +37,14 @@ jobs:
         run: python -m jarvis --diagnostic
       - name: Autotest sur Windows
         run: python -m jarvis --autotest --sans-audio
+      - name: Aperçu de l'interface
+        if: always()
+        run: python outils/apercu_interface.py apercu
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apercu-interface
+          path: apercu/
       - name: Rapport
         if: always()
         run: if (Test-Path data/autotest.txt) { Get-Content data/autotest.txt -Encoding utf8 }

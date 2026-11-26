@@ -58,7 +58,7 @@ class Core:
 
     # --- événements -------------------------------------------------------
     def emit(self, kind: str, text: str) -> None:
-        if kind != "etat":
+        if kind not in ("etat", "niveau"):
             journal(kind, text)
         for obs in list(self.observers):
             try:

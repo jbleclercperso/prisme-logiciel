@@ -28,7 +28,10 @@ voix:
   silence_fin: 1.0             # secondes de silence qui terminent votre phrase
   micro: null                  # null = micro par defaut, sinon numero (voir: python -m jarvis --micros)
 
-interface: true                # fenetre Jarvis animee (coeur lumineux, echanges, jauges, agenda)
+interface: discret             # discret (petit point qui se deplie) | tableau (grande fenetre) | aucune
+interface_options:
+  veille: point                # point = petit point visible dans le coin ; cache = rien tant qu'on ne l'appelle pas
+  delai_repli: 7               # secondes avant qu'il se replie apres une reponse
 surveillance: true             # previent si la batterie est faible ou un disque presque plein
 
 navigateur:                    # navigateur pilote par Jarvis (profil a part, sessions conservees)

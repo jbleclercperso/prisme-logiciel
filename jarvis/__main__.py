@@ -145,7 +145,7 @@ class VoiceChannel(Channel):
         self.say(message)
 
 
-def run_voice(core: Core, stop: threading.Event, hud=None) -> None:
+def run_voice(core: Core, stop: threading.Event, ui=None) -> None:
     from .voice import Listener, Speaker, beep
     config = core.config
     name, vcfg = config["assistant"]["nom"], config["voix"]
@@ -153,9 +153,9 @@ def run_voice(core: Core, stop: threading.Event, hud=None) -> None:
     listener = Listener(vcfg, speaker)
     voice = VoiceChannel(core, speaker, listener, beep)
     core.default = voice
-    if hud is not None:                     # bouton micro et animation du coeur lumineux
-        hud.on_mic = listener._on_hotkey
-        listener.on_level = lambda v: hud.publish("niveau", f"{v:.2f}")
+    listener.on_level = lambda v: core.emit("niveau", f"{v:.2f}")       # anime l'interface
+    if ui is not None:
+        ui.on_mic = listener._on_hotkey
     from . import telegram
     if telegram._bot is not None:           # les messages vocaux Telegram passent par le même Whisper
         from .voice import decode_file
@@ -199,25 +199,44 @@ def run_voice(core: Core, stop: threading.Event, hud=None) -> None:
 
 
 def run_app(core: Core) -> None:
-    """Voix + interface animée. Si la voix est indisponible, l'interface reste utilisable au clavier."""
+    """Voix + interface. Si la voix est indisponible, l'interface reste utilisable au clavier."""
     stop = threading.Event()
-    hud = None
-    if core.config.get("interface", True):
-        try:
+    mode = core.config.get("interface", "discret")
+    mode = {True: "discret", False: "aucune", None: "aucune"}.get(mode, mode)
+    widget = hud = None
+    try:
+        if mode == "discret":
+            from .widget import Widget
+            widget = Widget(core, on_quit=stop.set)
+        elif mode == "tableau":
             from .hud import Hud
             hud = Hud(core)
             hud.on_quit = lambda: os._exit(0)
             hud.open_window()
-            print(f"Interface : {hud.url}")
+    except Exception as e:
+        print(f"[interface] indisponible ({type(e).__name__}: {e}), Jarvis continue sans.")
+
+    if widget is None:
+        try:
+            return run_voice(core, stop, hud)
+        except ImportError as e:
+            if hud is None:
+                raise
+            core.emit("notification", f"Voix indisponible ({e}). Écrivez vos demandes dans cette fenêtre.")
+            return stop.wait()
+
+    def voice_thread() -> None:                 # la fenêtre garde le fil principal, la voix tourne à côté
+        try:
+            run_voice(core, stop, widget)
+        except ImportError as e:
+            return core.emit("notification", f"Voix indisponible ({e}). Cliquez sur le point pour écrire.")
         except Exception as e:
-            print(f"[interface] indisponible ({type(e).__name__}: {e}), Jarvis continue sans.")
-    try:
-        run_voice(core, stop, hud)
-    except ImportError as e:
-        if hud is None:
-            raise
-        core.emit("notification", f"Voix indisponible ({e}). Écrivez vos demandes dans cette fenêtre.")
-        stop.wait()
+            return core.emit("notification", f"La voix s'est arrêtée : {type(e).__name__}: {e}")
+        widget.events.put(("fermer", ""))       # « au revoir Jarvis » ferme aussi l'interface
+
+    threading.Thread(target=voice_thread, daemon=True).start()
+    widget.run()
+    stop.set()
 
 
 def main() -> None:

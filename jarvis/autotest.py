@@ -390,6 +390,28 @@ def t_navigateur():
     return f"formulaire rempli et validé dans {cfg.get('canal', 'msedge')}"
 
 
+def t_widget():
+    need_win()
+    import gc
+    from .widget import Widget
+
+    class FakeCore:
+        observers: list = []
+        config = tools.runtime.config
+
+    w = Widget(FakeCore())
+    for item in (("etat", "écoute"), ("vous", "bonjour"), ("jarvis", "Bonjour Monsieur."), ("etat", "repos")):
+        w.events.put(item)
+    size = []
+    w.root.after(500, lambda: size.append(w.size))
+    w.root.after(700, w.root.destroy)
+    w.run()
+    del w
+    gc.collect()
+    assert size and size[0][0] <= 400 and size[0][1] <= 160, f"interface trop grande : {size}"
+    return f"dépliée en {size[0][0]}x{size[0][1]} pixels puis refermée"
+
+
 def t_interface():
     import urllib.request
     from .hud import Hud, find_browser
@@ -448,7 +470,8 @@ def run(config: dict, audio: bool = True) -> int:
     step("Météo (Internet)", t_meteo, optional=True)
     step("Minuteur", t_rappels)
     step("Extensions (outil créé à chaud)", t_extension)
-    step("Interface animée", t_interface)
+    step("Interface discrète", t_widget)
+    step("Interface tableau", t_interface)
     step("Navigateur piloté (formulaire)", t_navigateur)
     step("Synthèse vocale (fichier)", t_tts_fichier)
     step("Reconnaissance vocale Whisper", t_whisper)

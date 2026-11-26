@@ -53,7 +53,7 @@ Exemples de demandes :
 - **Logiciels** : chercher, installer, désinstaller, mettre à jour (winget)
 - **Divers** : état du réseau, téléchargement d'un fichier, zip / dézip, impression, notifications, liste de tâches
 - **Agenda, contacts, tâches** : « ajoute dentiste jeudi à 14 h 30 », « qu'est-ce que j'ai demain ? » ; il
-  prévient 15 minutes avant chaque rendez-vous
+  prévient une heure avant chaque rendez-vous
 - **Mémoire des échanges** : la conversation reprend après un redémarrage, et il retrouve dans son historique
   ce qui a été dit ou fait les jours précédents
 - **Routines** : « quand je dis mode travail, ouvre Outlook, Chrome et mets le volume à 20 » : il retient et rejoue
