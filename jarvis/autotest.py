@@ -57,7 +57,7 @@ def t_imports():
     import importlib
     missing = []
     for m in ["claude_agent_sdk", "psutil", "pyautogui", "pyperclip", "PIL", "pygetwindow", "send2trash",
-              "pypdf", "numpy", "sounddevice", "faster_whisper", "openwakeword", "onnxruntime", "edge_tts",
+              "pypdf", "playwright", "numpy", "sounddevice", "faster_whisper", "openwakeword", "onnxruntime", "edge_tts",
               "pygame", "pyttsx3", "keyboard"]:
         try:
             importlib.import_module(m)
@@ -327,6 +327,31 @@ def t_extension():
     return "extension créée, exécutée puis supprimée"
 
 
+def t_navigateur():
+    d = Path(tempfile.mkdtemp(prefix="jarvis_web_"))
+    (d / "page.html").write_text(
+        "<html><head><meta charset='utf-8'><title>Essai</title></head><body><form onsubmit=\""
+        "document.body.innerHTML='<h1>Bonjour '+document.getElementById('n').value+'</h1>';return false\">"
+        "<input id='n' placeholder='Votre nom'><button type='submit'>Valider</button></form></body></html>",
+        encoding="utf-8")
+    cfg = tools.runtime.config.setdefault("navigateur", {})
+    saved = cfg.get("invisible", False)
+    cfg["invisible"] = True
+    try:
+        page = call("navigateur", action="ouvrir", url=(d / "page.html").as_uri())
+        assert "[1] champ" in page and "Valider" in page, page
+        call("navigateur", action="remplir", numero=1, valeur="Jarvis")
+        call("navigateur", action="cliquer", texte="Valider")
+        after = call("navigateur", action="lire")
+        assert "Bonjour Jarvis" in after, after
+        shot = call("navigateur", action="capture")
+        assert len(shot["image_b64"]) > 500
+    finally:
+        cfg["invisible"] = saved
+        tools.execute("navigateur", {"action": "fermer"})
+    return f"formulaire rempli et validé dans {cfg.get('canal', 'msedge')}"
+
+
 def t_fenetre():
     need_win()
     from .ui import Window
@@ -361,6 +386,7 @@ def run(config: dict, audio: bool = True) -> int:
     step("Minuteur", t_rappels)
     step("Extensions (outil créé à chaud)", t_extension)
     step("Fenêtre flottante", t_fenetre)
+    step("Navigateur piloté (formulaire)", t_navigateur)
     step("Synthèse vocale (fichier)", t_tts_fichier)
     step("Reconnaissance vocale Whisper", t_whisper)
     step("Mot de réveil « Hey Jarvis »", t_reveil)

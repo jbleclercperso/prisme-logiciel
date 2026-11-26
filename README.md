@@ -39,7 +39,7 @@ Exemples de demandes :
 - « Minuteur de dix minutes pour les pâtes », « Rappelle-moi à 17 h 30 d'appeler le garage »
 - « Retiens que l'adresse de Paul est paul@exemple.fr », « État du PC ? », « Verrouille la session »
 
-## Ce que Jarvis sait faire (42 outils)
+## Ce que Jarvis sait faire (plus de 50 outils)
 
 - **Applications** : lancer (raccourcis du menu Démarrer, applis du Store, alias de `config.yaml`), fermer, gérer les fenêtres
 - **Fichiers** : lister, lire (txt, pdf, docx…), écrire, chercher, copier, déplacer, supprimer (corbeille), ouvrir
@@ -55,6 +55,35 @@ Exemples de demandes :
 - **Routines** : « quand je dis mode travail, ouvre Outlook, Chrome et mets le volume à 20 » : il retient et rejoue
 - **Mémoire** : retient durablement ce que vous lui dites (stocké dans `data/memoire.json`)
 - **Minuteurs et rappels** vocaux, conservés même si Jarvis est relancé
+
+## L'écosystème autour de la voix
+
+**Fenêtre flottante.** En bas à droite : pastille d'état (veille, écoute, réflexion, parole), fil des échanges
+et des actions, champ pour taper une demande, boutons Oui / Non pour les confirmations.
+Désactivable avec `interface: false`.
+
+**Depuis le téléphone (Telegram).** Écrivez ou dictez un message vocal à votre bot privé : Jarvis agit sur le
+PC et répond. « Envoie-moi le PDF du bureau », « fais une capture d'écran et envoie-la-moi », « éteins le PC ».
+Un fichier envoyé au bot arrive dans Téléchargements. Seul votre identifiant est accepté. Réglage en deux
+lignes dans `.env` (explications dans le fichier).
+
+**Navigateur piloté.** « Va sur le site de la SNCF et cherche un Paris-Lyon vendredi matin », « remplis ce
+formulaire avec mes coordonnées ». Jarvis ouvre Edge (ou Chrome), lit la page, clique et saisit. Il utilise
+un profil à part : connectez-vous une fois à vos sites dans cette fenêtre, les sessions sont gardées.
+
+**Missions de fond.** « Lance une mission : compare les cinq meilleurs PC portables à 32 Go et fais-moi un
+rapport ». Un second Claude travaille seul dans `Documents/Jarvis/missions/<nom>` (recherche web, lecture et
+écriture de fichiers), Jarvis reste disponible et annonce la fin. `missions.terminal: true` l'autorise en
+plus à lancer des commandes.
+
+**Planning.** « Tous les matins de semaine à 8 h, donne-moi la météo, mes mails non lus et mes tâches. »
+« À 18 h, ferme Outlook et lance Spotify. » Jarvis exécute l'instruction à l'heure dite.
+
+**Surveillance.** Il prévient si la batterie passe sous 15 % ou si un disque est presque plein.
+
+**Extensions.** « Crée-toi un outil pour … » : Jarvis écrit lui-même un module Python dans `extensions/`,
+le charge à chaud et s'en sert dès la demande suivante. Vous pouvez aussi y déposer vos propres modules
+(modèle dans `extensions/_exemple.py.txt`).
 
 ## Sécurité
 
@@ -111,9 +140,14 @@ Double-cliquer sur `demarrage-auto.bat`.
 
 ```
 jarvis/
-  __main__.py     boucle principale (voix ou texte), confirmations orales
+  __main__.py     démarrage, boucle vocale, mode texte
+  core.py         coeur partagé : un seul cerveau pour la voix, la fenêtre, Telegram et le planning
+  ui.py           fenêtre flottante
+  telegram.py     pilotage depuis le téléphone
+  autotest.py     autotest complet du PC
   brain.py        cerveau : forfait Claude (Claude Agent SDK), Ollama, ou API ; mêmes outils
   voice.py        micro → mot de réveil (openWakeWord) → faster-whisper → edge-tts / SAPI
-  tools/          les outils ; en ajouter un = une fonction décorée par @tool
+  tools/          les outils (fichiers, système, PC, missions, planning, extensions...)
+extensions/       vos outils supplémentaires, chargés au démarrage
 tests/test_core.py   tests hors-ligne : python tests/test_core.py
 ```

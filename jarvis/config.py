@@ -35,6 +35,7 @@ DEFAULTS = {
     },
     "securite": {"confirmations": True},
     "interface": True,
+    "navigateur": {"canal": "msedge", "invisible": False},
     "surveillance": True,
     "missions": {"modele": "sonnet", "terminal": False, "etapes_max": 80},
     "applications": {},
