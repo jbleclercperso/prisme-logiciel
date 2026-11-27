@@ -153,6 +153,70 @@ def chercher_fichiers(motif: str, dossier: str = "maison") -> str:
     return f"{len(found)} résultat(s) :\n" + "\n".join(found[:50])
 
 
+@tool("taille_dossiers",
+      "Mesure la place prise sur le disque : classe les sous-dossiers (et gros fichiers) d'un dossier du plus "
+      "volumineux au moins volumineux, avec leur taille et leur part du disque. Pour « qu'est-ce qui prend "
+      "de la place », « mes plus gros dossiers ».",
+      {"chemin": {"type": "string", "description": "Dossier à analyser (défaut : maison). " + PATH_DOC},
+       "nombre": {"type": "integer", "description": "Combien d'éléments renvoyer (défaut 10)."}})
+def taille_dossiers(chemin: str = "maison", nombre: int = 10) -> str:
+    base = resolve(chemin)
+    if not base.is_dir():
+        return f"ERREUR : dossier introuvable : {base}"
+    deadline = time.time() + 45
+    partial = False
+
+    def size_of(path: str) -> int:
+        nonlocal partial
+        total, stack = 0, [path]
+        while stack:
+            if time.time() > deadline:
+                partial = True
+                break
+            try:
+                with os.scandir(stack.pop()) as it:
+                    for e in it:
+                        try:
+                            if e.is_symlink():
+                                continue
+                            if e.is_dir(follow_symlinks=False):
+                                stack.append(e.path)
+                            else:
+                                total += e.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        return total
+
+    items = []
+    try:
+        entries = list(os.scandir(base))
+    except OSError as e:
+        return f"ERREUR : accès refusé à {base} : {e}"
+    for e in entries:
+        try:
+            if e.is_symlink():
+                continue
+            if e.is_dir(follow_symlinks=False):
+                items.append((size_of(e.path), e.name, "dossier"))
+            else:
+                items.append((e.stat().st_size, e.name, "fichier"))
+        except OSError:
+            pass
+    items.sort(reverse=True)
+    disk = shutil.disk_usage(base)
+    total = sum(s for s, _, _ in items)
+    lines = [f"Analyse de {base} : {_size(total)} au total, soit {total / disk.total * 100:.1f} % du disque "
+             f"(disque : {_size(disk.total)}, dont {_size(disk.free)} libres)."]
+    for s, name, kind in items[:max(1, int(nombre))]:
+        lines.append(f"- {name} ({kind}) : {_size(s)} — {s / disk.total * 100:.1f} % du disque, "
+                     f"{s / total * 100 if total else 0:.0f} % de ce dossier")
+    if partial:
+        lines.append("(Analyse interrompue au bout de 45 secondes : les tailles sont des minimums.)")
+    return "\n".join(lines)
+
+
 @tool("copier", "Copie un fichier ou un dossier (transfert vers clé USB, autre dossier, etc.).",
       {"source": {"type": "string", "description": PATH_DOC},
        "destination": {"type": "string", "description": "Dossier ou chemin cible."}},

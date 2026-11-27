@@ -231,6 +231,18 @@ def t_perso():
     return "rendez-vous ajouté, relu, supprimé"
 
 
+def t_fiche():
+    out = call("taille_dossiers", chemin="maison", nombre=3)
+    os.environ["JARVIS_SANS_FENETRE"] = "1"
+    try:
+        res = call("afficher", titre="Autotest", html="<table><tr><th>Dossier</th><th class='num'>Taille</th></tr>"
+                   "<tr><td class='nom'>Essai</td><td class='num'>1 Go</td></tr></table>")
+    finally:
+        os.environ.pop("JARVIS_SANS_FENETRE", None)
+    from .hud import find_browser
+    return f"{out.splitlines()[0][:90]} ; fiche écrite ({'Edge/Chrome trouvé' if find_browser() else 'navigateur par défaut'})"
+
+
 def t_volume():
     need_win()
     call("volume", action="niveau", niveau=30)
@@ -466,6 +478,7 @@ def run(config: dict, audio: bool = True) -> int:
     step("Réglages Windows et notification", t_reglages)
     step("Volume et touches multimédia", t_volume)
     step("Agenda", t_perso)
+    step("Taille des dossiers et fiche visuelle", t_fiche)
     step("Réseau", t_reseau)
     step("Météo (Internet)", t_meteo, optional=True)
     step("Minuteur", t_rappels)
