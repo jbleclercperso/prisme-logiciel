@@ -400,16 +400,16 @@ def t_widget():
         config = tools.runtime.config
 
     w = Widget(FakeCore())
-    for item in (("etat", "écoute"), ("vous", "bonjour"), ("jarvis", "Bonjour Monsieur."), ("etat", "repos")):
+    for item in (("etat", "écoute"), ("vous", "bonjour"), ("jarvis", "Bonjour JB."), ("etat", "parle")):
         w.events.put(item)
-    size = []
-    w.root.after(500, lambda: size.append(w.size))
-    w.root.after(700, w.root.destroy)
+    seen = []
+    w.root.after(900, lambda: seen.append((w.frames, w.layer is not None)))
+    w.root.after(1000, w.root.destroy)
     w.run()
     del w
     gc.collect()
-    assert size and size[0][0] <= 400 and size[0][1] <= 160, f"interface trop grande : {size}"
-    return f"dépliée en {size[0][0]}x{size[0][1]} pixels puis refermée"
+    assert seen and seen[0][0] >= 10, f"animation trop lente ou figée : {seen}"
+    return f"{seen[0][0]} images en 0,9 s, {'transparence complète' if seen[0][1] else 'mode simple (bords nets)'}"
 
 
 def t_interface():
@@ -470,7 +470,7 @@ def run(config: dict, audio: bool = True) -> int:
     step("Météo (Internet)", t_meteo, optional=True)
     step("Minuteur", t_rappels)
     step("Extensions (outil créé à chaud)", t_extension)
-    step("Interface discrète", t_widget)
+    step("Interface (forme animée)", t_widget)
     step("Interface tableau", t_interface)
     step("Navigateur piloté (formulaire)", t_navigateur)
     step("Synthèse vocale (fichier)", t_tts_fichier)

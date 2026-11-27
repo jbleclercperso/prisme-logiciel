@@ -1,7 +1,8 @@
 # ---------------- Configuration de Jarvis ----------------
 assistant:
   nom: Jarvis
-  appellation: Monsieur        # comment Jarvis s'adresse a vous
+  appellation: JB              # comment Jarvis t'appelle
+  tutoiement: true             # true = il te tutoie ; false = il vouvoie
   langue: fr
 
 cerveau:
@@ -28,10 +29,9 @@ voix:
   silence_fin: 1.0             # secondes de silence qui terminent votre phrase
   micro: null                  # null = micro par defaut, sinon numero (voir: python -m jarvis --micros)
 
-interface: discret             # discret (petit point qui se deplie) | tableau (grande fenetre) | aucune
+interface: forme               # forme (la forme vivante dans le coin de l'ecran) | tableau (grande fenetre) | aucune
 interface_options:
-  veille: point                # point = petit point visible dans le coin ; cache = rien tant qu'on ne l'appelle pas
-  delai_repli: 7               # secondes avant qu'il se replie apres une reponse
+  delai_repli: 7               # secondes avant que la bulle de texte s'efface apres une reponse
 surveillance: true             # previent si la batterie est faible ou un disque presque plein
 
 navigateur:                    # navigateur pilote par Jarvis (profil a part, sessions conservees)

@@ -62,11 +62,11 @@ Exemples de demandes :
 
 ## L'écosystème autour de la voix
 
-**L'interface.** Une fenêtre Jarvis s'ouvre au lancement : un cœur lumineux animé qui change de couleur
-selon ce qu'il fait (bleu en veille, vert quand il vous écoute et qu'il réagit à votre voix, ambre quand il
-réfléchit, violet quand il parle), le fil des échanges, l'action en cours, les jauges du PC, l'agenda et les
-tâches. On peut aussi lui écrire, cliquer sur le micro, et répondre Oui / Non aux confirmations.
-Élargie ou en plein écran, elle passe en deux colonnes. Désactivable avec `interface: false`.
+**L'interface.** Une forme vivante dans le coin de l'écran, sur fond transparent : petite et calme au
+repos, elle grossit et passe au vert quand elle t'écoute (elle réagit à ta voix), tourne en ambre quand elle
+réfléchit, ondule en corail quand elle parle. Une bulle de texte apparaît à côté le temps de l'échange, puis
+s'efface. Un clic sur la forme ouvre un champ pour lui écrire ; clic droit pour quitter ; on la déplace à la
+souris. `interface: aucune` la désactive, `interface: tableau` affiche à la place une grande fenêtre.
 
 **Depuis le téléphone (Telegram).** Écrivez ou dictez un message vocal à votre bot privé : Jarvis agit sur le
 PC et répond. « Envoie-moi le PDF du bureau », « fais une capture d'écran et envoie-la-moi », « éteins le PC ».
@@ -151,7 +151,8 @@ pas d'analyse des captures d'écran ni de recherche Internet intégrée, et des 
 jarvis/
   __main__.py     démarrage, boucle vocale, mode texte
   core.py         coeur partagé : un seul cerveau pour la voix, la fenêtre, Telegram et le planning
-  hud.py / hud.html   l'interface animée
+  blob.py / widget.py  la forme animée et sa fenêtre transparente
+  hud.py / hud.html    la grande fenêtre (option)
   telegram.py     pilotage depuis le téléphone
   autotest.py     autotest complet du PC
   brain.py        cerveau : forfait Claude (Claude Agent SDK), Ollama, ou API ; mêmes outils

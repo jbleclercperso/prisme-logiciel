@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 
 DEFAULTS = {
-    "assistant": {"nom": "Jarvis", "appellation": "Monsieur", "langue": "fr"},
+    "assistant": {"nom": "Jarvis", "appellation": "JB", "tutoiement": True, "langue": "fr"},
     "cerveau": {
         "fournisseur": "forfait",
         "modele_forfait": "sonnet",
@@ -34,8 +34,8 @@ DEFAULTS = {
         "micro": None,
     },
     "securite": {"confirmations": True},
-    "interface": "discret",
-    "interface_options": {"veille": "point", "delai_repli": 7},
+    "interface": "forme",
+    "interface_options": {"delai_repli": 7},
     "navigateur": {"canal": "msedge", "invisible": False},
     "surveillance": True,
     "missions": {"modele": "sonnet", "terminal": False, "etapes_max": 80},

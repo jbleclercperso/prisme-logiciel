@@ -161,7 +161,7 @@ def run_voice(core: Core, stop: threading.Event, ui=None) -> None:
         from .voice import decode_file
         telegram._bot.transcribe = lambda path: listener.transcribe(decode_file(path))
     follow = float(vcfg.get("suivi_secondes", 6))
-    voice.say(f"{name} en ligne. Dites « Hey Jarvis », ou appuyez sur {vcfg.get('raccourci', 'ctrl+alt+j')}.")
+    voice.say(f"{name} en ligne.")
     announce_missed(core)
     try:
         while not stop.is_set():
@@ -202,10 +202,10 @@ def run_app(core: Core) -> None:
     """Voix + interface. Si la voix est indisponible, l'interface reste utilisable au clavier."""
     stop = threading.Event()
     mode = core.config.get("interface", "discret")
-    mode = {True: "discret", False: "aucune", None: "aucune"}.get(mode, mode)
+    mode = {True: "forme", False: "aucune", None: "aucune", "discret": "forme"}.get(mode, mode)
     widget = hud = None
     try:
-        if mode == "discret":
+        if mode == "forme":
             from .widget import Widget
             widget = Widget(core, on_quit=stop.set)
         elif mode == "tableau":

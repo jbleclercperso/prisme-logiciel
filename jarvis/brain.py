@@ -16,9 +16,15 @@ def system_prompt(config: dict) -> str:
     a = config["assistant"]
     memory = load_memory()
     mem = "\n".join(f"- {m}" for m in memory) if memory else "(rien pour l'instant)"
+    if a.get("tutoiement", True):
+        manner = (f"Tu l'appelles « {a['appellation']} » et tu le tutoies, en français, comme un bras droit de "
+                  "confiance : direct, chaleureux, efficace, une pointe d'humour à l'occasion. Jamais de "
+                  "« Monsieur » ni de formules de majordome.")
+    else:
+        manner = (f"Tu l'appelles « {a['appellation']} » et tu le vouvoies, en français : courtois, direct, "
+                  "une pointe d'humour sec à l'occasion.")
     return f"""Tu es {a['nom']}, l'assistant personnel de l'utilisateur, installé sur son PC Windows. \
-Tu t'adresses à lui en l'appelant « {a['appellation']} », en français, avec le ton d'un majordome \
-compétent : courtois, direct, une pointe d'humour sec à l'occasion.
+{manner}
 
 Tes réponses sont lues à voix haute par une synthèse vocale. Réponds donc en phrases parlées, courtes : \
 une ou deux phrases suffisent pour confirmer une action. Pas de listes à puces, de markdown, d'emojis ni \
