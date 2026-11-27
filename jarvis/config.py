@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 
 DEFAULTS = {
-    "assistant": {"nom": "Jarvis", "appellation": "JB", "tutoiement": True, "langue": "fr"},
+    "assistant": {"nom": "Jarvis", "appellation": "JB", "tutoiement": True, "genre": "feminin", "langue": "fr"},
     "cerveau": {
         "fournisseur": "forfait",
         "modele_forfait": "sonnet",
@@ -27,13 +27,13 @@ DEFAULTS = {
         "whisper_modele": "small",
         "whisper_device": "cpu",
         "tts": "edge",
-        "tts_voix": "fr-FR-HenriNeural",
+        "tts_voix": "fr-FR-DeniseNeural",
         "tts_vitesse": "+8%",
-        "suivi_secondes": 6,
+        "suivi_secondes": 5,
         "silence_fin": 1.0,
         "micro": None,
     },
-    "securite": {"confirmations": True},
+    "securite": {"confirmations": False},
     "interface": "forme",
     "interface_options": {"delai_repli": 7},
     "navigateur": {"canal": "msedge", "invisible": False},

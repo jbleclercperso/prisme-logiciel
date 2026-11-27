@@ -2,6 +2,7 @@
 assistant:
   nom: Jarvis
   appellation: JB              # comment Jarvis t'appelle
+  genre: feminin               # feminin | masculin (accords quand Jarvis parle de soi)
   tutoiement: true             # true = il te tutoie ; false = il vouvoie
   langue: fr
 
@@ -23,9 +24,9 @@ voix:
   whisper_modele: small        # tiny | base | small | medium | large-v3 (plus gros = plus precis, plus lent)
   whisper_device: cpu          # cpu | cuda (carte NVIDIA)
   tts: edge                    # edge (voix neuronale, Internet) | sapi (voix Windows hors-ligne)
-  tts_voix: fr-FR-HenriNeural  # autres : fr-FR-DeniseNeural, fr-FR-RemyMultilingualNeural
+  tts_voix: fr-FR-DeniseNeural # voix de femme ; autres : fr-FR-VivienneMultilingualNeural, fr-FR-EloiseNeural, fr-FR-HenriNeural (homme)
   tts_vitesse: "+8%"
-  suivi_secondes: 6            # apres une reponse, Jarvis ecoute encore X s sans mot de reveil
+  suivi_secondes: 5            # apres une reponse, Jarvis ecoute encore X s sans mot de reveil (0 = jamais)
   silence_fin: 1.0             # secondes de silence qui terminent votre phrase
   micro: null                  # null = micro par defaut, sinon numero (voir: python -m jarvis --micros)
 
@@ -44,7 +45,7 @@ missions:                      # travaux longs confies a un agent de fond
   etapes_max: 80
 
 securite:
-  confirmations: true          # demander "oui/non" avant : suppression, e-mail, PowerShell, extinction
+  confirmations: false         # false = Jarvis agit directement ; true = demande "oui/non" avant suppression, e-mail, PowerShell, extinction
 
 # Noms parles -> programme, dossier ou URL a lancer
 applications:

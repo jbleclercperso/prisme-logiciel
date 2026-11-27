@@ -62,7 +62,7 @@ def load_all() -> list[str]:
       {"nom": {"type": "string", "description": "Nom du module, en minuscules sans espaces (ex. 'spotify')."},
        "code": {"type": "string", "description": "Code Python complet du module."}},
       ["nom", "code"],
-      confirm=lambda a: f"Installer l'extension « {a['nom']} » que je viens d'écrire ?")
+      confirm=lambda a: f"J'installe l'extension {a['nom']} ?")
 def creer_extension(nom: str, code: str) -> str:
     nom = re.sub(r"[^a-z0-9_]", "_", nom.lower()).strip("_")
     if not nom:

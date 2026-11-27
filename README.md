@@ -91,19 +91,21 @@ plus à lancer des commandes.
 le charge à chaud et s'en sert dès la demande suivante. Vous pouvez aussi y déposer vos propres modules
 (modèle dans `extensions/_exemple.py.txt`).
 
-## Sécurité
+## Autorisations
 
-Jarvis demande **« oui ou non ? »** avant : supprimer, envoyer un e-mail, fermer un logiciel, exécuter une
-commande PowerShell, éteindre / redémarrer. Les suppressions vont à la corbeille. Une liste noire refuse les
-commandes destructrices (formatage, effacement de disque…). Pour tout désactiver : `confirmations: false`
-dans `config.yaml` (déconseillé).
+Par défaut, Jarvis **agit directement**, sans demander la permission. Deux garde-fous restent en place : les
+suppressions vont à la corbeille (récupérables), et une liste noire refuse les commandes destructrices
+(formatage, effacement de disque…). Pour qu'elle demande « oui ou non » avant de supprimer, d'envoyer un
+e-mail, de lancer une commande PowerShell ou d'éteindre le PC : `confirmations: true` dans `config.yaml`.
+Dans ce cas la question est courte à l'oral, et le détail (la commande, par exemple) est seulement affiché
+dans la bulle.
 
 ## Réglages (`config.yaml`)
 
 - `cerveau.modele_forfait` : `sonnet` (défaut), `haiku` (plus rapide, consomme très peu de forfait),
   `opus` (le plus fort, consomme davantage).
 - `cerveau.fournisseur` : `forfait` (défaut), `ollama` (IA locale), `api` (clé API payante, facultatif).
-- `voix.tts_voix` : `fr-FR-HenriNeural`, `fr-FR-DeniseNeural`, `fr-FR-RemyMultilingualNeural`…
+- `voix.tts_voix` : `fr-FR-DeniseNeural` (femme, par défaut), `fr-FR-VivienneMultilingualNeural`, `fr-FR-EloiseNeural`, `fr-FR-HenriNeural` (homme)…
 - `voix.whisper_modele` : `small` par défaut ; `medium` ou `large-v3` avec un bon PC ; `whisper_device: cuda` avec une carte NVIDIA.
 - `voix.seuil_reveil` : baissez à 0.3 si « Hey Jarvis » n'est pas détecté, montez à 0.7 s'il se déclenche seul.
 - `applications` : ajoutez vos propres noms parlés → programme, dossier ou site.

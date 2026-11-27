@@ -347,7 +347,7 @@ BLOCKED = re.compile(
       "Exécute une commande PowerShell sur le PC et renvoie sa sortie. À utiliser quand aucun autre outil "
       "ne convient (réglages Windows, réseau, installation via winget, etc.).",
       {"commande": {"type": "string"}}, ["commande"],
-      confirm=lambda a: f"Exécuter la commande PowerShell : {a['commande'][:200]} ?")
+      confirm=lambda a: ("J'exécute cette commande PowerShell ?", a["commande"][:300]))
 def executer_powershell(commande: str) -> str:
     if BLOCKED.search(commande):
         return "ERREUR : commande refusée par la sécurité de Jarvis (opération destructrice)."

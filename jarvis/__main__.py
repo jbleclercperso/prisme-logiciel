@@ -128,7 +128,7 @@ class VoiceChannel(Channel):
         self.core.emit("etat", "repos")
 
     def confirm(self, question: str) -> bool:
-        self.say(question + " Oui ou non ?")
+        self.say(question)
         for _ in range(2):
             self.beep(660)
             self.core.emit("etat", "écoute")
@@ -138,7 +138,7 @@ class VoiceChannel(Channel):
                 return False
             if OUI.search(answer):
                 return True
-            self.say("Je n'ai pas compris. Oui ou non ?")
+            self.say("Oui ou non ?")
         return False
 
     def notify(self, message: str) -> None:
@@ -170,7 +170,7 @@ def run_voice(core: Core, stop: threading.Event, ui=None) -> None:
             timeout = 6.0
             while not stop.is_set():        # conversation : on enchaîne sans mot de réveil
                 core.emit("etat", "écoute")
-                text = listener.listen(start_timeout=timeout)
+                text = listener.listen(start_timeout=timeout, strict=timeout != 6.0)
                 core.emit("etat", "repos")
                 if not text:
                     break

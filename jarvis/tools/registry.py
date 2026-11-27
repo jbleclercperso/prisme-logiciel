@@ -103,9 +103,12 @@ def execute(name: str, args: dict | None) -> Any:
     if missing:
         return f"ERREUR : paramètres manquants : {', '.join(missing)}."
     try:
-        if t.confirm and runtime.config.get("securite", {}).get("confirmations", True):
+        if t.confirm and runtime.config.get("securite", {}).get("confirmations", False):
             question = t.confirm(args)
-            if question and not runtime.confirm(question):
+            detail = ""
+            if isinstance(question, tuple):         # (question courte dite à voix haute, détail seulement affiché)
+                question, detail = question
+            if question and not (runtime.confirm(question, detail) if detail else runtime.confirm(question)):
                 return "Action annulée : l'utilisateur a refusé."
         result = t.func(**args)
         return result if result not in (None, "") else "OK"

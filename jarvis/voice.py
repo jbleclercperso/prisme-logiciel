@@ -72,10 +72,10 @@ class Speaker:
         import pyttsx3
         if self._sapi is None:
             self._sapi = pyttsx3.init()
-            for v in self._sapi.getProperty("voices"):
-                if "fr" in (v.id + v.name).lower():
-                    self._sapi.setProperty("voice", v.id)
-                    break
+            french = [v for v in self._sapi.getProperty("voices") if "fr" in (v.id + v.name).lower()]
+            women = [v for v in french if any(n in v.name.lower() for n in ("hortense", "julie", "denise", "female"))]
+            if women or french:
+                self._sapi.setProperty("voice", (women or french)[0].id)
             self._sapi.setProperty("rate", 185)
         self._sapi.say(text)
         self._sapi.runAndWait()
@@ -238,22 +238,30 @@ class Listener:
             return None
         return np.concatenate(chunks).astype("float32") / 32768.0
 
-    def transcribe(self, audio) -> str:
+    def transcribe(self, audio, strict: bool = False) -> str:
+        """Texte reconnu, ou "" si ce n'est pas de la parole nette. strict = écoute sans mot de réveil
+        (suite de conversation) : on exige une transcription sûre, sinon on ignore."""
+        if len(audio) < SR * 0.35:
+            return ""
         segments, _ = self.whisper.transcribe(
-            audio, language="fr", beam_size=5, vad_filter=True,
-            initial_prompt="Jarvis, ouvre Chrome, envoie un e-mail, mets le fichier sur le bureau.")
-        text = " ".join(s.text.strip() for s in segments if s.no_speech_prob < 0.6).strip()
-        # hallucinations classiques de Whisper sur du silence
-        if re.fullmatch(r"(sous-titres?.*|merci d'avoir regardé.*|\W*)", text, flags=re.I):
+            audio, language="fr", beam_size=5, vad_filter=True, condition_on_previous_text=False)
+        floor = -0.75 if strict else -1.1
+        kept = [s for s in segments if s.no_speech_prob < 0.5 and s.avg_logprob > floor
+                and s.compression_ratio < 2.4]
+        text = " ".join(s.text.strip() for s in kept).strip()
+        # phrases que Whisper invente sur du silence ou de la musique
+        if re.search(r"sous-titr|merci d'avoir regard|abonnez-vous|amara\.org|^\W*$", text, flags=re.I):
+            return ""
+        if strict and len(text.split()) < 2:
             return ""
         return text
 
-    def listen(self, start_timeout: float = 6.0) -> str:
+    def listen(self, start_timeout: float = 6.0, strict: bool = False) -> str:
         if self.pending:
             text, self.pending = self.pending, ""
             return text
         audio = self.record(start_timeout=start_timeout)
-        return self.transcribe(audio) if audio is not None else ""
+        return self.transcribe(audio, strict) if audio is not None else ""
 
     def close(self) -> None:
         self.stream.stop()

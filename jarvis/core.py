@@ -82,6 +82,8 @@ class Core:
                     registry.dirty = False
                     self.brain.reload_tools()
                 answer = self.brain.ask(text)
+                # la liste de liens ajoutée après une recherche web n'est ni dite ni affichée
+                answer = re.sub(r"\n\s*sources?\s*:.*\Z", "", answer, flags=re.S | re.I).strip() or answer
                 self.emit("jarvis", answer)
                 return answer
             finally:
@@ -92,8 +94,9 @@ class Core:
         with self.lock:
             self.brain.reset()
 
-    def confirm(self, question: str) -> bool:
-        self.emit("question", question)
+    def confirm(self, question: str, detail: str = "") -> bool:
+        """La question courte est dite ou affichée par le canal ; le détail n'est qu'affiché."""
+        self.emit("question", question + ("\n" + detail if detail else ""))
         return (self.channel or self.default).confirm(question)
 
     def notify(self, message: str) -> None:

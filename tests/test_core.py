@@ -22,6 +22,7 @@ pc.DATA = tmp / "data"
 from jarvis.brain import ClaudeBrain, OllamaBrain  # noqa: E402
 
 CONFIG = cfgmod.load_config()
+CONFIG["securite"]["confirmations"] = True      # les tests couvrent le mode avec confirmations
 tools.runtime.config = CONFIG
 
 
@@ -118,6 +119,28 @@ def test_agenda_contacts_history():
     journal("vous", "range la facture EDF dans Documents")
     assert "facture EDF" in tools.execute("historique", {"recherche": "facture"})
     assert "Rien" in tools.execute("historique", {"recherche": "xyzzy"})
+
+
+def test_direct_mode_and_short_question():
+    asked = []
+    tools.runtime.confirm = lambda q, detail="": asked.append((q, detail)) or False
+    out = tools.execute("executer_powershell", {"commande": "Get-ChildItem -Recurse C:\\Users | Sort Length"})
+    assert "annulée" in out and asked[0][0] == "J'exécute cette commande PowerShell ?"
+    assert "Get-ChildItem" in asked[0][1] and "Get-ChildItem" not in asked[0][0]     # jamais lue à voix haute
+    CONFIG["securite"]["confirmations"] = False
+    try:
+        asked.clear()
+        (tmp / "Documents").mkdir(exist_ok=True)
+        (tmp / "Documents" / "direct.txt").write_text("x")
+        out = tools.execute("supprimer", {"chemin": "documents/direct.txt"})
+        assert asked == [] and not out.startswith("Action annulée")              # agit sans demander
+        assert tools.execute("executer_powershell", {"commande": "format c:"}).startswith("ERREUR")  # garde-fou
+    finally:
+        CONFIG["securite"]["confirmations"] = True
+        tools.runtime.confirm = lambda q: True
+    from jarvis.brain import system_prompt
+    p = system_prompt(CONFIG)
+    assert "JB" in p and "féminin" in p and "Monsieur" not in p
 
 
 def test_powershell_blocklist():
