@@ -29,10 +29,14 @@ def desktop() -> Image.Image:
     return img
 
 
-def frame(blob: Blob, said: str, reply: str, asking: bool = False) -> Image.Image:
+from jarvis.blob import PALETTES  # noqa: E402
+
+
+def frame(blob: Blob, said: str, reply: str, asking: bool = False, status: str = "", state: str = "repos") -> Image.Image:
     scene = desktop().convert("RGBA")
     ox, oy = SCENE_W - W - 6, SCENE_H - H - 44
-    card, _ = bubble(said, reply, asking)
+    color = tuple(int(v * 0.8) for v in PALETTES.get(state, PALETTES["repos"])[0])
+    card, _ = bubble(said, reply, asking, status=status, status_color=color)
     if card is not None:
         near = int((1.0 - min(1.0, blob.scale)) * 70)
         scene.alpha_composite(card, (ox + max(0, W - B - card.width + 22 + near), oy + (H - card.height) // 2))
@@ -41,28 +45,29 @@ def frame(blob: Blob, said: str, reply: str, asking: bool = False) -> Image.Imag
 
 
 SAID, REPLY = "Ouvre Chrome et mets le volume à trente", "C'est fait, JB : Chrome est ouvert et le volume est à trente pour cent."
+STATUS = {"écoute": "Je t'écoute…", "réfléchit": "J'ai compris, je réfléchis…", "agit": "J'ouvre chrome…"}
 script = [  # (durée en secondes, état, ce que tu as dit, réponse)
-    (1.6, "repos", "", ""), (2.0, "écoute", "", ""), (1.6, "réfléchit", SAID, ""),
-    (3.6, "parle", SAID, REPLY), (1.6, "repos", SAID, REPLY), (1.2, "repos", "", ""),
+    (1.4, "repos", "", ""), (2.0, "écoute", "", ""), (1.6, "réfléchit", SAID, ""), (1.8, "agit", SAID, ""),
+    (3.2, "parle", SAID, REPLY), (1.4, "repos", SAID, REPLY), (1.0, "repos", "", ""),
 ]
 blob, frames, stills, fps = Blob(B), [], {}, 20
 for seconds, state, said, reply in script:
     for i in range(int(seconds * fps)):
         level = 0.25 + 0.6 * abs(np.sin(i / 3.1) * np.sin(i / 7.3)) if state == "écoute" else 0.0
         blob.step(1 / fps, state, level)
-        frames.append(frame(blob, said, reply))
+        frames.append(frame(blob, said, reply, status=STATUS.get(state, ""), state=state))
         if i == int(seconds * fps * 0.7) and (state, bool(reply)) not in stills:
             stills[(state, bool(reply))] = frames[-1]
 frames[0].save(out / "interface_animation.gif", save_all=True, append_images=frames[1:], duration=1000 // fps,
                loop=0, optimize=True)
 
-titles = {("repos", False): "Au repos", ("écoute", False): "Il t'écoute", ("réfléchit", False): "Il réfléchit",
-          ("parle", True): "Il parle"}
+titles = {("repos", False): "Au repos", ("écoute", False): "Elle t'écoute", ("réfléchit", False): "Elle a compris et réfléchit",
+          ("agit", False): "Elle agit", ("parle", True): "Elle répond"}
 blob2 = Blob(B)
 for _ in range(30):
     blob2.step(1 / fps, "repos")
 stills[("question", True)] = frame(blob2, "Supprime le brouillon du bureau", "Envoyer brouillon.docx à la corbeille ?", True)
-titles[("question", True)] = "Il demande confirmation"
+titles[("question", True)] = "Elle demande confirmation"
 keep = [(titles[k], stills[k]) for k in titles if k in stills]
 sheet = Image.new("RGB", ((SCENE_W + 10) * 3 + 10, (SCENE_H + 40) * 2 + 10), (245, 243, 238))
 d = ImageDraw.Draw(sheet)

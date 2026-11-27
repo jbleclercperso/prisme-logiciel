@@ -12,6 +12,7 @@ PALETTES = {
     "repos": ((124, 131, 253), (196, 167, 255)),        # lavande calme
     "écoute": ((34, 197, 158), (163, 240, 205)),        # menthe
     "réfléchit": ((255, 176, 59), (255, 128, 92)),      # ambre
+    "agit": ((64, 150, 255), (120, 220, 255)),          # bleu vif : elle exécute quelque chose
     "parle": ((255, 110, 138), (255, 184, 108)),        # corail, pêche
 }
 # par état : taille, vivacité, ampleur des ondulations, rotation
@@ -19,6 +20,7 @@ MOODS = {
     "repos": (0.56, 0.55, 0.16, 0.05),
     "écoute": (0.92, 1.5, 0.22, 0.10),
     "réfléchit": (0.86, 1.9, 0.42, 0.9),
+    "agit": (0.90, 2.6, 0.30, 0.35),
     "parle": (1.0, 3.0, 0.34, 0.15),
 }
 
@@ -51,6 +53,8 @@ class Blob:
             scale *= 1.0 + self.level * 0.07
         if state == "repos":
             scale *= 1.0 + 0.035 * math.sin(self.t * 1.3)        # respiration
+        if state == "agit":
+            scale *= 1.0 + 0.07 * math.sin(self.t * 5.0)         # battement régulier : au travail
         self.scale += (scale - self.scale) * k
         self.speed += (speed - self.speed) * k
         self.amp += (amp - self.amp) * k
@@ -132,11 +136,12 @@ def _wrap(draw, text: str, font, width: int, max_lines: int) -> list[str]:
     return [ln for ln in lines if ln]
 
 
-def bubble(said: str = "", reply: str = "", asking: bool = False, width: int = 290):
+def bubble(said: str = "", reply: str = "", asking: bool = False, width: int = 290,
+           status: str = "", status_color=(120, 120, 132)):
     """Dessine la bulle (ce que tu as dit, ce que Jarvis répond, boutons Oui / Non).
     Renvoie (image RGBA ou None, {nom du bouton: (x1, y1, x2, y2)})."""
     from PIL import Image, ImageDraw, ImageFilter
-    if not (said or reply):
+    if not (said or reply or status):
         return None, {}
     pad, margin = 14, 12                            # marge = place pour l'ombre
     small, normal, bold = _font(12), _font(14), _font(13, True)
@@ -144,10 +149,12 @@ def bubble(said: str = "", reply: str = "", asking: bool = False, width: int = 2
     inner = width - 2 * pad - 2 * margin
     said_lines = _wrap(probe, "« " + said + " »", small, inner, 2) if said else []
     reply_lines = _wrap(probe, reply, normal, inner, 6) if reply else []
+    status_lines = _wrap(probe, status, bold, inner - 16, 2) if status and not reply else []
     text_w = max([probe.textlength(ln, font=small) for ln in said_lines]
-                 + [probe.textlength(ln, font=normal) for ln in reply_lines] + [150 if asking else 40])
+                 + [probe.textlength(ln, font=normal) for ln in reply_lines]
+                 + [probe.textlength(ln, font=bold) + 16 for ln in status_lines] + [150 if asking else 40])
     h = pad * 2 + len(said_lines) * 17 + len(reply_lines) * 20 + (4 if said_lines and reply_lines else 0) \
-        + (40 if asking else 0)
+        + (40 if asking else 0) + len(status_lines) * 19 + (5 if said_lines and status_lines else 0)
     w = int(text_w) + 2 * pad
     img = Image.new("RGBA", (w + 2 * margin, h + 2 * margin), (0, 0, 0, 0))
     shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -164,6 +171,12 @@ def bubble(said: str = "", reply: str = "", asking: bool = False, width: int = 2
     for ln in reply_lines:
         d.text((x, y), ln, font=normal, fill=INK)
         y += 20
+    if status_lines:
+        y += 5 if said_lines else 0
+        d.ellipse((x, y + 5, x + 8, y + 13), fill=tuple(status_color))      # pastille de la couleur de l'état
+        for ln in status_lines:
+            d.text((x + 16, y), ln, font=bold, fill=tuple(status_color))
+            y += 19
     buttons = {}
     if asking:
         y += 8

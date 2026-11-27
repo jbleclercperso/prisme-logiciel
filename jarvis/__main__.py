@@ -146,11 +146,13 @@ class VoiceChannel(Channel):
 
 
 def run_voice(core: Core, stop: threading.Event, ui=None) -> None:
+    core.emit("notification", "Je démarre… (au tout premier lancement, quelques minutes de téléchargement)")
     from .voice import Listener, Speaker, beep
     config = core.config
     name, vcfg = config["assistant"]["nom"], config["voix"]
     speaker = Speaker(vcfg)
     listener = Listener(vcfg, speaker)
+    core.emit("notification", "Je suis prête. Dis « Hey Jarvis ».")
     voice = VoiceChannel(core, speaker, listener, beep)
     core.default = voice
     listener.on_level = lambda v: core.emit("niveau", f"{v:.2f}")       # anime l'interface
@@ -239,7 +241,60 @@ def run_app(core: Core) -> None:
     stop.set()
 
 
+def popup(text: str) -> None:
+    """Message à l'écran quand il n'y a pas de terminal pour l'afficher."""
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, text, "Jarvis", 0x40)
+    else:
+        print(text)
+
+
+def no_console() -> bool:
+    """Lancé sans terminal (pythonw) : tout ce qui s'écrirait à l'écran part dans data/console.log."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return False
+    from .config import DATA
+    DATA.mkdir(exist_ok=True)
+    log = open(DATA / "console.log", "a", encoding="utf-8", buffering=1, errors="replace")
+    sys.stdout = sys.stderr = log
+    import time
+    print(f"\n===== Jarvis {__version__} lancé le {time.strftime('%d/%m/%Y %H:%M:%S')} =====")
+    return True
+
+
+_instance = None
+
+
+def already_running() -> bool:
+    """Une seule instance à la fois : deux Jarvis s'écouteraient et se répondraient en double."""
+    global _instance
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 47653))
+        s.listen(1)
+    except OSError:
+        return True
+    _instance = s
+    return False
+
+
 def main() -> None:
+    silent = no_console()
+    try:
+        _main(silent)
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        if silent:
+            popup("Jarvis s'est arrêté sur une erreur.\nLe détail est dans le fichier data\\console.log.")
+        raise
+
+
+def _main(silent: bool) -> None:
     if sys.platform == "win32":
         for stream in (sys.stdout, sys.stderr):
             try:
@@ -268,7 +323,13 @@ def main() -> None:
     if args.micros:
         from .voice import list_microphones
         return print(list_microphones())
+    interactive = not (args.commande or args.texte)
+    if interactive and already_running():
+        return popup("Jarvis est déjà lancé (la forme est dans le coin de l'écran).")
     if config["cerveau"]["fournisseur"] == "forfait" and not logged_in():
+        if silent:
+            return popup("Jarvis n'est pas encore connecté à ton compte Claude.\n"
+                         "Double-clique sur Connexion-Claude.bat, puis relance Jarvis.")
         login()
     try:
         core = boot(config)

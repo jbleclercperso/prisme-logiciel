@@ -13,7 +13,7 @@ import time
 import numpy as np
 
 from . import config as _config
-from .blob import Blob, bubble
+from .blob import PALETTES, Blob, bubble
 from .core import QUIT, Channel, plain
 
 W, H, B = 480, 190, 180                 # fenêtre et côté de la forme (la forme est à droite)
@@ -104,8 +104,9 @@ class Widget:
 
         self.blob = Blob(B)
         self.state, self.level = "repos", 0.0
-        self.said = self.reply = ""
+        self.said = self.reply = self.action = ""
         self.asking = False
+        self.busy_since = 0.0                           # début du travail en cours (pour afficher la durée)
         self.answers: queue.Queue = queue.Queue()
         self.last_activity = time.time()
         self.bubble_key, self.bubble_img, self.buttons, self.bubble_at = None, None, {}, (0, 0)
@@ -147,6 +148,7 @@ class Widget:
         self.menu = tk.Menu(root, tearoff=0)
         self.menu.add_command(label="Écrire à Jarvis", command=self.show_entry)
         self.menu.add_command(label="Parler", command=lambda: self.on_mic())
+        self.menu.add_command(label="Annuler la demande en cours", command=self.cancel)
         self.menu.add_separator()
         self.menu.add_command(label="Quitter Jarvis", command=self.quit)
         for target in (root, self.label):
@@ -185,10 +187,13 @@ class Widget:
     # --- image -------------------------------------------------------------
     def compose(self) -> np.ndarray:
         frame = np.zeros((H, W, 4), dtype=np.uint8)
-        key = (self.said, self.reply, self.asking)
+        status = self.status()
+        key = (self.said, self.reply, self.asking, status, self.state)
         if key != self.bubble_key:
             self.bubble_key = key
-            img, self.buttons = (None, {}) if self.typing else bubble(self.said, self.reply, self.asking)
+            color = tuple(int(v * 0.8) for v in PALETTES.get(self.state, PALETTES["repos"])[0])
+            img, self.buttons = (None, {}) if self.typing else bubble(self.said, self.reply, self.asking,
+                                                                     status=status, status_color=color)
             self.bubble_img = None if img is None else np.asarray(img)
         if self.bubble_img is not None and not self.typing:
             bh, bw = self.bubble_img.shape[:2]
@@ -204,6 +209,18 @@ class Widget:
         region[..., 3:4] = (a + region[..., 3:4] / 255.0 * (1 - a)) * 255.0
         frame[y0:y0 + B, x0:x0 + B] = region.astype(np.uint8)
         return frame
+
+    def status(self) -> str:
+        """Ce que Jarvis est en train de faire, en clair, avec la durée quand ça dure."""
+        if self.state == "écoute":
+            return "Je t'écoute…"
+        if self.state not in ("réfléchit", "agit"):
+            return ""
+        text = (self.action or "Je m'en occupe") if self.state == "agit" else "J'ai compris, je réfléchis"
+        seconds = int(time.time() - self.busy_since) if self.busy_since else 0
+        if seconds >= 60:
+            return f"{text}… {seconds} s. C'est long : clic droit pour annuler."
+        return f"{text}… {seconds} s" if seconds >= 6 else f"{text}…"
 
     def draw(self) -> None:
         frame = self.compose()
@@ -225,9 +242,17 @@ class Widget:
             while True:
                 kind, text = self.events.get_nowait()
                 if kind == "etat":
-                    self.state = text if text in ("écoute", "réfléchit", "parle") else "repos"
+                    previous = self.state
+                    self.state = text if text in ("écoute", "réfléchit", "agit", "parle") else "repos"
                     if self.state == "écoute":
-                        self.reply = ""
+                        self.said = self.reply = ""
+                    working = ("réfléchit", "agit")
+                    if self.state in working and previous not in working:
+                        self.busy_since = time.time()
+                    if self.state == "réfléchit":
+                        self.action = ""
+                elif kind == "action":
+                    self.action = text
                 elif kind == "niveau":
                     self.level = min(1.0, float(text or 0))
                 elif kind == "vous":
@@ -318,6 +343,9 @@ class Widget:
         if QUIT.match(plain(text)):
             return self.quit()
         threading.Thread(target=self.core.ask, args=(text, self.channel()), daemon=True).start()
+
+    def cancel(self) -> None:
+        threading.Thread(target=self.core.cancel, daemon=True).start()
 
     def _answer(self, value: bool) -> None:
         self.asking = False

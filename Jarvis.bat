@@ -1,6 +1,4 @@
 @echo off
-chcp 65001 >nul
+rem Lance Jarvis sans fenetre de terminal. Pour voir les messages techniques : Jarvis-debug.bat
 cd /d "%~dp0"
-call .venv\Scripts\activate.bat
-python -m jarvis %*
-pause
+start "" ".venv\Scripts\pythonw.exe" -m jarvis %*

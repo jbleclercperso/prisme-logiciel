@@ -12,7 +12,7 @@ Un réglage suffit pour passer sur une IA locale (Ollama).
 3. Double-cliquer sur **`install.bat`**. Il crée l'environnement, installe tout, puis ouvre la page de
    connexion Claude dans le navigateur : connectez-vous avec le compte de votre forfait (une seule fois).
    Si Claude Code est déjà connecté sur ce PC, cette étape est sautée automatiquement.
-4. Double-cliquer sur **`Jarvis.bat`** (voix) ou **`Jarvis-texte.bat`** (clavier, sans micro).
+4. Double-cliquer sur **`Jarvis.bat`** : la forme apparaît dans le coin de l'écran, sans fenêtre de terminal.
 
 Au premier lancement vocal, Jarvis télécharge le modèle de reconnaissance vocale (~500 Mo) : c'est normal.
 
@@ -138,6 +138,9 @@ pas d'analyse des captures d'écran ni de recherche Internet intégrée, et des 
   `git clone -b ccr-4ebd9c8f-428bf3 https://github.com/jbleclercperso/prisme-logiciel Jarvis`
 
 ## Dépannage
+
+- Jarvis tourne sans terminal ; ses messages techniques vont dans `data/console.log`. Pour les voir en
+  direct, lancer `Jarvis-debug.bat`. Pour l'arrêter : clic droit sur la forme, ou « au revoir Jarvis ».
 
 - « Je ne suis pas connecté à votre compte Claude » : lancez `Connexion-Claude.bat`.
 - Jarvis puise dans le même quota que vos autres usages de Claude : forfait épuisé, il le dit et reprend

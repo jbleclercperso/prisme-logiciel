@@ -31,6 +31,26 @@ def journal(kind: str, text: str) -> None:
         pass
 
 
+ACTIONS = {     # ce que la bulle affiche pendant qu'un outil travaille
+    "ouvrir_application": "J'ouvre {nom}", "fermer_application": "Je ferme {nom}", "ouvrir_url": "J'ouvre la page",
+    "recherche_navigateur": "J'ouvre la recherche", "WebSearch": "Je cherche sur Internet",
+    "WebFetch": "Je lis une page web", "web_search": "Je cherche sur Internet", "meteo": "Je regarde la météo",
+    "lire_page_web": "Je lis une page web", "navigateur": "Je navigue sur le site",
+    "lister_dossier": "Je regarde le dossier", "lire_fichier": "Je lis le fichier", "ecrire_fichier": "J'écris le fichier",
+    "chercher_fichiers": "Je cherche le fichier", "taille_dossiers": "Je mesure les dossiers",
+    "copier": "Je copie", "deplacer": "Je déplace", "supprimer": "Je mets à la corbeille", "ouvrir_fichier": "J'ouvre le fichier",
+    "archive": "Je prépare l'archive", "telecharger": "Je télécharge", "afficher": "Je prépare la fiche",
+    "envoyer_email": "J'envoie l'e-mail", "lire_emails": "Je lis tes e-mails", "capture_ecran": "Je regarde l'écran",
+    "souris": "Je clique", "taper_texte": "J'écris", "raccourci_clavier": "J'appuie sur les touches",
+    "volume": "Je règle le volume", "media": "Je pilote la lecture", "executer_powershell": "J'exécute une commande",
+    "logiciels": "Je m'occupe du logiciel", "reglage_windows": "Je change le réglage", "infos_systeme": "Je regarde l'état du PC",
+    "agenda": "Je regarde l'agenda", "contacts": "Je regarde les contacts", "taches": "Je regarde tes tâches",
+    "memoriser": "Je le retiens", "historique": "Je cherche dans l'historique", "lancer_mission": "Je lance la mission",
+    "planifier": "Je le programme", "minuteur": "Je lance le minuteur", "rappel": "Je note le rappel",
+    "creer_extension": "Je m'ajoute une capacité", "envoyer_sur_telephone": "J'envoie sur ton téléphone",
+}
+
+
 class Channel:
     """Un moyen de parler à l'utilisateur. Les sous-classes : console, voix, Telegram, interface."""
     name = "console"
@@ -58,7 +78,7 @@ class Core:
 
     # --- événements -------------------------------------------------------
     def emit(self, kind: str, text: str) -> None:
-        if kind not in ("etat", "niveau"):
+        if kind not in ("etat", "niveau", "action"):
             journal(kind, text)
         for obs in list(self.observers):
             try:
@@ -70,6 +90,13 @@ class Core:
         short = ", ".join(f"{k}={str(v)[:60]!r}" for k, v in (args or {}).items())
         print(f"   ⚙ {name}({short})")
         self.emit("outil", f"{name}({short})")
+        label = ACTIONS.get(name, "Je m'en occupe")
+        try:
+            label = label.format(**{k: str(v)[:30] for k, v in (args or {}).items()})
+        except (KeyError, IndexError, ValueError):
+            label = label.split("{")[0].strip()
+        self.emit("action", label)
+        self.emit("etat", "agit")
 
     # --- demandes ---------------------------------------------------------
     def ask(self, text: str, channel: Channel | None = None) -> str:
@@ -89,6 +116,17 @@ class Core:
             finally:
                 self.emit("etat", "repos")
                 self.channel = None
+
+    def cancel(self) -> bool:
+        """Interrompt la demande en cours (menu « Annuler »)."""
+        stop = getattr(self.brain, "cancel", None)
+        if stop is None:
+            return False
+        try:
+            stop()
+            return True
+        except Exception:
+            return False
 
     def reset(self) -> None:
         with self.lock:

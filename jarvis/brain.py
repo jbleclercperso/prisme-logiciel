@@ -404,7 +404,11 @@ class ForfaitBrain(Brain):
             if isinstance(msg, sdk.AssistantMessage):
                 if msg.error:
                     final = self._error(str(msg.error))
-                acted = acted or any(isinstance(b, sdk.ToolUseBlock) for b in msg.content)
+                for b in msg.content:
+                    if isinstance(b, sdk.ToolUseBlock):
+                        acted = True
+                        if not b.name.startswith("mcp__jarvis__"):     # outils intégrés (recherche web)
+                            self.on_tool(b.name, b.input if isinstance(b.input, dict) else {})
                 texts = [b.text for b in msg.content if isinstance(b, sdk.TextBlock)]
                 if texts:
                     parts = texts               # on ne garde que le dernier message parlé
@@ -441,6 +445,10 @@ class ForfaitBrain(Brain):
         except Exception as e:
             self._drop()
             return self._error(f"{type(e).__name__}: {e}")
+
+    def cancel(self) -> None:
+        if self.client is not None:
+            self._run(self.client.interrupt(), timeout=10)
 
     def _drop(self) -> None:
         client, self.client = self.client, None
